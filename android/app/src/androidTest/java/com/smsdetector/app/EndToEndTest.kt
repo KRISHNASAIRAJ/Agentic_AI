@@ -44,6 +44,12 @@ class EndToEndTest {
         intent!!.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK)
         context.startActivity(intent)
         device.waitForIdle()
+        // Diagnostic screenshot: pulled by CI so failures can be inspected visually.
+        try {
+            device.takeScreenshot(java.io.File("/data/local/tmp/sms_e2e.png"))
+        } catch (e: Exception) {
+            android.util.Log.e("E2E", "screenshot failed", e)
+        }
     }
 
     @Test

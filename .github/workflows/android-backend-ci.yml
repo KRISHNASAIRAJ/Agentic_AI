@@ -217,15 +217,18 @@ jobs:
           script: |
             echo "=== DIAGNOSTICS ==="
             adb devices
+            mkdir -p android/artifacts
             echo "==================="
-            bash ./gradlew connectedDebugAndroidTest --no-daemon --stacktrace -Pandroid.testInstrumentationRunnerArguments.class=com.smsdetector.app.EndToEndTest
+            bash ./gradlew connectedDebugAndroidTest --no-daemon --stacktrace -Pandroid.testInstrumentationRunnerArguments.class=com.smsdetector.app.EndToEndTest ; adb pull /data/local/tmp/sms_e2e.png android/artifacts/e2e_screen.png || true
 
       - name: Publish E2E test report
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: e2e-test-report
-          path: android/app/build/reports/androidTests/connected
+          path: |
+            android/app/build/reports/androidTests/connected
+            android/artifacts/e2e_screen.png
           if-no-files-found: ignore
 
   # ------------------------------------------------------------------
