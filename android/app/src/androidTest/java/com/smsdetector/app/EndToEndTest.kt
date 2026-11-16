@@ -42,35 +42,37 @@ class EndToEndTest {
 
     @Test
     fun navigateInboxToThreadAndTabs() {
-        // Inbox renders
-        compose.waitUntil(timeoutMillis = 10_000) {
-            compose.onAllNodesWithText("Elena Rostova").fetchSemanticsNodes().isNotEmpty()
-        }
+        // Inbox renders (wait defensively: hierarchy may not be attached yet)
+        waitForText("Elena Rostova")
         compose.onNodeWithText("Elena Rostova").assertIsDisplayed()
         compose.onNodeWithText("Start chat").assertIsDisplayed()
 
         // Open thread
         compose.onNodeWithText("Elena Rostova").performClick()
-        compose.waitUntil(timeoutMillis = 10_000) {
-            compose.onAllNodesWithText("End-to-end encrypted").fetchSemanticsNodes().isNotEmpty()
-        }
+        waitForText("End-to-end encrypted")
         compose.onNodeWithContentDescription("Back").performClick()
 
         // Scheduled tab
-        compose.waitUntil(timeoutMillis = 10_000) {
-            compose.onAllNodesWithText("Scheduled").fetchSemanticsNodes().isNotEmpty()
-        }
+        waitForText("Scheduled")
         compose.onNodeWithText("Scheduled").performClick()
-        compose.waitUntil(timeoutMillis = 10_000) {
-            compose.onAllNodesWithText("Scheduled & Smart Tools").fetchSemanticsNodes().isNotEmpty()
-        }
+        waitForText("Scheduled & Smart Tools")
         compose.onNodeWithText("Scheduled & Smart Tools").assertIsDisplayed()
 
         // Security tab
+        waitForText("Security")
         compose.onNodeWithText("Security").performClick()
-        compose.waitUntil(timeoutMillis = 10_000) {
-            compose.onAllNodesWithText("Device Protected").fetchSemanticsNodes().isNotEmpty()
-        }
+        waitForText("Device Protected")
         compose.onNodeWithText("Device Protected").assertIsDisplayed()
+    }
+
+    /** Retries until the text appears; tolerates the brief window before Compose attaches. */
+    private fun waitForText(text: String, timeoutMillis: Long = 20_000) {
+        compose.waitUntil(timeoutMillis = timeoutMillis) {
+            try {
+                compose.onAllNodesWithText(text, substring = true).fetchSemanticsNodes().isNotEmpty()
+            } catch (e: IllegalStateException) {
+                false // "No compose hierarchies found in the app" during startup
+            }
+        }
     }
 }
