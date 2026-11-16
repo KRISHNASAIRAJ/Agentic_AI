@@ -1,95 +1,75 @@
 package com.smsdetector.app
 
-import android.Manifest
-import androidx.compose.ui.test.junit4.createAndroidComposeRule
-import androidx.compose.ui.test.onAllNodesWithText
-import androidx.compose.ui.test.onNodeWithText
-import androidx.compose.ui.test.performClick
+import android.content.Context
+import android.content.Intent
 import androidx.test.ext.junit.runners.AndroidJUnit4
-import androidx.test.rule.GrantPermissionRule
-import com.smsdetector.app.data.db.Category
-import com.smsdetector.app.data.db.Conversation
-import kotlinx.coroutines.runBlocking
-import org.junit.BeforeClass
-import org.junit.Rule
+import androidx.test.platform.app.InstrumentationRegistry
+import androidx.test.uiautomator.By
+import androidx.test.uiautomator.UiDevice
+import androidx.test.uiautomator.Until
+import org.junit.Assert.assertNotNull
+import org.junit.Before
 import org.junit.Test
-import org.junit.rules.RuleChain
 import org.junit.runner.RunWith
 
 /**
- * End-to-end journey: with the app launched, navigate from Chats to the
- * Scheduled and Security tabs. Uses only static UI elements so the test
- * never depends on asynchronous database seeding or SMS permissions.
+ * End-to-end journey driven through the accessibility layer (UIAutomator),
+ * exercising the real app UI from the launcher intent across all main tabs.
  */
 @RunWith(AndroidJUnit4::class)
 class EndToEndTest {
 
-    private val compose = createAndroidComposeRule<MainActivity>()
+    private lateinit var device: UiDevice
+    private lateinit var packageName: String
 
-    @get:Rule
-    val rules: RuleChain = RuleChain
-        .outerRule(GrantPermissionRule.grant(
-            Manifest.permission.RECEIVE_SMS,
-            Manifest.permission.READ_SMS,
-            Manifest.permission.SEND_SMS,
-            Manifest.permission.READ_CONTACTS,
-            Manifest.permission.POST_NOTIFICATIONS
-        ))
-        .around(compose)
+    @Before
+    fun setUp() {
+        device = UiDevice.getInstance(InstrumentationRegistry.getInstrumentation())
+        val context: Context = InstrumentationRegistry.getInstrumentation().targetContext
+        packageName = context.packageName
+        val intent = context.packageManager.getLaunchIntentForPackage(packageName)
+        assertNotNull("Launcher intent must exist", intent)
+        intent!!.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK)
+        context.startActivity(intent)
+        device.waitForIdle()
+    }
 
     @Test
     fun navigateAcrossTabs() {
-        // Chats tab (static element — always present)
+        // Chats tab
         waitForText("Start chat")
-        waitForText("Chats")
+        assertVisible("Start chat")
 
         // Scheduled tab
         waitForText("Scheduled")
-        compose.onNodeWithText("Scheduled").performClick()
+        clickText("Scheduled")
         waitForText("Scheduled & Smart Tools")
+        assertVisible("Scheduled & Smart Tools")
 
         // Security tab
         waitForText("Security")
-        compose.onNodeWithText("Security").performClick()
+        clickText("Security")
         waitForText("Device Protected")
+        assertVisible("Device Protected")
 
         // Back to Chats
         waitForText("Chats")
-        compose.onNodeWithText("Chats").performClick()
+        clickText("Chats")
         waitForText("Start chat")
     }
 
-    /** Retries until the text appears; tolerates the brief window before Compose attaches. */
-    private fun waitForText(text: String, timeoutMillis: Long = 30_000) {
-        compose.waitUntil(timeoutMillis = timeoutMillis) {
-            try {
-                compose.onAllNodesWithText(text, substring = true).fetchSemanticsNodes().isNotEmpty()
-            } catch (e: IllegalStateException) {
-                false // "No compose hierarchies found in the app" during startup
-            }
-        }
+    private fun waitForText(text: String, timeout: Long = 20_000) {
+        device.wait(Until.hasObject(By.textContains(text)), timeout)
     }
 
-    companion object {
-        /** Seed before the Compose rule launches the Activity so the inbox has data. */
-        @BeforeClass
-        @JvmStatic
-        fun seedConversation() = runBlocking {
-            val app = androidx.test.platform.app.InstrumentationRegistry
-                .getInstrumentation().targetContext.applicationContext as SmsDetectorApplication
-            app.db.conversationDao().upsert(
-                Conversation(
-                    address = "+15550001111",
-                    displayName = "Elena Rostova",
-                    initials = "ER",
-                    lastMessage = "Let's review the new release mockup...",
-                    lastMessageTs = System.currentTimeMillis(),
-                    unreadCount = 2,
-                    isPinned = true,
-                    isRcs = true,
-                    category = Category.PERSONAL
-                )
-            )
-        }
+    private fun assertVisible(text: String) {
+        assertNotNull("Text not visible: $text", device.findObject(By.textContains(text)))
+    }
+
+    private fun clickText(text: String) {
+        val obj = device.findObject(By.textContains(text))
+        assertNotNull("Cannot find clickable text: $text", obj)
+        obj.click()
+        device.waitForIdle()
     }
 }

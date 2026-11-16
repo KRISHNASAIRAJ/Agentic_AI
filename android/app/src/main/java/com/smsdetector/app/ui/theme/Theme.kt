@@ -1,6 +1,7 @@
 package com.smsdetector.app.ui.theme
 
 import android.app.Activity
+import android.content.ContextWrapper
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.material3.*
 import androidx.compose.runtime.Composable
@@ -52,10 +53,18 @@ fun SmsDetectorTheme(
     val view = LocalView.current
     if (!view.isInEditMode) {
         SideEffect {
-            val window = (view.context as Activity).window
-            window.statusBarColor = Bg.toArgb()
-            window.navigationBarColor = Bg.toArgb()
-            WindowCompat.getInsetsController(window, view).isAppearanceLightStatusBars = false
+            // Resolve the Activity safely — under instrumentation the view context
+            // can be a ContextThemeWrapper, so a hard cast would crash composition.
+            var ctx = view.context
+            while (ctx is ContextWrapper && ctx !is Activity) ctx = ctx.baseContext
+            if (ctx is Activity) {
+                val window = ctx.window
+                @Suppress("DEPRECATION")
+                window.statusBarColor = Bg.toArgb()
+                @Suppress("DEPRECATION")
+                window.navigationBarColor = Bg.toArgb()
+                WindowCompat.getInsetsController(window, view).isAppearanceLightStatusBars = false
+            }
         }
     }
     MaterialTheme(
