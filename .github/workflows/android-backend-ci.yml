@@ -168,8 +168,7 @@ jobs:
             adb devices
             java -version
             echo "==================="
-            bash ./gradlew connectedDebugAndroidTest --no-daemon --stacktrace \
-              -Pandroid.testInstrumentationRunnerArguments.class=com.smsdetector.app.SmokeTest
+            bash ./gradlew connectedDebugAndroidTest --no-daemon --stacktrace -Pandroid.testInstrumentationRunnerArguments.class=com.smsdetector.app.SmokeTest
 
       - name: Publish smoke test report
         if: always()
@@ -219,8 +218,7 @@ jobs:
             echo "=== DIAGNOSTICS ==="
             adb devices
             echo "==================="
-            bash ./gradlew connectedDebugAndroidTest --no-daemon --stacktrace \
-              -Pandroid.testInstrumentationRunnerArguments.class=com.smsdetector.app.EndToEndTest
+            bash ./gradlew connectedDebugAndroidTest --no-daemon --stacktrace -Pandroid.testInstrumentationRunnerArguments.class=com.smsdetector.app.EndToEndTest
 
       - name: Publish E2E test report
         if: always()
