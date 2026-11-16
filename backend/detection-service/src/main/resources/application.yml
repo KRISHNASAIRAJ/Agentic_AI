@@ -1,0 +1,30 @@
+server:
+  port: ${SERVER_PORT:8081}
+
+spring:
+  application:
+    name: detection-service
+  datasource:
+    url: ${DB_URL:jdbc:postgresql://localhost:5432/smsdetector}
+    username: ${DB_USER:sms}
+    password: ${DB_PASSWORD:sms}
+  jpa:
+    hibernate:
+      ddl-auto: validate
+    open-in-view: false
+  flyway:
+    enabled: true
+
+detection:
+  signature-version: ${SIGNATURE_VERSION:7}
+  hash-heuristics-enabled: ${HASH_HEURISTICS:true}
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,metrics
+  endpoint:
+    health:
+      probes:
+        enabled: true

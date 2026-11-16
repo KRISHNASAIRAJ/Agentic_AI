@@ -1,0 +1,22 @@
+server:
+  port: ${SERVER_PORT:8082}
+
+spring:
+  application:
+    name: reputation-service
+  datasource:
+    url: ${DB_URL:jdbc:postgresql://localhost:5432/smsdetector}
+    username: ${DB_USER:sms}
+    password: ${DB_PASSWORD:sms}
+  jpa:
+    hibernate:
+      ddl-auto: validate
+    open-in-view: false
+  flyway:
+    enabled: true
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,metrics
