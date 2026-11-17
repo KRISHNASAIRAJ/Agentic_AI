@@ -63,6 +63,9 @@ class MapsNotificationListener : NotificationListenerService() {
                 NavParsing.findRemaining(*allText)
             }
         }
+        // Cancel a pending clear: Maps updates its notification by remove + re-post.
+        pendingClear?.let { handler.removeCallbacks(it) }
+        pendingClear = null
         ClusterRepository.navInstruction.value = NavInstruction(
             title = parsed.maneuver,
             street = parsed.street,
@@ -75,12 +78,22 @@ class MapsNotificationListener : NotificationListenerService() {
     }
 
     override fun onNotificationRemoved(sbn: StatusBarNotification?) {
-        if (sbn?.packageName in MAP_PACKAGES) {
+        if (sbn?.packageName !in MAP_PACKAGES) return
+        // Maps remove+reposts its notification on every update. Clearing
+        // immediately blanked the cluster text between remove and repost —
+        // that is the flicker. Delay the clear so a quick repost cancels it.
+        pendingClear?.let { handler.removeCallbacks(it) }
+        pendingClear = Runnable {
             ClusterRepository.navInstruction.value = null
-        }
+            pendingClear = null
+        }.also { handler.postDelayed(it, CLEAR_GRACE_MS) }
     }
 
+    private val handler = android.os.Handler(android.os.Looper.getMainLooper())
+    private var pendingClear: Runnable? = null
+
     companion object {
+        private const val CLEAR_GRACE_MS = 4000L
         private val MANEUVER_WORDS = listOf(
             "turn", "head", "continue", "keep", "merge", "fork",
             "roundabout", "exit", "u-turn", "arrive", "destination", "onto",
