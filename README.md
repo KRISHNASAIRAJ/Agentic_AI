@@ -8,6 +8,8 @@
 >
 > - Install: `.\install-jupiter-drive.ps1` (ADB, keeps Play Protect on).
 > - Build: `.\gradlew.bat :app:assembleDebug`
+> - Play Protect warning? See [`PLAY_PROTECT.md`](PLAY_PROTECT.md) — the fix
+>   is a unique local signing key plus installing over ADB, not disabling it.
 > - The backend, protocol and tests are TVSRide's, credited in `research/SOURCES.md`.
 >
 > ---
