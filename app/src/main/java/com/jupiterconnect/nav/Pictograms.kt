@@ -35,14 +35,9 @@ object Pictograms {
         Regex("\\bslight left\\b|\\bkeep left\\b", RegexOption.IGNORE_CASE) to SLIGHT_LEFT,
         Regex("\\bsharp right\\b", RegexOption.IGNORE_CASE) to SHARP_RIGHT,
         Regex("\\bslight right\\b|\\bkeep right\\b", RegexOption.IGNORE_CASE) to SLIGHT_RIGHT,
-        Regex("\\bhead north\\b", RegexOption.IGNORE_CASE) to HEAD_NORTH,
-        Regex("\\bhead northeast\\b", RegexOption.IGNORE_CASE) to HEAD_NORTHEAST,
-        Regex("\\bhead east\\b", RegexOption.IGNORE_CASE) to HEAD_EAST,
-        Regex("\\bhead southeast\\b", RegexOption.IGNORE_CASE) to HEAD_SOUTHEAST,
-        Regex("\\bhead south\\b", RegexOption.IGNORE_CASE) to HEAD_SOUTH,
-        Regex("\\bhead southwest\\b", RegexOption.IGNORE_CASE) to HEAD_SOUTHWEST,
-        Regex("\\bhead west\\b", RegexOption.IGNORE_CASE) to HEAD_WEST,
-        Regex("\\bhead northwest\\b", RegexOption.IGNORE_CASE) to HEAD_NORTHWEST,
+        // Google Maps shows a straight/up arrow for "Head <direction>" — not
+        // a compass arrow. Resolve to straight so the cluster matches Maps.
+        Regex("\\bhead\\b", RegexOption.IGNORE_CASE) to CONTINUE_STRAIGHT,
         Regex("\\bturn left\\b|\\bleft\\b", RegexOption.IGNORE_CASE) to TURN_LEFT,
         Regex("\\bturn right\\b|\\bright\\b", RegexOption.IGNORE_CASE) to TURN_RIGHT,
         Regex("\\bmerge\\b", RegexOption.IGNORE_CASE) to 14,

@@ -31,6 +31,16 @@ class MapsNotificationListener : NotificationListenerService() {
         if (n.packageName !in MAP_PACKAGES) return
         if (!n.isOngoing) return
 
+        // Google Maps posts multiple ongoing notifications while navigating:
+        // the real turn instruction AND a near-empty one ("0 m" / distance
+        // only). Taking whichever arrives last made the cluster flicker
+        // between "Head east on" and a bare "0m". Require a real instruction:
+        // at least one field must contain a maneuver word or a street name.
+        val hasInstruction = listOf(title, text, bigText, subText).any { field ->
+            field.length > 3 && MANEUVER_WORDS.any { field.contains(it, true) }
+        }
+        if (!hasInstruction) return
+
         val parsed = NavParsing.parse(title, text, bigText, subText)
 
         // Google Maps sometimes puts the distance ("40 m") in a non-standard
@@ -60,6 +70,11 @@ class MapsNotificationListener : NotificationListenerService() {
     }
 
     companion object {
+        private val MANEUVER_WORDS = listOf(
+            "turn", "head", "continue", "keep", "merge", "fork",
+            "roundabout", "exit", "u-turn", "arrive", "destination", "onto",
+            "left", "right", "straight", "north", "south", "east", "west",
+        )
         val MAP_PACKAGES = setOf(
             "com.google.android.apps.maps",
             "com.mappls.app",

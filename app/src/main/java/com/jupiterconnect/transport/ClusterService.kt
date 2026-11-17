@@ -387,10 +387,10 @@ class ClusterService : Service() {
                             distance, // remaining falls back to distance
                             step.pictogram,
                         ))
-                        val line = if (step.distanceMeters >= 0) {
-                            "$distance m ${step.displayLine}".trim()
-                        } else step.displayLine
-                        write(buildNavText(line))
+                        // Send only the instruction text. The cluster renders
+                        // the distance from the control frame; prefixing "0 m "
+                        // here produced the wrong "0 m Head east on" row.
+                        write(buildNavText(step.displayLine))
                     }
                 }
                 delay(1500)

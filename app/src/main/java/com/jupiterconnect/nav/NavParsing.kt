@@ -93,7 +93,12 @@ object NavParsing {
 
         // Resolve the arrow from the full instruction text using the official
         // TVS pictogram table — not hand-picked IDs that render the wrong arrow.
-        val pictogram = Pictograms.fromText(all) ?: NavInstruction.STRAIGHT
+        // Resolve arrow from the TITLE first (it holds the real maneuver like
+        // "Head east on"). A bigText may mention "roundabout" in passing and
+        // wrongly win if we search all fields at once.
+        val pictogram = Pictograms.fromText(title)
+            ?: Pictograms.fromText(all)
+            ?: NavInstruction.STRAIGHT
         val maneuver = listOf(title, text, bigText, subText)
             .firstOrNull { it.isNotBlank() }.orEmpty().take(17)
 
