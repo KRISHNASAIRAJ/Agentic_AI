@@ -42,9 +42,15 @@ class MapsNotificationListener : NotificationListenerService() {
         // in TITLE. Since only known maps apps can reach this point, accept
         // either field - this keeps both providers working.
         val hasManeuver = MANEUVER_WORDS.any { title.contains(it, true) || text.contains(it, true) }
-        val titleIsDistanceOnly = NavParsing.findDistance(title) >= 0 &&
-            title.replace(Regex("""[\d.,\s]|(km|mi|ft|m)\b""", RegexOption.IGNORE_CASE), "").isBlank()
-        if (!hasManeuver || titleIsDistanceOnly) return
+        // Mappls' real navigation notification is often just "5 m" +
+        // "15.5 km • 27 min • 11:11 pm ETA" - no maneuver word at all. Accept
+        // it when it carries both a distance and a time/trip signal. A junk
+        // distance-only notification (e.g. bare "0 m") still fails this test.
+        val hasDistance = NavParsing.findDistance(title, text, bigText, subText) >= 0
+        val hasTime = text.contains("min", true) || subText.contains("arrive", true) ||
+            NavParsing.findTripDistance(title, text, bigText, subText) >= 0
+        val hasNavMetrics = hasDistance && hasTime
+        if (!hasManeuver && !hasNavMetrics) return
 
         // This is the notification we accepted - remember its key so a junk
         // Maps notification being removed cannot clear the real instruction.
@@ -62,23 +68,36 @@ class MapsNotificationListener : NotificationListenerService() {
         // Total remaining distance. Try explicit "remaining" phrases first,
         // then Mappls' "15.5 km • 27 min • ETA" format, then all extras.
         val remainingCandidates = buildList { addAll(listOf(title, text, bigText, subText)); addAll(extraTexts) }
-        val remaining = NavParsing.findRemaining(*remainingCandidates.toTypedArray()).let { r ->
+        val foundRemaining = NavParsing.findRemaining(*remainingCandidates.toTypedArray()).let { r ->
             if (r >= 0) r else NavParsing.findTripDistance(*remainingCandidates.toTypedArray())
         }
         lastManeuver = parsed.maneuver
-        // Maps apps remove and re-post notifications rapidly, and one of the
-        // alternating updates can omit the distance. Hold the last real value
-        // for a short window instead of sending 0 ("0m") on that update -
-        // that flip is what produced the blinking. The window is short enough
-        // that a genuinely new step cannot keep a stale number for long.
+        // Maps apps post several notifications and each update can omit some
+        // fields. Hold each last real value for a short window so one partial
+        // update cannot blank the distance, ETA or trip total - that flip is
+        // what produced the blinking and the "0.0 km" remaining field.
         val now = System.currentTimeMillis()
+        fun keep(found: Int, last: Int, at: Long): Int =
+            if (found >= 0) found else if (last >= 0 && now - at <= 10_000L) last else found
+
         val effectiveDistance = if (distance >= 0) {
             lastKnownDistance = distance
             lastDistanceAtMs = now
             distance
-        } else if (lastKnownDistance >= 0 && now - lastDistanceAtMs <= 5_000L) {
-            lastKnownDistance
-        } else lastKnownDistance
+        } else keep(distance, lastKnownDistance, lastDistanceAtMs)
+
+        val foundEta = parsed.etaMinutes
+        val effectiveEta = if (foundEta > 0) {
+            lastEta = foundEta
+            lastEtaAtMs = now
+            foundEta
+        } else keep(foundEta, lastEta, lastEtaAtMs).coerceAtLeast(0)
+
+        val effectiveRemaining = if (foundRemaining >= 0) {
+            lastRemaining = foundRemaining
+            lastRemainingAtMs = now
+            foundRemaining
+        } else keep(foundRemaining, lastRemaining, lastRemainingAtMs)
 
         // Diagnostic snapshot so one screenshot on the Rides tab shows exactly
         // what Maps published and what we parsed/sent - no more guessing.
@@ -105,10 +124,10 @@ class MapsNotificationListener : NotificationListenerService() {
             title = parsed.maneuver,
             street = parsed.street,
             distanceMeters = effectiveDistance,
-            etaMinutes = parsed.etaMinutes,
+            etaMinutes = effectiveEta,
             pictogram = parsed.pictogram,
             provider = n.packageName,
-            remainingMeters = remaining,
+            remainingMeters = effectiveRemaining,
         )
     }
 
@@ -126,6 +145,10 @@ class MapsNotificationListener : NotificationListenerService() {
             pendingClear = null
             lastKnownDistance = -1 // new route must not inherit the old distance
             lastDistanceAtMs = 0L
+            lastEta = -1
+            lastEtaAtMs = 0L
+            lastRemaining = -1
+            lastRemainingAtMs = 0L
             lastManeuver = ""
             activeKey = null
         }.also { handler.postDelayed(it, CLEAR_GRACE_MS) }
@@ -150,6 +173,10 @@ class MapsNotificationListener : NotificationListenerService() {
     // Last distance Maps actually published; reused when a notification omits it.
     private var lastKnownDistance: Int = -1
     private var lastDistanceAtMs: Long = 0L
+    private var lastEta: Int = -1
+    private var lastEtaAtMs: Long = 0L
+    private var lastRemaining: Int = -1
+    private var lastRemainingAtMs: Long = 0L
     // Key of the Maps notification we accepted; only its removal clears nav.
     private var activeKey: String? = null
     // Maneuver of the last accepted step, to detect a genuine step change.

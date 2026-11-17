@@ -156,5 +156,11 @@ class ProtocolTest {
 
         // Mappls trip total: "15.5 km • 27 min • 11:11 pm ETA" -> 15500 m.
         assertEquals(15500, NavParsing.findTripDistance("5 m", "15.5 km • 27 min • 11:11 pm ETA"))
+
+        // The exact Mappls notification from the frame log: no maneuver word,
+        // distance in title, trip total + ETA in text. All three must parse.
+        val mapplsReal = NavParsing.parse("5 m", "15.5 km • 27 min • 11:11 pm ETA", "", "")
+        assertEquals(5, mapplsReal.distanceMeters)
+        assertEquals(27, mapplsReal.etaMinutes)
     }
 }
