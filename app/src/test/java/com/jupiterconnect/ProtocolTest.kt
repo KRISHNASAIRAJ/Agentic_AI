@@ -138,5 +138,16 @@ class ProtocolTest {
         assertEquals(NavInstruction.RIGHT, modern.pictogram)
         assertTrue("maneuver must not start with the distance",
             !modern.maneuver.trimStart().startsWith("120"))
+
+        // Mappls / MapmyIndia: maneuver in the title, distance + ETA in TEXT.
+        val mappls = NavParsing.parse("Turn left", "2.32 km • 3 min • 11:40 AM ETA", "", "")
+        assertEquals(2320, mappls.distanceMeters)
+        assertEquals(3, mappls.etaMinutes)
+        assertEquals(NavInstruction.LEFT, mappls.pictogram)
+
+        val mapplsHead = NavParsing.parse("Head towards MG Road", "1.5 km • 4 min", "", "")
+        assertEquals(1500, mapplsHead.distanceMeters)
+        assertEquals(4, mapplsHead.etaMinutes)
+        assertEquals(NavInstruction.STRAIGHT, mapplsHead.pictogram)
     }
 }

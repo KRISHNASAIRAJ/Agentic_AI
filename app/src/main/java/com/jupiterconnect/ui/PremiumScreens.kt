@@ -100,6 +100,7 @@ fun PremiumHomeScreen(
     // Peak speed this ride - never drops when the accelerator is eased.
     val liveTop = RideStore.liveTopSpeed.collectAsState().value
     val speedHistory = ClusterRepository.speedHistory.collectAsState().value
+    val appTripKm = RideStore.liveTripKm.collectAsState().value
     Screen {
         Spacer(Modifier.height(18.dp))
 
@@ -263,7 +264,7 @@ fun PremiumHomeScreen(
                 MiniRow(Triple("AVG SPEED", "${telemetry.averageSpeedKmh}", "km/h"),
                     Triple("CLUSTER TOP", "${telemetry.clusterTopSpeedKmh}", "km/h"))
                 Spacer(Modifier.height(14.dp))
-                MiniRow(Triple("TRIP METER", "%.1f".format(telemetry.tripMeterKm), "km"),
+                MiniRow(Triple("TRIP (APP)", "%.1f".format(appTripKm), "km"),
                     Triple("MODE", if (telemetry.powerMode) "POWER" else "ECO", ""))
                 Spacer(Modifier.height(14.dp))
                 MiniRow(Triple("ENGINE LOAD", "${telemetry.engineLoad}", "%"),
@@ -273,7 +274,7 @@ fun PremiumHomeScreen(
                     Triple("CHECK ENGINE", if (telemetry.milOn) "ON" else "OK", ""))
                 Spacer(Modifier.height(14.dp))
                 MiniRow(Triple("THROTTLE", "${telemetry.throttlePosition}", "%"),
-                    Triple("IGNITION", if (telemetry.ignitionOn) "ON" else "OFF", ""))
+                    Triple("ISS / START", issLabel(telemetry.issMode), ""))
                 Spacer(Modifier.height(14.dp))
                 MiniRow(Triple("MAP", "${telemetry.manifoldPressure}", ""),
                     Triple("BARO", "${telemetry.barometricPressure}", ""))
@@ -504,9 +505,16 @@ fun PremiumNavigateScreen(
     }
 }
 
+/** 0x11 byte 6: bit 7 (128) appears when start is pressed without clutch. */
+private fun issLabel(value: Int): String = when {
+    value and 0x80 != 0 -> "START LOCK"
+    value == 0 -> "IDLE"
+    else -> "$value"
+}
+
 private fun providerLabel(pkg: String): String = when {
     pkg.contains("google") -> "Google Maps"
-    pkg.contains("mappls") || pkg.contains("mmi.android") -> "MapMyIndia"
+    pkg.contains("mappls") || pkg.contains("mapmyindia") || pkg.contains("mmi.android") -> "Mappls"
     pkg.contains("organicmaps") -> "Organic Maps"
     pkg.contains("here.app") -> "HERE"
     pkg.contains("waze") -> "Waze"

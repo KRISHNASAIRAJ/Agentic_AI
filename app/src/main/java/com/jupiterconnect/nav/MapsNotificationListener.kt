@@ -157,7 +157,12 @@ class MapsNotificationListener : NotificationListenerService() {
         )
         val MAP_PACKAGES = setOf(
             "com.google.android.apps.maps",
+            // Mappls / MapmyIndia ship under several package names. All are
+            // accepted: the title guard and strict whitelist still keep out
+            // calls, messages and arbitrary notifications.
             "com.mappls.app",
+            "com.mappls.app.pro",
+            "com.mapmyindia.android.app",
             "com.mmi.android.mmaps",
             "org.organicmaps",
             "com.here.app.maps",

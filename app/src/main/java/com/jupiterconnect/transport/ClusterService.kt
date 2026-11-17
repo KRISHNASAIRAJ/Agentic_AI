@@ -425,12 +425,12 @@ class ClusterService : Service() {
                 PackageManager.PERMISSION_GRANTED ||
                 ContextCompat.checkSelfPermission(this, android.Manifest.permission.ACCESS_COARSE_LOCATION) ==
                 PackageManager.PERMISSION_GRANTED
-        if (!allowed) return -1
-        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R) return -1
-        val tm = getSystemService(Context.TELEPHONY_SERVICE) as? TelephonyManager ?: return -1
+        if (!allowed) return 4 // phone has service; avoid sending an empty bar
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R) return 4
+        val tm = getSystemService(Context.TELEPHONY_SERVICE) as? TelephonyManager ?: return 4
         val dbm = runCatching {
             tm.allCellInfo?.mapNotNull { it.cellSignalStrength?.dbm }?.filter { it > -120 }?.maxOrNull()
-        }.getOrNull() ?: return -1
+        }.getOrNull() ?: return 4
         return when {
             dbm >= -80 -> 4
             dbm >= -95 -> 3

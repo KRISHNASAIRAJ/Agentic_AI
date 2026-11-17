@@ -87,6 +87,12 @@ object RideStore {
     private val _liveTopSpeed = MutableStateFlow(0)
     val liveTopSpeed: StateFlow<Int> = _liveTopSpeed.asStateFlow()
 
+    // Trip distance derived from the odometer (which the cluster broadcasts
+    // correctly). The cluster's "trip meter" byte is not a trip counter - it
+    // does not change when the trip is reset - so we compute it ourselves.
+    private val _liveTripKm = MutableStateFlow(0.0)
+    val liveTripKm: StateFlow<Double> = _liveTripKm.asStateFlow()
+
     private var rideStartMs = 0L
     private var rideStartOdo: Double? = null
     private var rideLastOdo: Double? = null
@@ -119,6 +125,7 @@ object RideStore {
         rideStartOdo = null
         rideLastOdo = null
         _liveTopSpeed.value = 0
+        _liveTripKm.value = 0.0
         active = true
     }
 
@@ -146,6 +153,10 @@ object RideStore {
             if (t.odometerKm > 0) {
                 if (rideStartOdo == null) rideStartOdo = t.odometerKm
                 rideLastOdo = t.odometerKm
+                val start = rideStartOdo
+                if (start != null) {
+                    _liveTripKm.value = (rideLastOdo!! - start).coerceAtLeast(0.0)
+                }
             }
         }
     }
