@@ -91,7 +91,18 @@ class ClusterService : Service() {
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        if (hasBluetoothPermission()) startScan()
+        if (!hasBluetoothPermission()) return START_STICKY
+        // Always handle the requested action HERE, in onStartCommand, which is
+        // guaranteed to run after onCreate has set ClusterRepository.service.
+        // Launching the service and then posting scan()/connect() to the main
+        // thread raced with onCreate and silently dropped the action when the
+        // service reference was still null — "Bluetooth not connecting".
+        when (intent?.action) {
+            ACTION_CONNECT -> intent.getStringExtra(EXTRA_ADDRESS)?.let { connectTo(it) }
+                ?: startScan()
+            ACTION_SCAN -> startScan()
+            else -> startScan()
+        }
         return START_STICKY
     }
 
@@ -451,6 +462,10 @@ class ClusterService : Service() {
     }
 
     companion object {
+        const val ACTION_SCAN = "com.jupiterconnect.action.SCAN"
+        const val ACTION_CONNECT = "com.jupiterconnect.action.CONNECT"
+        const val EXTRA_ADDRESS = "com.jupiterconnect.extra.ADDRESS"
+
         private const val TAG = "JupiterBle"
         private const val SCAN_TIMEOUT_MS = 20_000L
         /** Matches `TVS BT...` and `TVSBT...` - the advertised name is inferred

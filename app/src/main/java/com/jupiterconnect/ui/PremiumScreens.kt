@@ -81,6 +81,7 @@ fun PremiumHomeScreen(
     lastReading: com.jupiterconnect.session.LastReading,
     onGrantPermissions: () -> Unit,
     onScan: () -> Unit,
+    onConnect: (String) -> Unit,
     onViewMore: () -> Unit,
 ) {
     // While disconnected, fall back to the last reading the cluster sent so
@@ -219,7 +220,7 @@ fun PremiumHomeScreen(
                 } else {
                     devices.take(3).forEach { d ->
                         Surface(
-                            onClick = { ClusterRepository.connect(d.address) },
+                            onClick = { onConnect(d.address) },
                             shape = RoundedCornerShape(14.dp),
                             color = Color.Transparent,
                         ) {
@@ -318,7 +319,7 @@ fun PremiumHomeScreen(
         Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
             SmallAction(Modifier.weight(1f), Icons.Rounded.BluetoothConnected,
                 if (telemetry.connected) "Disconnect" else "Connect") {
-                if (telemetry.connected) ClusterRepository.disconnect() else ClusterRepository.scan()
+                if (telemetry.connected) ClusterRepository.disconnect() else onScan()
             }
         }
         Spacer(Modifier.height(28.dp))
@@ -592,7 +593,7 @@ private fun RideMetric(modifier: Modifier, label: String, value: String, unit: S
 // ------------------------------------------------------------------- FIND
 
 @Composable
-fun PremiumFindScreen(telemetry: Telemetry) {
+fun PremiumFindScreen(telemetry: Telemetry, onScan: () -> Unit) {
     Screen {
         Spacer(Modifier.height(18.dp))
         Caption("SCOOTER")
@@ -624,7 +625,7 @@ fun PremiumFindScreen(telemetry: Telemetry) {
         SmallAction(Modifier.fillMaxWidth(), Icons.Rounded.TwoWheeler,
             if (telemetry.connected) "Connected to cluster" else "Find cluster",
             telemetry.address.ifBlank { null }) {
-            if (!telemetry.connected) ClusterRepository.scan()
+            if (!telemetry.connected) onScan()
         }
         Spacer(Modifier.height(28.dp))
     }

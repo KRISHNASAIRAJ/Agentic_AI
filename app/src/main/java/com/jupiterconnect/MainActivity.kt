@@ -131,11 +131,16 @@ fun JupiterApp() {
     var rememberedAddress by remember {
         mutableStateOf(devicePrefs.getString("address", null))
     }
-    fun connectAndRemember(address: String) {
+    fun connectToDevice(address: String) {
         devicePrefs.edit().putString("address", address).apply()
         rememberedAddress = address
-        ClusterRepository.connect(address)
+        // Send the action with the Intent; onStartCommand performs the connect
+        // after onCreate has initialised the service. No main-thread race.
+        val i = Intent(context, ClusterService::class.java).setAction(ClusterService.ACTION_CONNECT)
+        i.putExtra(ClusterService.EXTRA_ADDRESS, address)
+        ContextCompat.startForegroundService(context, i)
     }
+    fun connectAndRemember(address: String) = connectToDevice(address)
     fun forgetDevice() {
         devicePrefs.edit().remove("address").apply()
         rememberedAddress = null
@@ -146,13 +151,10 @@ fun JupiterApp() {
     fun startServiceIfReady() {
         permStatus = currentStatus()
         if (permStatus.bleReady) {
-            ContextCompat.startForegroundService(context, Intent(context, ClusterService::class.java))
-            // Once BLE is ready, attach to the remembered cluster if we have one.
             rememberedAddress?.let { addr ->
-                android.os.Handler(android.os.Looper.getMainLooper()).post {
-                    ClusterRepository.connect(addr)
-                }
-            }
+                connectToDevice(addr)
+            } ?: ContextCompat.startForegroundService(
+                context, Intent(context, ClusterService::class.java))
         }
     }
 
@@ -169,12 +171,10 @@ fun JupiterApp() {
             launcher.launch(permissions)
             return
         }
-        ContextCompat.startForegroundService(context, Intent(context, ClusterService::class.java))
-        // The service sets ClusterRepository.service in onCreate; posting the
-        // scan to the main thread lets that happen first.
-        android.os.Handler(android.os.Looper.getMainLooper()).post {
-            ClusterRepository.scan()
-        }
+        // Send SCAN as an Intent action. onStartCommand runs after onCreate,
+        // so the service reference is guaranteed ready when it calls startScan.
+        ContextCompat.startForegroundService(
+            context, Intent(context, ClusterService::class.java).setAction(ClusterService.ACTION_SCAN))
     }
 
     // Ask on first launch AND refresh the displayed state every time the app
@@ -266,6 +266,7 @@ fun JupiterApp() {
                     lastReading = lastReading,
                     onGrantPermissions = { launcher.launch(permissions) },
                     onScan = { scanForDevices() },
+                    onConnect = { address -> connectAndRemember(address) },
                     onViewMore = { selected = 4 },
                 )
                 1 -> PremiumNavigateScreen(
@@ -278,7 +279,7 @@ fun JupiterApp() {
                     },
                 )
                 2 -> PremiumRidesScreen(telemetry, rides)
-                3 -> PremiumFindScreen(telemetry)
+                3 -> PremiumFindScreen(telemetry, onScan = { scanForDevices() })
                 4 -> PremiumDevicesScreen(
                     devices = devices,
                     scanning = scanning,
