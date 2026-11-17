@@ -3,7 +3,7 @@ package com.jupiterconnect.ui.theme
 import androidx.compose.ui.graphics.Color
 
 /**
- * Jupiter Connect premium palette — same electric-lime automotive system used
+ * Jupiter Connect premium palette - same electric-lime automotive system used
  * by the Jupiter Drive branch. Kept under the original name so the rest of the
  * app's references stay valid.
  */

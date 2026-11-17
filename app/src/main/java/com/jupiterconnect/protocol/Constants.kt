@@ -1,6 +1,6 @@
 package com.jupiterconnect.protocol
 
-/** SmartXonnect GATT layer — verified against TVS Connect and TVSRide. */
+/** SmartXonnect GATT layer - verified against TVS Connect and TVSRide. */
 object Gatt {
     const val SERVICE = "5456534d-5647-5341-5342-454e544f5251"
     const val WRITE = "00005352-0000-1000-8000-00805f9b34fb"
@@ -44,7 +44,7 @@ data class Telemetry(
     val distanceToEmptyKm: Int = 0,
     val averageFuelEconomy: Int = 0,
     val frameCount: Long = 0,
-    val lastFrame: String = "—",
+    val lastFrame: String = "-",
     val address: String = "",
     val error: String? = null,
 )

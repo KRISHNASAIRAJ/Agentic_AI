@@ -87,7 +87,7 @@ fun buildKeepalive(findMy: Boolean = false): ByteArray {
     b[12] = now.get(Calendar.DAY_OF_MONTH).toByte()
     b[13] = (now.get(Calendar.MONTH) + 1).toByte()
     b[14] = (now.get(Calendar.YEAR) % 100).toByte()
-    // [18] stays zero — no checksum on this frame.
+    // [18] stays zero - no checksum on this frame.
     b[19] = 0xFF.toByte()
     return b
 }

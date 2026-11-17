@@ -27,7 +27,7 @@ private val DarkColors = darkColorScheme(
     outlineVariant = JupiterColors.OutlineVariant,
 )
 
-/** Dark mode only at launch — the palette is locked to the Meridian tokens. */
+/** Dark mode only at launch - the palette is locked to the Meridian tokens. */
 @Composable
 fun JupiterConnectTheme(content: @Composable () -> Unit) {
     MaterialTheme(

@@ -10,7 +10,7 @@ import com.jupiterconnect.transport.ClusterRepository
  * TVS app uses: the cluster does not know what a maps app is, so we take the
  * instruction from the notification and forward it over BLE.
  *
- * Notification access is a Settings toggle, not a runtime permission —
+ * Notification access is a Settings toggle, not a runtime permission -
  * without it this service never receives anything and mirroring silently
  * does nothing.
  */

@@ -111,14 +111,14 @@ class ClusterService : Service() {
     fun startScan() {
         if (!hasBluetoothPermission()) {
             ClusterRepository.telemetry.value = ClusterRepository.telemetry.value.copy(
-                error = "Bluetooth permission not granted — grant it in Settings")
+                error = "Bluetooth permission not granted - grant it in Settings")
             Log.w(TAG, "scan refused: no bluetooth permission")
             return
         }
         val adapter = adapter
         if (adapter == null || !adapter.isEnabled) {
             ClusterRepository.telemetry.value = ClusterRepository.telemetry.value.copy(
-                error = "Bluetooth is off — turn it on and scan again")
+                error = "Bluetooth is off - turn it on and scan again")
             Log.w(TAG, "scan refused: bluetooth off")
             return
         }
@@ -149,11 +149,11 @@ class ClusterService : Service() {
                     SCAN_FAILED_ALREADY_STARTED -> "A scan is already running"
                     SCAN_FAILED_APPLICATION_REGISTRATION_FAILED -> "App could not register for scanning"
                     SCAN_FAILED_FEATURE_UNSUPPORTED -> "This phone does not support BLE scanning"
-                    SCAN_FAILED_INTERNAL_ERROR -> "Bluetooth stack error — try again"
+                    SCAN_FAILED_INTERNAL_ERROR -> "Bluetooth stack error - try again"
                     else -> "Scan failed (code $errorCode)"
                 }
                 ClusterRepository.telemetry.value = ClusterRepository.telemetry.value.copy(error = msg)
-                Log.w(TAG, "scan failed: $errorCode — $msg")
+                Log.w(TAG, "scan failed: $errorCode - $msg")
             }
         }
         scanCallback = callback
@@ -189,7 +189,7 @@ class ClusterService : Service() {
         }.getOrDefault(false)
         val isCluster = byName || byUuid
 
-        // Keep every device — an already-paired sleeping cluster may advertise
+        // Keep every device - an already-paired sleeping cluster may advertise
         // nothing recognisable, and hiding it made the scan look broken.
         val entry = ScannedDevice(address, name, result.rssi, isCluster)
         val current = ClusterRepository.devices.value.toMutableList()
@@ -218,7 +218,7 @@ class ClusterService : Service() {
                 error = e.message)
             return
         }
-        // Bond first when needed — some clusters refuse GATT until bonded.
+        // Bond first when needed - some clusters refuse GATT until bonded.
         if (device.bondState != BluetoothDevice.BOND_BONDED) {
             runCatching { device.createBond() }
             Log.i(TAG, "createBond requested for $address")
@@ -311,7 +311,7 @@ class ClusterService : Service() {
                 Log.w(TAG, "write characteristic ${Gatt.WRITE} not found")
                 return
             }
-            Log.i(TAG, "write characteristic found — starting keepalive")
+            Log.i(TAG, "write characteristic found - starting keepalive")
             writeChar = ch
             val notify = service.getCharacteristic(UUID.fromString(Gatt.READ))
             if (notify != null) {
@@ -367,7 +367,7 @@ class ClusterService : Service() {
     /**
      * navigation bridge: one instruction in, two cluster frames out.
      * The control frame is a liveness signal, so it is re-sent every 1.5 s
-     * for as long as a route is active. The text row alternates nothing —
+     * for as long as a route is active. The text row alternates nothing -
      * the cluster renders distance itself from the control frame.
      */
     private fun startNavigationBridge() {
@@ -449,7 +449,7 @@ class ClusterService : Service() {
     companion object {
         private const val TAG = "JupiterBle"
         private const val SCAN_TIMEOUT_MS = 20_000L
-        /** Matches `TVS BT…` and `TVSBT…` — the advertised name is inferred
+        /** Matches `TVS BT...` and `TVSBT...` - the advertised name is inferred
          * from community pairing reports, so both spellings are accepted. */
         private val CLUSTER_NAME_RE = Regex("""\bTVS\s*BT""", RegexOption.IGNORE_CASE)
         private const val SCAN_FAILED_ALREADY_STARTED = 1

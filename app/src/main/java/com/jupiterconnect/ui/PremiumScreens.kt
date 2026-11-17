@@ -148,7 +148,7 @@ fun PremiumHomeScreen(
                         Spacer(Modifier.height(6.dp))
                         Row(verticalAlignment = Alignment.Bottom) {
                             Text(
-                                if (telemetry.connected) "${telemetry.speedKmh}" else "â€”",
+                                if (telemetry.connected) "${telemetry.speedKmh}" else "-",
                                 style = NumberStyle, fontSize = 64.sp, fontWeight = FontWeight.Bold,
                                 color = MaterialTheme.colorScheme.onSurface, maxLines = 1,
                             )
@@ -185,13 +185,13 @@ fun PremiumHomeScreen(
                     ) {
                         Icon(Icons.Rounded.Bluetooth, contentDescription = null, Modifier.size(18.dp))
                         Spacer(Modifier.width(8.dp))
-                        Text(if (scanning) "Scanningâ€¦" else "Find my cluster", fontWeight = FontWeight.SemiBold)
+                        Text(if (scanning) "Scanning..." else "Find my cluster", fontWeight = FontWeight.SemiBold)
                     }
                 } else {
                     Row(Modifier.fillMaxWidth()) {
                         Caption("LINK ACTIVE", color = JupiterColors.Accent)
                         Spacer(Modifier.weight(1f))
-                        Text(telemetry.address.ifBlank { "â€”" }, style = MaterialTheme.typography.labelSmall,
+                        Text(telemetry.address.ifBlank { "-" }, style = MaterialTheme.typography.labelSmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant)
                     }
                 }
@@ -199,10 +199,10 @@ fun PremiumHomeScreen(
         }
         Spacer(Modifier.height(14.dp))
 
-        // Nearby devices â€” the only way to pick and connect to the cluster.
+        // Nearby devices - the only way to pick and connect to the cluster.
         SectionHeading(
             "Nearby devices",
-            trailing = if (scanning) "SCANNINGâ€¦" else "${devices.size} FOUND",
+            trailing = if (scanning) "SCANNING..." else "${devices.size} FOUND",
         )
         Spacer(Modifier.height(10.dp))
         PremiumCard {
@@ -210,7 +210,7 @@ fun PremiumHomeScreen(
                 if (devices.isEmpty()) {
                     Column(Modifier.padding(10.dp)) {
                         Text(
-                            if (scanning) "Looking for Bluetooth devicesâ€¦"
+                            if (scanning) "Looking for Bluetooth devices..."
                             else "No devices yet. Tap scan, then switch the ignition ON and hold MODE for 5s.",
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -237,7 +237,7 @@ fun PremiumHomeScreen(
                                 Spacer(Modifier.width(12.dp))
                                 Column(Modifier.weight(1f)) {
                                     Text(
-                                        "${if (d.isCluster) "â˜… " else ""}${d.name}",
+                                        "${if (d.isCluster) "â˜... " else ""}${d.name}",
                                         style = MaterialTheme.typography.bodyMedium,
                                         color = MaterialTheme.colorScheme.onSurface,
                                     )
@@ -269,7 +269,7 @@ fun PremiumHomeScreen(
                     shape = RoundedCornerShape(999.dp),
                     colors = ButtonDefaults.buttonColors(
                         containerColor = JupiterColors.High, contentColor = JupiterColors.Accent),
-                ) { Text(if (scanning) "Scanningâ€¦" else "Scan for devices") }
+                ) { Text(if (scanning) "Scanning..." else "Scan for devices") }
             }
         }
         Spacer(Modifier.height(14.dp))
@@ -418,8 +418,8 @@ fun PremiumNavigateScreen(
                 }
                 Spacer(Modifier.height(16.dp))
                 Row(horizontalArrangement = Arrangement.spacedBy(24.dp)) {
-                    NavInfo(if (instruction != null) "${instruction.distanceMeters}" else "â€”", "m", "Distance")
-                    NavInfo(if (instruction != null && instruction.etaMinutes > 0) "${instruction.etaMinutes}" else "â€”",
+                    NavInfo(if (instruction != null) "${instruction.distanceMeters}" else "-", "m", "Distance")
+                    NavInfo(if (instruction != null && instruction.etaMinutes > 0) "${instruction.etaMinutes}" else "-",
                         "min", "Est. time")
                     if (!instruction?.provider.isNullOrBlank()) {
                         NavInfo(instruction.provider, "", "Provider")
@@ -547,7 +547,7 @@ fun PremiumRidesScreen(
         Spacer(Modifier.height(10.dp))
         if (rides.isEmpty()) {
             PremiumCard {
-                Text("No rides yet. Connect to the cluster, ride, then disconnect â€” the trip is saved automatically.",
+                Text("No rides yet. Connect to the cluster, ride, then disconnect - the trip is saved automatically.",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     modifier = Modifier.padding(16.dp))
@@ -781,7 +781,7 @@ fun PremiumDevicesScreen(
             Spacer(Modifier.height(14.dp))
         }
 
-        SectionHeading("Nearby", trailing = if (scanning) "SCANNINGâ€¦" else "${devices.size} FOUND")
+        SectionHeading("Nearby", trailing = if (scanning) "SCANNING..." else "${devices.size} FOUND")
         Spacer(Modifier.height(10.dp))
         PremiumCard {
             Column(Modifier.padding(8.dp)) {
@@ -808,7 +808,7 @@ fun PremiumDevicesScreen(
                                 )
                                 Spacer(Modifier.width(12.dp))
                                 Column(Modifier.weight(1f)) {
-                                    Text("${if (d.isCluster) "â˜… " else ""}${d.name}",
+                                    Text("${if (d.isCluster) "â˜... " else ""}${d.name}",
                                         style = MaterialTheme.typography.bodyMedium,
                                         color = MaterialTheme.colorScheme.onSurface)
                                     Text(d.address, style = MaterialTheme.typography.labelSmall,
@@ -827,7 +827,7 @@ fun PremiumDevicesScreen(
                     shape = RoundedCornerShape(999.dp),
                     colors = ButtonDefaults.buttonColors(
                         containerColor = JupiterColors.High, contentColor = JupiterColors.Accent),
-                ) { Text(if (scanning) "Scanningâ€¦" else "Scan for devices") }
+                ) { Text(if (scanning) "Scanning..." else "Scan for devices") }
             }
         }
         Spacer(Modifier.height(28.dp))
