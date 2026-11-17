@@ -365,7 +365,11 @@ fun PremiumNavigateScreen(
                 }
                 Spacer(Modifier.height(16.dp))
                 Row(horizontalArrangement = Arrangement.spacedBy(24.dp)) {
-                    NavInfo(if (instruction != null) "${instruction.distanceMeters}" else "-", "m", "Distance")
+                    NavInfo(
+                        if (instruction != null && instruction.distanceMeters >= 0)
+                            "${instruction.distanceMeters}" else "-",
+                        "m", "Distance",
+                    )
                     NavInfo(if (instruction != null && instruction.etaMinutes > 0) "${instruction.etaMinutes}" else "-",
                         "min", "Est. time")
                     if (!instruction?.provider.isNullOrBlank()) {

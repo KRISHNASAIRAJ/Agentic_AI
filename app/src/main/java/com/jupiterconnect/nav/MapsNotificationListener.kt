@@ -67,11 +67,16 @@ class MapsNotificationListener : NotificationListenerService() {
                 NavParsing.findRemaining(*allText)
             }
         }
-        // Maps alternates between two notification formats: one carries the
-        // distance ("120 m · Turn right…"), the next drops it entirely
-        // ("Head east on 2nd Ln" + "Arrive 6:05 pm"). Sending 0 for the missing
-        // one makes the cluster blink between the real distance and "0m".
-        // Hold the last known distance when this notification has none.
+        // A different maneuver is a different step - never reuse the previous
+        // step's distance. Only hold the last value across re-posts of the SAME
+        // step (Maps removes and re-posts its notification on every update).
+        if (parsed.maneuver != lastManeuver) {
+            lastKnownDistance = -1
+            lastManeuver = parsed.maneuver
+        }
+        // When Maps publishes no distance at all (e.g. the start-of-route
+        // "Head towards ..." step), keep -1 as "unknown". Coercing it to 0
+        // made the cluster blink "0m" even though no distance was known.
         val effectiveDistance = if (distance >= 0) {
             lastKnownDistance = distance
             distance
@@ -86,7 +91,7 @@ class MapsNotificationListener : NotificationListenerService() {
             appendLine("SUB: $subText")
             appendLine("parsed.dist=${parsed.distanceMeters} fallback=$distance")
             appendLine("eta=${parsed.etaMinutes} pic=${parsed.pictogram}")
-            appendLine("lastKnown=$lastKnownDistance sent=${effectiveDistance.coerceAtLeast(0)}")
+            appendLine("lastKnown=$lastKnownDistance sent=$effectiveDistance")
             appendLine("KEYS: ${extras.keySet().joinToString()}")
             appendLine("hasContentView=${n.notification.contentView != null}")
         }
@@ -97,7 +102,7 @@ class MapsNotificationListener : NotificationListenerService() {
         ClusterRepository.navInstruction.value = NavInstruction(
             title = parsed.maneuver,
             street = parsed.street,
-            distanceMeters = effectiveDistance.coerceAtLeast(0),
+            distanceMeters = effectiveDistance,
             etaMinutes = parsed.etaMinutes,
             pictogram = parsed.pictogram,
             provider = n.packageName,
@@ -118,6 +123,7 @@ class MapsNotificationListener : NotificationListenerService() {
             ClusterRepository.navInstruction.value = null
             pendingClear = null
             lastKnownDistance = -1 // new route must not inherit the old distance
+            lastManeuver = ""
             activeKey = null
         }.also { handler.postDelayed(it, CLEAR_GRACE_MS) }
     }
@@ -128,6 +134,8 @@ class MapsNotificationListener : NotificationListenerService() {
     private var lastKnownDistance: Int = -1
     // Key of the Maps notification we accepted; only its removal clears nav.
     private var activeKey: String? = null
+    // Maneuver of the last accepted step, to detect a genuine step change.
+    private var lastManeuver: String = ""
 
     companion object {
         private const val CLEAR_GRACE_MS = 4000L

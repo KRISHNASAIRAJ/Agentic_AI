@@ -421,11 +421,13 @@ class ClusterService : Service() {
             while (isActive) {
                 if (ClusterRepository.mirroring.value) {
                     ClusterRepository.navInstruction.value?.let { step ->
-                        // A negative distance means "no distance in the
-                        // notification". Don't push -1 to the cluster (it
-                        // rendered as "-1m"); send 0 and omit the number from
-                        // the text row instead.
-                        val distance = step.distanceMeters.coerceAtLeast(0)
+                        // A negative distance means Maps published no distance
+                        // for this step (e.g. "Head towards ..." at route start).
+                        // Sending 0 made the cluster show a blinking "0m" even
+                        // though the value is UNKNOWN, not zero. Use the
+                        // protocol's 16-bit "not available" sentinel instead.
+                        val unknown = step.distanceMeters < 0
+                        val distance = if (unknown) 0xFFFF else step.distanceMeters
                         // Remaining distance (the cluster's "km left" field):
                         // use Maps' value when present, else 0 so the cluster
                         // applies its documented fallback to distance-to-turn.
