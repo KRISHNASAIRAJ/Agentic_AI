@@ -455,7 +455,7 @@ fun PremiumNavigateScreen(
                     NavInfo(if (instruction != null && instruction.etaMinutes > 0) "${instruction.etaMinutes}" else "-",
                         "min", "Est. time")
                     if (!instruction?.provider.isNullOrBlank()) {
-                        NavInfo(instruction.provider, "", "Provider")
+                        NavInfo(providerLabel(instruction.provider), "", "Provider")
                     }
                 }
             }
@@ -499,6 +499,16 @@ fun PremiumNavigateScreen(
         }
         Spacer(Modifier.height(28.dp))
     }
+}
+
+private fun providerLabel(pkg: String): String = when {
+    pkg.contains("google") -> "Google Maps"
+    pkg.contains("mappls") || pkg.contains("mmi.android") -> "MapMyIndia"
+    pkg.contains("organicmaps") -> "Organic Maps"
+    pkg.contains("here.app") -> "HERE"
+    pkg.contains("waze") -> "Waze"
+    pkg.contains("tomtom") -> "TomTom"
+    else -> pkg
 }
 
 @Composable

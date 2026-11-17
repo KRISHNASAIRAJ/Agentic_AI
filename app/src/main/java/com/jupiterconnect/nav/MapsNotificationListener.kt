@@ -1,6 +1,7 @@
 package com.jupiterconnect.nav
 
 import android.app.Notification
+import android.os.Bundle
 import android.service.notification.NotificationListenerService
 import android.service.notification.StatusBarNotification
 import com.jupiterconnect.transport.ClusterRepository
@@ -48,24 +49,16 @@ class MapsNotificationListener : NotificationListenerService() {
 
         val parsed = NavParsing.parse(title, text, bigText, subText)
 
-        // Google Maps sometimes puts the distance ("40 m") in a non-standard
-        // extra rather than the four fields above. Scan every CharSequence
-        // extra as a fallback so the cluster shows the real distance.
+        // Android 16 Maps uses a promoted "Live Update" notification. Its chip
+        // shows "40 m" from android.shortCriticalText, which is NOT one of
+        // TITLE/TEXT/BIG/SUB. Scan every extra value (not just CharSequences)
+        // so that chip distance reaches the cluster.
+        val extraTexts = collectExtraTexts(extras)
         var distance = parsed.distanceMeters
-        if (distance < 0) {
-            val allText = extras.keySet().mapNotNull { key ->
-                runCatching { extras.getCharSequence(key)?.toString() }.getOrNull()
-            }.filter { it.isNotBlank() }.toTypedArray()
-            distance = NavParsing.findDistance(*allText)
-        }
+        if (distance < 0) distance = NavParsing.findDistance(*extraTexts)
         // Total remaining distance, if Maps publishes it anywhere.
         val remaining = NavParsing.findRemaining(title, text, bigText, subText).let { r ->
-            if (r >= 0) r else {
-                val allText = extras.keySet().mapNotNull { key ->
-                    runCatching { extras.getCharSequence(key)?.toString() }.getOrNull()
-                }.toTypedArray()
-                NavParsing.findRemaining(*allText)
-            }
+            if (r >= 0) r else NavParsing.findRemaining(*extraTexts)
         }
         // A different maneuver is a different step - never reuse the previous
         // step's distance. Only hold the last value across re-posts of the SAME
@@ -92,7 +85,11 @@ class MapsNotificationListener : NotificationListenerService() {
             appendLine("parsed.dist=${parsed.distanceMeters} fallback=$distance")
             appendLine("eta=${parsed.etaMinutes} pic=${parsed.pictogram}")
             appendLine("lastKnown=$lastKnownDistance sent=$effectiveDistance")
-            appendLine("KEYS: ${extras.keySet().joinToString()}")
+            appendLine("shortCritical=${runCatching { extras.get("android.shortCriticalText")?.toString() }.getOrNull()}")
+            appendLine("info=${runCatching { extras.get("android.infoText")?.toString() }.getOrNull()}")
+            appendLine("progress=${extras.getInt("android.progress")}/${extras.getInt("android.progressMax")}")
+            appendLine("segments=${runCatching { extras.get("android.progressSegments")?.toString() }.getOrNull()}")
+            appendLine("EXTRAS: ${extras.keySet().joinToString { k -> "$k=${extras.get(k)}" }}")
             appendLine("hasContentView=${n.notification.contentView != null}")
         }
 
@@ -126,6 +123,20 @@ class MapsNotificationListener : NotificationListenerService() {
             lastManeuver = ""
             activeKey = null
         }.also { handler.postDelayed(it, CLEAR_GRACE_MS) }
+    }
+
+    /** Every readable string from a notification's extras, chip text first. */
+    private fun collectExtraTexts(extras: Bundle): Array<String> {
+        val values = mutableListOf<String>()
+        for (key in arrayOf("android.shortCriticalText", "shortCriticalText")) {
+            val v = runCatching { extras.get(key)?.toString() }.getOrNull()
+            if (!v.isNullOrBlank()) values += v
+        }
+        for (key in extras.keySet()) {
+            val v = runCatching { extras.get(key)?.toString() }.getOrNull()
+            if (!v.isNullOrBlank()) values += v
+        }
+        return values.distinct().toTypedArray()
     }
 
     private val handler = android.os.Handler(android.os.Looper.getMainLooper())
