@@ -121,12 +121,17 @@ fun JupiterApp() {
     }
 
     var permStatus by remember { mutableStateOf(currentStatus()) }
+
     fun startServiceIfReady() {
         permStatus = currentStatus()
         if (permStatus.bleReady) {
             ContextCompat.startForegroundService(context, Intent(context, ClusterService::class.java))
         }
     }
+
+    val launcher = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestMultiplePermissions(),
+    ) { startServiceIfReady() }
 
     // Scan must work from any screen: it re-checks permissions, starts the BLE
     // service if it is not running yet, and only then asks it to scan. Without
@@ -144,10 +149,6 @@ fun JupiterApp() {
             ClusterRepository.scan()
         }
     }
-
-    val launcher = rememberLauncherForActivityResult(
-        ActivityResultContracts.RequestMultiplePermissions(),
-    ) { startServiceIfReady() }
 
     // Ask on first launch AND refresh the displayed state every time the app
     // resumes (the user may have changed permissions in system Settings).

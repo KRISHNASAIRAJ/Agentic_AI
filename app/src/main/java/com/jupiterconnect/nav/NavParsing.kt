@@ -36,7 +36,14 @@ data class ParsedNav(
 /** Parse Google Maps / MapMyIndia notification extras without a maps SDK. */
 object NavParsing {
     private val DISTANCE = Regex("""(\d+(?:\.\d+)?)\s*(km|m|mi|ft)\b""", RegexOption.IGNORE_CASE)
-    private val ETA = Regex("""(\d+)\s*(?:min|mins|minutes)\b""", RegexOption.IGNORE_CASE)
+    private val ETA = Regex("""(\d+)\s*(?:min|mins|minutes|hr|hrs|hour|hours)\b""", RegexOption.IGNORE_CASE)
+
+    /** Arrival clock anywhere in a string: `1:39 pm`, `Arrive 1:39 pm`, `ETA 4:16 AM`. */
+    private val CLOCK = Regex("""\b(\d{1,2}):(\d{2})\s*([AaPp])\.?[Mm]\.?\b""")
+
+    /** Arrival sentences Maps puts in the text field, not a street name. */
+    private val ARRIVAL_TEXT = Regex(
+        """\s*(?:arrive|arrival|eta|expected)\b[^,;]*""", RegexOption.IGNORE_CASE)
 
     fun parse(title: String, text: String, bigText: String, subText: String): ParsedNav {
         val all = listOf(title, text, bigText, subText).joinToString(" ")
@@ -51,7 +58,29 @@ object NavParsing {
             }
         } ?: -1
 
-        val eta = ETA.find(all)?.groupValues?.get(1)?.toIntOrNull() ?: 0
+        // Duration first; if none, fall back to an arrival clock ("1:39 pm").
+        var eta = ETA.findAll(all).mapNotNull { m ->
+            val n = m.groupValues[1].toIntOrNull() ?: return@mapNotNull null
+            when (m.groupValues[0].substringAfter(m.groupValues[1]).trim().lowercase()) {
+                "hr", "hrs", "hour", "hours" -> n * 60
+                else -> n
+            }
+        }.sum()
+        if (eta == 0) {
+            val c = CLOCK.find(all)
+            if (c != null) {
+                var hour = c.groupValues[1].toIntOrNull() ?: 0
+                val minute = c.groupValues[2].toIntOrNull() ?: 0
+                val mer = c.groupValues[3]
+                if (mer.equals("p", true) && hour < 12) hour += 12
+                if (mer.equals("a", true) && hour == 12) hour = 0
+                val now = java.util.Calendar.getInstance()
+                val nowMin = now.get(java.util.Calendar.HOUR_OF_DAY) * 60 + now.get(java.util.Calendar.MINUTE)
+                var delta = hour * 60 + minute - nowMin
+                if (delta < 0) delta += 24 * 60
+                eta = delta
+            }
+        }
 
         val lower = all.lowercase()
         val (maneuver, pictogram) = when {
@@ -66,9 +95,16 @@ object NavParsing {
 
         // Google Maps posts distance as the title and the road as text;
         // TVS Connect posts the maneuver as title and metrics as text.
-        val street = listOf(text, bigText, title, subText)
-            .map { it.trim().replace(DISTANCE, "").trim(' ', '·', '-', ',') }
-            .firstOrNull { it.length > 2 && !it.matches(ETA) } ?: ""
+        // Strip arrival clocks and sentences ("Arrive 1:39 pm") before using
+        // text as a street name; otherwise the card shows a time as the road.
+        val street = listOf(text, bigText, subText, title)
+            .map {
+                it.replace(ARRIVAL_TEXT, "")
+                    .replace(CLOCK, "")
+                    .replace(DISTANCE, "")
+                    .trim(' ', '-', ',', '.')
+            }
+            .firstOrNull { it.length > 2 && !it.matches(ETA) && CLOCK.find(it) == null } ?: ""
 
         return ParsedNav(maneuver, street, distance, eta, pictogram)
     }
