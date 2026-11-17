@@ -72,9 +72,41 @@ private fun Screen(content: @Composable ColumnScope.() -> Unit) {
 // ------------------------------------------------------------------ HOME
 
 @Composable
-fun PremiumHomeScreen(telemetry: Telemetry, devices: List<ScannedDevice>, scanning: Boolean) {
+fun PremiumHomeScreen(
+    telemetry: Telemetry,
+    devices: List<ScannedDevice>,
+    scanning: Boolean,
+    permissions: PermissionStatus,
+    onGrantPermissions: () -> Unit,
+    onScan: () -> Unit,
+) {
     Screen {
         Spacer(Modifier.height(18.dp))
+
+        if (!permissions.bleReady) {
+            PremiumCard {
+                Column(Modifier.padding(16.dp)) {
+                    Caption("PERMISSIONS NEEDED", color = JupiterColors.Amber)
+                    Spacer(Modifier.height(8.dp))
+                    Text(
+                        "Bluetooth (${if (permissions.bluetooth) "on" else "off"}) and " +
+                            "Location (${if (permissions.location) "on" else "off"}) are " +
+                            "required to scan for the cluster.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurface,
+                    )
+                    Spacer(Modifier.height(12.dp))
+                    Button(
+                        onClick = onGrantPermissions,
+                        modifier = Modifier.fillMaxWidth(),
+                        shape = RoundedCornerShape(999.dp),
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = JupiterColors.Accent, contentColor = JupiterColors.OnPrimary),
+                    ) { Text("Grant permissions") }
+                }
+            }
+            Spacer(Modifier.height(14.dp))
+        }
         Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
             Column(Modifier.weight(1f)) {
                 Caption("GOOD RIDE, RIDER")
@@ -137,7 +169,7 @@ fun PremiumHomeScreen(telemetry: Telemetry, devices: List<ScannedDevice>, scanni
                 Spacer(Modifier.height(14.dp))
                 if (!telemetry.connected) {
                     Button(
-                        onClick = { ClusterRepository.scan() },
+                        onClick = onScan,
                         modifier = Modifier.fillMaxWidth(),
                         shape = RoundedCornerShape(999.dp),
                         colors = ButtonDefaults.buttonColors(
@@ -155,6 +187,75 @@ fun PremiumHomeScreen(telemetry: Telemetry, devices: List<ScannedDevice>, scanni
                             color = MaterialTheme.colorScheme.onSurfaceVariant)
                     }
                 }
+            }
+        }
+        Spacer(Modifier.height(14.dp))
+
+        // Nearby devices — the only way to pick and connect to the cluster.
+        SectionHeading(
+            "Nearby devices",
+            trailing = if (scanning) "SCANNING…" else "${devices.size} FOUND",
+        )
+        Spacer(Modifier.height(10.dp))
+        PremiumCard {
+            Column(Modifier.padding(8.dp)) {
+                if (devices.isEmpty()) {
+                    Column(Modifier.padding(10.dp)) {
+                        Text(
+                            if (scanning) "Looking for Bluetooth devices…"
+                            else "No devices yet. Tap scan, then switch the ignition ON and hold MODE for 5s.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                } else {
+                    devices.forEach { d ->
+                        Surface(
+                            onClick = { ClusterRepository.connect(d.address) },
+                            shape = RoundedCornerShape(14.dp),
+                            color = Color.Transparent,
+                        ) {
+                            Row(
+                                Modifier.fillMaxWidth().padding(12.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                            ) {
+                                Icon(
+                                    Icons.Rounded.BluetoothConnected,
+                                    contentDescription = null,
+                                    tint = if (d.isCluster) JupiterColors.Accent
+                                    else MaterialTheme.colorScheme.onSurfaceVariant,
+                                    modifier = Modifier.size(20.dp),
+                                )
+                                Spacer(Modifier.width(12.dp))
+                                Column(Modifier.weight(1f)) {
+                                    Text(
+                                        "${if (d.isCluster) "★ " else ""}${d.name}",
+                                        style = MaterialTheme.typography.bodyMedium,
+                                        color = MaterialTheme.colorScheme.onSurface,
+                                    )
+                                    Text(
+                                        d.address,
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    )
+                                }
+                                Text(
+                                    "${d.rssi} dBm",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                )
+                            }
+                        }
+                    }
+                }
+                Spacer(Modifier.height(8.dp))
+                Button(
+                    onClick = { ClusterRepository.scan() },
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(999.dp),
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = JupiterColors.High, contentColor = JupiterColors.Accent),
+                ) { Text(if (scanning) "Scanning…" else "Scan for devices") }
             }
         }
         Spacer(Modifier.height(14.dp))
@@ -205,8 +306,6 @@ fun PremiumHomeScreen(telemetry: Telemetry, devices: List<ScannedDevice>, scanni
                 if (telemetry.connected) "Disconnect" else "Connect") {
                 if (telemetry.connected) ClusterRepository.disconnect() else ClusterRepository.scan()
             }
-            SmallAction(Modifier.weight(1f), Icons.Rounded.BatteryFull, "Battery",
-                "${"%.1f".format(telemetry.batteryVoltage)} V", onClick = {})
         }
         Spacer(Modifier.height(28.dp))
     }
@@ -484,7 +583,12 @@ fun PremiumFindScreen(telemetry: Telemetry) {
 // ---------------------------------------------------------------- SETTINGS
 
 @Composable
-fun PremiumSettingsScreen(notificationAccess: Boolean, onOpenNotificationAccess: () -> Unit) {
+fun PremiumSettingsScreen(
+    notificationAccess: Boolean,
+    permissions: PermissionStatus = PermissionStatus(),
+    onGrantPermissions: () -> Unit = {},
+    onOpenNotificationAccess: () -> Unit,
+) {
     val context = LocalContext.current
     Screen {
         Spacer(Modifier.height(18.dp))
@@ -498,13 +602,18 @@ fun PremiumSettingsScreen(notificationAccess: Boolean, onOpenNotificationAccess:
         Spacer(Modifier.height(10.dp))
         PremiumCard {
             Column(Modifier.padding(8.dp)) {
-                PermRow("Bluetooth connect & scan", true)
-                PermRow("Nearby devices", true)
+                PermRow("Bluetooth connect & scan", permissions.bluetooth, onClick = onGrantPermissions)
+                PermRow("Location", permissions.location, onClick = onGrantPermissions)
+                PermRow("Notifications", permissions.notifications, onClick = onGrantPermissions)
                 PermRow("Notification access", notificationAccess, onClick = onOpenNotificationAccess)
-                PermRow("Location", true)
-                PermRow("Battery optimisation", true)
             }
         }
+        Spacer(Modifier.height(10.dp))
+        OutlinedButton(
+            onClick = onGrantPermissions,
+            modifier = Modifier.fillMaxWidth(),
+            shape = RoundedCornerShape(999.dp),
+        ) { Text("Re-request permissions") }
         Spacer(Modifier.height(14.dp))
 
         SectionHeading("Cluster")

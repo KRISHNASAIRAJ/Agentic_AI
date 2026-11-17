@@ -48,6 +48,7 @@ import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import com.jupiterconnect.transport.ClusterRepository
 import com.jupiterconnect.transport.ClusterService
+import com.jupiterconnect.ui.PermissionStatus
 import com.jupiterconnect.ui.PremiumFindScreen
 import com.jupiterconnect.ui.PremiumHomeScreen
 import com.jupiterconnect.ui.PremiumNavigateScreen
@@ -102,20 +103,68 @@ fun JupiterApp() {
         add(Manifest.permission.ACCESS_COARSE_LOCATION)
         if (Build.VERSION.SDK_INT >= 33) add(Manifest.permission.POST_NOTIFICATIONS)
     }.toTypedArray()
-    fun granted() = permissions.all {
-        ContextCompat.checkSelfPermission(context, it) == PackageManager.PERMISSION_GRANTED
+
+    fun isGranted(p: String) =
+        ContextCompat.checkSelfPermission(context, p) == PackageManager.PERMISSION_GRANTED
+    fun currentStatus(): PermissionStatus {
+        val bluetooth = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            isGranted(Manifest.permission.BLUETOOTH_SCAN) &&
+                isGranted(Manifest.permission.BLUETOOTH_CONNECT)
+        } else isGranted(Manifest.permission.ACCESS_FINE_LOCATION)
+        return PermissionStatus(
+            bluetooth = bluetooth,
+            location = isGranted(Manifest.permission.ACCESS_FINE_LOCATION) ||
+                isGranted(Manifest.permission.ACCESS_COARSE_LOCATION),
+            notifications = if (Build.VERSION.SDK_INT >= 33)
+                isGranted(Manifest.permission.POST_NOTIFICATIONS) else true,
+        )
     }
+
+    var permStatus by remember { mutableStateOf(currentStatus()) }
+    fun startServiceIfReady() {
+        permStatus = currentStatus()
+        if (permStatus.bleReady) {
+            ContextCompat.startForegroundService(context, Intent(context, ClusterService::class.java))
+        }
+    }
+
+    // Scan must work from any screen: it re-checks permissions, starts the BLE
+    // service if it is not running yet, and only then asks it to scan. Without
+    // this, tapping Scan while the service is null silently does nothing.
+    fun scanForDevices() {
+        permStatus = currentStatus()
+        if (!permStatus.bleReady) {
+            launcher.launch(permissions)
+            return
+        }
+        ContextCompat.startForegroundService(context, Intent(context, ClusterService::class.java))
+        // The service sets ClusterRepository.service in onCreate; posting the
+        // scan to the main thread lets that happen first.
+        android.os.Handler(android.os.Looper.getMainLooper()).post {
+            ClusterRepository.scan()
+        }
+    }
+
     val launcher = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions(),
-    ) {
-        if (granted()) ContextCompat.startForegroundService(context, Intent(context, ClusterService::class.java))
-    }
+    ) { startServiceIfReady() }
+
+    // Ask on first launch AND refresh the displayed state every time the app
+    // resumes (the user may have changed permissions in system Settings).
     LaunchedEffect(Unit) {
-        if (granted()) {
-            ContextCompat.startForegroundService(context, Intent(context, ClusterService::class.java))
-        } else {
+        permStatus = currentStatus()
+        if (!permStatus.bleReady || !permStatus.notifications) {
             launcher.launch(permissions)
+        } else {
+            startServiceIfReady()
         }
+    }
+    DisposableEffect(lifecycleOwner) {
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_RESUME) startServiceIfReady()
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
     }
 
     val tabs = listOf(
@@ -180,7 +229,14 @@ fun JupiterApp() {
     ) { padding ->
         Box(Modifier.padding(padding).fillMaxSize()) {
             when (selected) {
-                0 -> PremiumHomeScreen(telemetry, devices, scanning)
+                0 -> PremiumHomeScreen(
+                    telemetry = telemetry,
+                    devices = devices,
+                    scanning = scanning,
+                    permissions = permStatus,
+                    onGrantPermissions = { launcher.launch(permissions) },
+                    onScan = { scanForDevices() },
+                )
                 1 -> PremiumNavigateScreen(
                     instruction = navInstruction,
                     telemetry = telemetry,
@@ -194,6 +250,8 @@ fun JupiterApp() {
                 3 -> PremiumFindScreen(telemetry)
                 4 -> PremiumSettingsScreen(
                     notificationAccess = notificationAccess,
+                    permissions = permStatus,
+                    onGrantPermissions = { launcher.launch(permissions) },
                     onOpenNotificationAccess = {
                         context.startActivity(Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS))
                     },
