@@ -61,7 +61,7 @@ object ClusterRepository {
     val scanning = MutableStateFlow(false)
     val navInstruction = MutableStateFlow<NavInstruction?>(null)
     // Diagnostic snapshot of the last Maps notification and how it was parsed.
-    val navDebug = MutableStateFlow("BUILD: test-final-1\nwaiting for navigation notification...")
+    val navDebug = MutableStateFlow("")
     // Recent live speeds for the speedometer graph (oldest first).
     val speedHistory = MutableStateFlow<List<Int>>(emptyList())
     val mirroring = MutableStateFlow(true)
@@ -493,21 +493,24 @@ class ClusterService : Service() {
             while (isActive) {
                 if (ClusterRepository.mirroring.value) {
                     ClusterRepository.navInstruction.value?.let { step ->
-                        // TEST B: distanceMeters < 0 means "no distance in the
-                        // notification". Do not send a control frame at all -
-                        // sending 0 shows "0m"; skipping should make the cluster
-                        // hold its last real frame. The text row still goes out.
-                        val unknown = step.distanceMeters < 0
+                        // The cluster treats this field as plain metres: 0xFFFF
+                        // rendered as "65.5km". There is no "unknown" sentinel.
+                        // When Maps publishes no distance, send 0 so the arrow
+                        // and ETA keep updating; the chip-text fallback in the
+                        // listener should normally supply the real distance.
+                        val distance = step.distanceMeters.coerceAtLeast(0)
+                        // Remaining distance (the cluster's "km left" field).
                         val remaining = step.remainingMeters.coerceAtLeast(0)
-                        if (!unknown) {
-                            write(buildNavControl(
-                                step.distanceMeters,
-                                step.etaMinutes,
-                                remaining,
-                                step.pictogram,
-                            ))
-                        }
-                        write(buildNavText(step.displayLine))
+                        write(buildNavControl(
+                            distance,
+                            step.etaMinutes,
+                            remaining,
+                            step.pictogram,
+                        ))
+                        // While a voice reply is active, show it in this row so
+                        // the answer appears on the dash like the TVS demo.
+                        val text = ClusterRepository.currentReplyText() ?: step.displayLine
+                        write(buildNavText(text))
                     }
                 }
                 delay(1500)

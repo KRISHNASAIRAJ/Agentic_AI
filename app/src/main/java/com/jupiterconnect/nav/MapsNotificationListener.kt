@@ -4,7 +4,6 @@ import android.app.Notification
 import android.os.Bundle
 import android.service.notification.NotificationListenerService
 import android.service.notification.StatusBarNotification
-import com.jupiterconnect.protocol.sanitize
 import com.jupiterconnect.transport.ClusterRepository
 
 /**
@@ -80,13 +79,16 @@ class MapsNotificationListener : NotificationListenerService() {
         val foundRemaining = NavParsing.findRemaining(*remainingCandidates.toTypedArray()).let { r ->
             if (r >= 0) r else NavParsing.findTripDistance(*remainingCandidates.toTypedArray())
         }
-        // Stale guard: a different maneuver is a different step. Clear the
-        // cached distance so this step cannot inherit the previous step's
-        // distance when its own notification carries none.
-        if (parsed.maneuver != lastManeuver) {
-            lastKnownDistance = -1
-            lastManeuver = parsed.maneuver
-        }
+        // A metrics-only update (Mappls "5 m" + "15.5 km • 27 min • ETA") has
+        // no maneuver word. Parsing it fresh turns the arrow into "straight"
+        // and the text row into "5 m" - that is the visible blinking. Reuse the
+        // last real turn until a notification actually carries a new one.
+        val maneuver = if (hasManeuver) parsed.maneuver else lastManeuver.ifBlank { parsed.maneuver }
+        val pictogram = if (hasManeuver) parsed.pictogram else lastPictogram
+        val street = if (hasManeuver) parsed.street else lastStreet
+        lastManeuver = maneuver
+        lastPictogram = pictogram
+        lastStreet = street
 
         // Maps apps post several notifications and each update can omit some
         // fields. Hold each last real value so one partial update cannot blank
@@ -130,40 +132,34 @@ class MapsNotificationListener : NotificationListenerService() {
             else -> keep(foundRemaining, lastRemaining, lastRemainingAtMs)
         }
 
-        val instruction = NavInstruction(
-            title = parsed.maneuver,
-            street = parsed.street,
-            distanceMeters = effectiveDistance,
-            etaMinutes = effectiveEta,
-            pictogram = parsed.pictogram,
-            provider = n.packageName,
-            remainingMeters = effectiveRemaining,
-        )
-
-        // Diagnostic snapshot for the Rides tab. Every extras key/value is
-        // dumped so the missing distance, if any, can be located exactly.
+        // Diagnostic snapshot so one screenshot on the Rides tab shows exactly
+        // what Maps published and what we parsed/sent - no more guessing.
         ClusterRepository.navDebug.value = buildString {
-            appendLine("BUILD: test-final-1")
-            appendLine("pkg=${n.packageName} ongoing=${n.isOngoing} key=${n.key} activeKey=$activeKey")
             appendLine("TITLE: $title")
             appendLine("TEXT: $text")
             appendLine("BIG: $bigText")
             appendLine("SUB: $subText")
             appendLine("parsed.dist=${parsed.distanceMeters} fallback=$distance")
-            appendLine("lastKnown=$lastKnownDistance sent=$effectiveDistance unknown=${effectiveDistance < 0}")
-            appendLine("eta=$effectiveEta pic=${parsed.pictogram} maneuver=${parsed.maneuver}")
+            appendLine("eta=${parsed.etaMinutes} pic=${parsed.pictogram}")
+            appendLine("lastKnown=$lastKnownDistance sent=$effectiveDistance")
             appendLine("remaining=$effectiveRemaining anchor=$remainingAnchorMeters odo=$remainingAnchorOdoKm")
-            appendLine("android.shortCriticalText=${runCatching { extras.get("android.shortCriticalText")?.toString() }.getOrNull()}")
-            appendLine("android.infoText=${runCatching { extras.get("android.infoText")?.toString() }.getOrNull()}")
-            appendLine("android.progress=${extras.getInt("android.progress")}/${extras.getInt("android.progressMax")}")
-            appendLine("android.progressSegments=${runCatching { extras.get("android.progressSegments")?.toString() }.getOrNull()}")
+            appendLine("shortCritical=${runCatching { extras.get("android.shortCriticalText")?.toString() }.getOrNull()}")
+            appendLine("info=${runCatching { extras.get("android.infoText")?.toString() }.getOrNull()}")
+            appendLine("progress=${extras.getInt("android.progress")}/${extras.getInt("android.progressMax")}")
+            appendLine("segments=${runCatching { extras.get("android.progressSegments")?.toString() }.getOrNull()}")
+            appendLine("EXTRAS: ${extras.keySet().joinToString { k -> "$k=${extras.get(k)}" }}")
             appendLine("hasContentView=${n.notification.contentView != null}")
-            appendLine("textSent=${sanitize(instruction.displayLine)}")
-            appendLine("EXTRAS:")
-            for (k in extras.keySet()) appendLine("  $k=${extras.get(k)}")
         }
 
-        ClusterRepository.navInstruction.value = instruction
+        ClusterRepository.navInstruction.value = NavInstruction(
+            title = maneuver,
+            street = street,
+            distanceMeters = effectiveDistance,
+            etaMinutes = effectiveEta,
+            pictogram = pictogram,
+            provider = n.packageName,
+            remainingMeters = effectiveRemaining,
+        )
     }
 
     override fun onNotificationRemoved(sbn: StatusBarNotification?) {
@@ -198,6 +194,8 @@ class MapsNotificationListener : NotificationListenerService() {
             remainingAnchorMeters = -1
             remainingAnchorOdoKm = -1.0
             lastManeuver = ""
+            lastPictogram = NavInstruction.STRAIGHT
+            lastStreet = ""
             activeKey = null
         }.also { handler.postDelayed(it, CLEAR_GRACE_MS) }
     }
@@ -230,9 +228,11 @@ class MapsNotificationListener : NotificationListenerService() {
     private var remainingAnchorOdoKm: Double = -1.0
     // Key of the Maps notification we accepted; only its removal clears nav.
     private var activeKey: String? = null
-    // Last parsed maneuver. A change means a new step, so the cached distance
-    // must not carry over (stale guard).
+    // Last real turn, reused for metrics-only updates so the arrow and text
+    // row do not blink between the real instruction and a bare distance.
     private var lastManeuver: String = ""
+    private var lastPictogram: Int = NavInstruction.STRAIGHT
+    private var lastStreet: String = ""
 
     companion object {
         private const val CLEAR_GRACE_MS = 4000L
