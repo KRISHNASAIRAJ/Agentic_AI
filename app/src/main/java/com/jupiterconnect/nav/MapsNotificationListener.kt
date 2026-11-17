@@ -24,12 +24,12 @@ class MapsNotificationListener : NotificationListenerService() {
         val bigText = extras.getCharSequence(Notification.EXTRA_BIG_TEXT)?.toString()?.trim().orEmpty()
         val subText = extras.getCharSequence(Notification.EXTRA_SUB_TEXT)?.toString()?.trim().orEmpty()
 
-        val looksLikeNav = n.packageName in MAP_PACKAGES ||
-            extras.containsKey("android.app.extra.MAPS_MODE") ||
-            extras.containsKey("navigation.mode") ||
-            (n.isOngoing && title.isNotEmpty() && (text.isNotEmpty() || bigText.isNotEmpty()))
-
-        if (!looksLikeNav) return
+        // STRICT whitelist only. No heuristic or flag-based detection: the
+        // cluster must show ONLY navigation from a known maps app, never a
+        // call, message, or any other ongoing notification that happens to
+        // carry a title and text.
+        if (n.packageName !in MAP_PACKAGES) return
+        if (!n.isOngoing) return
 
         val parsed = NavParsing.parse(title, text, bigText, subText)
         ClusterRepository.navInstruction.value = NavInstruction(

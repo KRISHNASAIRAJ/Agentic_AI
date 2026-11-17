@@ -61,21 +61,33 @@ fun sanitize(input: String): String {
     return sb.toString()
 }
 
-/** 20-byte mobile-data keepalive with the Jupiter checksum at byte 18. */
-fun buildKeepalive(): ByteArray {
+/**
+ * 20-byte `0x5B 0x4A` mobile-data keepalive, matching the layout recovered
+ * from the official TVS Connect app (see TVSRide's Keepalive.kt).
+ *
+ * Two details this fixes versus the earlier version, both visible on the
+ * cluster:
+ *  - HOUR is 12-hour (Calendar.HOUR, 0..11, with 0 rewritten to 12). Writing
+ *    HOUR_OF_DAY put 14 on a cluster expecting 2, so the dash clock was wrong.
+ *  - Byte 18 is ZERO, not a checksum. A checksum there makes the cluster read
+ *    the keepalive as corrupt, which is what produced the flickering/glitchy
+ *    nav area. The mobile-data frame carries no checksum.
+ */
+fun buildKeepalive(findMy: Boolean = false): ByteArray {
     val b = ByteArray(20)
     b[0] = 0x5B
     b[1] = OutboundId.MOBILE_DATA.toByte()
     val now = Calendar.getInstance()
-    b[6] = now.get(Calendar.HOUR_OF_DAY).toByte()
+    val hour = now.get(Calendar.HOUR).let { if (it == 0) 12 else it }
+    b[6] = hour.toByte()
     b[7] = now.get(Calendar.MINUTE).toByte()
     b[8] = now.get(Calendar.SECOND).toByte()
     b[9] = if (now.get(Calendar.AM_PM) == Calendar.PM) 1 else 0
-    b[11] = 0x04
+    b[17] = if (findMy) 1 else 0
     b[12] = now.get(Calendar.DAY_OF_MONTH).toByte()
     b[13] = (now.get(Calendar.MONTH) + 1).toByte()
     b[14] = (now.get(Calendar.YEAR) % 100).toByte()
-    b[18] = (255 - (b.take(18).sumOf { u8(it) } % 256)).toByte()
+    // [18] stays zero — no checksum on this frame.
     b[19] = 0xFF.toByte()
     return b
 }

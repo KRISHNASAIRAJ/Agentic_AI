@@ -15,14 +15,18 @@ import org.junit.Test
 class ProtocolTest {
 
     @Test
-    fun keepalive_has_jupiter_checksum_and_terminator() {
+    fun keepalive_has_no_checksum_and_12_hour_clock() {
         val b = buildKeepalive()
         assertEquals(20, b.size)
         assertEquals(0x5B, b[0].toInt() and 0xFF)
         assertEquals(0x4A, b[1].toInt() and 0xFF)
-        val expected = 255 - (b.take(18).sumOf { it.toInt() and 0xFF } % 256)
-        assertEquals(expected, b[18].toInt() and 0xFF)
+        // Byte 18 is ZERO, not a checksum — the mobile-data frame has none.
+        assertEquals(0, b[18].toInt() and 0xFF)
         assertEquals(0xFF, b[19].toInt() and 0xFF)
+        // 12-hour clock, 1..12; AM/PM flag in byte 9.
+        val hour = b[6].toInt() and 0xFF
+        assertTrue("hour must be 1..12", hour in 1..12)
+        assertTrue("AM/PM must be 0 or 1", (b[9].toInt() and 0xFF) in 0..1)
     }
 
     @Test

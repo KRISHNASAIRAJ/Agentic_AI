@@ -376,13 +376,21 @@ class ClusterService : Service() {
             while (isActive) {
                 if (ClusterRepository.mirroring.value) {
                     ClusterRepository.navInstruction.value?.let { step ->
+                        // A negative distance means "no distance in the
+                        // notification". Don't push -1 to the cluster (it
+                        // rendered as "-1m"); send 0 and omit the number from
+                        // the text row instead.
+                        val distance = step.distanceMeters.coerceAtLeast(0)
                         write(buildNavControl(
-                            step.distanceMeters.coerceAtLeast(0),
+                            distance,
                             step.etaMinutes,
-                            0,
+                            distance, // remaining falls back to distance
                             step.pictogram,
                         ))
-                        write(buildNavText(step.displayLine))
+                        val line = if (step.distanceMeters >= 0) {
+                            "$distance m ${step.displayLine}".trim()
+                        } else step.displayLine
+                        write(buildNavText(line))
                     }
                 }
                 delay(1500)
