@@ -6,6 +6,12 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.sp
 
+/** Tabular numerals for telemetry readouts only. */
+val NumberStyle = TextStyle(
+    fontFamily = FontFamily.Monospace,
+    fontWeight = FontWeight.Medium,
+)
+
 /** Inter-like scale from DESIGN.md; uses the system font until Inter is bundled. */
 val JupiterTypography = Typography(
     displayLarge = TextStyle(
