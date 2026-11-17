@@ -1,24 +1,12 @@
-# IDE / OS
-.idea/
 *.iml
+.gradle/
+/local.properties
+/.idea/
 .DS_Store
-.vscode/
-
-# Android
-android/local.properties
-android/.gradle/
-android/build/
-android/app/build/
-android/captures/
-android/.kotlin/
-*.apk
-design/
-
-# Backend / Java
-target/
-backend/.mvn/wrapper/maven-wrapper.jar
-*.class
-*.log
-
-# Keep wrapper jars
-!android/gradle/wrapper/gradle-wrapper.jar
+/build
+/app/build
+/captures
+.externalNativeBuild
+.cxx
+local.properties
+keystore.properties

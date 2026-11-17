@@ -1,67 +1,148 @@
-# SMS Detector — Privacy-first SMS Organizer
+# Jupiter Connect
 
-An Android SMS app (Kotlin + Jetpack Compose) with an on-device spam/scam classifier and a Spring Boot threat-intelligence backend. UI follows the Stitch designs in the `SMS` project: **Conversations Inbox, RCS Chat Thread, Security & Spam Protection, Scheduled & Smart Tools**.
+A standalone Android companion app for the **2026 TVS Jupiter 125 (Copper
+Matte)**. It talks to the instrument cluster over TVS SmartXonnect Bluetooth
+Low Energy, shows live telemetry and mirrors turn-by-turn navigation from the
+maps app you already use.
 
-> **Privacy principle:** message bodies never leave the device. The backend only receives SHA-256 hashes, sender hashes, and feedback labels.
+**No TVS account. No TVS cloud. No telemetry upload.**
+
+> Personal, non-commercial interoperability project. See [CREDITS.md](CREDITS.md)
+> and the disclaimer at the end of this file.
+
+---
+
+## What it does today
+
+| Feature | Status |
+|---|---|
+| Scan for `TVSBT…` cluster and connect over BLE GATT | ✅ |
+| Foreground service with 2-second keepalive and reconnect backoff | ✅ |
+| Live telemetry: speed, odometer, fuel bars, engine/intake temperature, battery voltage, distance-to-empty, RPM | ✅ |
+| Navigation mirroring from Google Maps / MapMyIndia / Waze and others | ✅ |
+| Five-screen Material 3 UI in the shared dark design language | ✅ |
+| Ride history and last-parked storage | ⏳ planned |
+
+### Screen previews
+
+Open [`design/index.html`](design/index.html) in a browser for all five screens,
+or view the rendered [`design/preview.png`](design/preview.png).
+
+| Home | Navigate |
+|---|---|
+| Connection hero, live telemetry tiles, cluster discovery | Navigation HUD, mirror switch, packet stream |
+
+| Rides | Find | Settings |
+|---|---|---|
+| Ride history | Last-parked + find-me | Permissions and cluster info |
+
+---
+
+## Quick start
+
+Requirements: **JDK 17–21**, Android SDK platform **35**, Android device with
+BLE (API 26+).
+
+```powershell
+# local.properties must contain: sdk.dir=<path to Android SDK>
+.\gradlew.bat :app:assembleDebug
+adb install -r app\build\outputs\apk\debug\app-debug.apk
+```
+
+On the scooter:
+
+1. Switch **ignition ON** (the engine does not need to run).
+2. Hold the **MODE** button on the speedometer for ~5 s until the cluster shows
+   `BT PAIR`.
+3. Open the app, grant Bluetooth, Location and Notifications.
+4. On **Home**, tap **Find cluster**, then choose the `TVSBT…` device.
+5. For navigation, allow **Notification access** for Jupiter Connect in
+   Android Settings, then start a route in Google Maps.
+
+Without notification access the app connects fine but navigation mirroring
+silently does nothing — this is an Android platform rule, not an app bug.
+
+---
 
 ## Architecture
 
 ```
-android/                     Kotlin / Compose mobile client
-├── app/src/main/java/com/smsdetector/app/
-│   ├── data/db/             Room entities, DAOs (conversations, messages, scheduled, blocklist)
-│   ├── data/detection/      On-device rule engine (OTP / Bank / Promo / Spam)
-│   ├── data/repository/     SMS provider bridge, send/receive, contact names
-│   ├── receiver/            SMS_RECEIVED + BOOT_COMPLETED receivers
-│   ├── work/                WorkManager scheduled-message worker
-│   └── ui/                  inbox, thread, security, scheduled + theme/navigation
-└── app/src/{test,androidTest}/  unit, smoke and E2E tests
-
-backend/                     Maven multi-module Spring Boot 3.4 (Java 21)
-├── sms-common/              Shared DTOs (hash-only requests/responses)
-├── detection-service/       POST /classify, /feedback, GET /signatures, /stats
-├── reputation-service/      GET /{senderHash}, POST /batch, /report
-└── docker-compose.yml       PostgreSQL + both services
+app/src/main/java/com/jupiterconnect/
+├── MainActivity.kt                  Compose shell + five screens
+├── protocol/
+│   ├── Constants.kt                 GATT UUIDs, frame IDs, Telemetry model
+│   └── JupiterProtocol.kt           byte decoders + packet builders
+├── nav/
+│   ├── MapsNotificationListener.kt  reads turn-by-turn from any maps app
+│   └── NavParsing.kt                normalises instruction + pictogram
+├── transport/
+│   └── ClusterService.kt            BLE GATT, keepalive, navigation bridge
+└── ui/theme/                        Color / Type / Theme
 ```
 
-## Run locally
+### Data flow
 
-### Android
-1. Copy `android/local.properties.example` → `android/local.properties` and set your SDK path.
-2. Open `android/` in Android Studio, or:
-   ```bash
-   cd android
-   ./gradlew assembleDebug        # APK: app/build/outputs/apk/debug/app-debug.apk
-   ./gradlew testDebugUnitTest    # JVM unit tests
-   ./gradlew connectedDebugAndroidTest  # instrumented tests (device/emulator)
-   ```
+```
+cluster → BLE notify → decodeFrame() → ClusterRepository.telemetry → Compose UI
 
-### Backend
-```bash
-cd backend
-docker compose up -d postgres
-./mvnw verify                     # unit + integration tests (H2 for tests)
-./mvnw -pl detection-service spring-boot:run
+maps notification → MapsNotificationListener → NavInstruction
+                  → NavigationBridge (5A 4E control every 1.5 s + 5B 4F text)
+                  → BLE write → cluster
 ```
 
-## CI / CD (GitHub Actions)
+### Protocol notes
 
-Workflow: `.github/workflows/android-backend-ci.yml`
+The SmartXonnect cluster is a BLE GATT peripheral:
 
-| Phase | Job | What it does |
-|---|---|---|
-| 1 | `validate-env` | Verifies JDK 21, required files, Gradle configuration |
-| 2 | `unit-tests` | Android JVM tests + backend Surefire tests |
-| 3 | `integration-tests` | Backend Failsafe `*IT` tests with H2 |
-| 4 | `smoke-tests` | Instrumented `SmokeTest` on an emulator (KVM) |
-| 5 | `e2e-tests` | Instrumented `EndToEndTest` journey on an emulator |
-| 6 | `build-apk` | Builds `SMSDetector-debug.apk`, uploads downloadable artifact + SHA-256 |
+- Service `5456534D-5647-5341-5342-454E544F5251`
+- Write characteristic `00005352-…`, notify characteristic `00005354-…`
+- 20-byte frames: 2-byte header, 17-byte payload, `0xFF` terminator
+- Keepalive `5B 4A` every 2 s (clock, signal, battery, find-me flag, checksum)
+- Navigation `5A 4E` control (distance, ETA, pictogram) and `5B 4F` text
+- Telemetry: `0x10` speed/odometer/fuel/RPM, `0x18` temperatures and battery,
+  `0x19` economy and distance-to-empty — all big-endian
+- Cluster renders ASCII only; other characters are folded to `X`
 
-The APK is downloadable from the **artifacts** section of the successful Actions run (retained 30 days).
+Reliability details copied from the reference implementation: serialised GATT
+writes, MTU exchange before service discovery, closing the GATT client on
+disconnect, keepalive every 2 s, and 5/10/20/40/60 s reconnect backoff.
+
+---
+
+## CI
+
+`.github/workflows/android.yml` runs on every push and pull request:
+
+1. **validate-env** — JDK 21, Gradle wrapper, project files
+2. **unit-tests** — JVM tests
+3. **build** — assembles the debug APK and uploads it as an artifact
+
+---
+
+## How this project was researched
+
+The full workflow — four information streams, provenance tags, the
+simulate → capture → correct loop, and the reliability lessons — is in
+[`HOW_THEY_BUILT_IT.md`](HOW_THEY_BUILT_IT.md) and in the 12-slide PowerPoint
+[`docs/how-it-was-built.pptx`](docs/how-it-was-built.pptx).
+
+Regenerate the deck with `python docs/make_ppt.py`.
+
+---
 
 ## Roadmap
-- [x] Phase 1: 4-screen SMS client + default-SMS-handler flow + Room
-- [x] Phase 2: On-device detection, spam folder, OTP auto-delete
-- [x] Phase 3: Spring Boot microservices (hash-only intel feed)
-- [x] Phase 4: CI pipeline with all test phases + APK artifact
-- [ ] Phase 5: Python ML scoring service + C++ JNI rule core, signed release APK
+
+1. Ride history and last-parked location persistence.
+2. Verify pictogram IDs and text-row layout on the real 2026 Jupiter cluster.
+3. Caller ID / SMS mirroring, rider-name greeting, find-me verification.
+4. Harden notification parsing for more map providers.
+
+---
+
+## Disclaimer
+
+This is an independent interoperability project. It is not affiliated with,
+endorsed by, or connected to TVS Motor Company. TVS, Jupiter and SmartXonnect
+are trademarks of their respective owners. Use at your own risk; do not
+interact with the app while riding. Protocol documentation is derived from
+public sources with attribution in [CREDITS.md](CREDITS.md).
