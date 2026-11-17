@@ -1,47 +1,58 @@
 <#
 .SYNOPSIS
-    Install Jupiter Connect over ADB — no need to disable Google Play Protect.
+    Prepare a correctly-signed Jupiter Connect APK for install on your phone.
 
 .DESCRIPTION
-    ADB installs are trusted by Android and do not show the "App blocked to
-    protect your device" dialog that appears when tapping a new APK in a file
-    manager. Play Protect stays ON the whole time.
+    Builds the app, verifies it is signed with YOUR project key (CN=Jupiter
+    Connect), and copies it to Downloads as JupiterConnect.apk — a fixed name
+    you can copy to your phone and tap.
 
-    Enable USB debugging on the phone first:
-      Settings → About phone → tap "Build number" 7 times
-      Settings → System → Developer options → USB debugging → ON
-    Then connect the phone by USB and accept the "Allow USB debugging" prompt.
+    WHY THIS EXISTS
+    The app on your phone is signed with your unique project key. The
+    "app-debug.apk" produced by GitHub Actions is signed with the shared
+    Android Debug key instead, so tapping it shows "package conflicts" and
+    forces an uninstall. ALWAYS use the JupiterConnect.apk this script places
+    in Downloads — never the CI app-debug.apk.
+
+    In-place updates (same signature) keep your permissions and the
+    "Allow restricted settings" grant, so you never re-grant them again.
+
+    You do NOT need developer options: just copy the APK to your phone and tap
+    it in the file manager.
 #>
 [CmdletBinding()]
 param(
-    [string]$Apk = "app\build\outputs\apk\release\app-release.apk",
-    [switch]$Launch
+    [switch]$SkipBuild
 )
 
 $ErrorActionPreference = 'Stop'
 $root = Split-Path -Parent $MyInvocation.MyCommand.Path
-$apkPath = if ([IO.Path]::IsPathRooted($Apk)) { $Apk } else { Join-Path $root $Apk }
+$env:ANDROID_HOME = "C:\Users\krish\AppData\Local\Android\Sdk"
 
-if (-not (Test-Path $apkPath)) {
-    throw "APK not found: $apkPath. Build it first with: .\\gradlew.bat :app:assembleRelease"
+if (-not $SkipBuild) {
+    Write-Host "Building Jupiter Connect..."
+    Push-Location $root
+    try {
+        & .\gradlew.bat :app:assembleDebug --no-daemon
+    } finally {
+        Pop-Location
+    }
+    if ($LASTEXITCODE -ne 0) { throw "Build failed." }
 }
 
-$adb = (Get-Command adb -ErrorAction SilentlyContinue).Source
-if (-not $adb) {
-    $candidate = Join-Path $env:LOCALAPPDATA "Android\Sdk\platform-tools\adb.exe"
-    if (Test-Path $candidate) { $adb = $candidate }
+$apk = Join-Path $root "app\build\outputs\apk\debug\app-debug.apk"
+if (-not (Test-Path $apk)) { throw "APK not found: $apk" }
+
+# Refuse to hand over a wrongly-signed APK — that is what causes the conflict.
+$bt = Get-ChildItem "$env:ANDROID_HOME\build-tools" -Directory |
+    Sort-Object Name -Descending | Select-Object -First 1
+$certs = & "$($bt.FullName)\apksigner.bat" verify --print-certs $apk 2>&1 | Out-String
+if ($certs -notmatch 'CN=Jupiter Connect') {
+    throw "APK is NOT signed with the project key — refusing. Check app/build.gradle.kts signingConfig."
 }
-if (-not $adb) { throw "adb not found. Install Android platform-tools or add it to PATH." }
+Write-Host "Signature verified:" ($certs | Select-String 'DN:' | Select-Object -First 1).Line.Trim()
 
-Write-Host "Using: $adb"
-& $adb devices
-Write-Host "Installing $apkPath ..."
-& $adb install -r -d $apkPath
-
-if ($LASTEXITCODE -ne 0) { throw "adb install failed with code $LASTEXITCODE" }
-
-Write-Host "Installed. Play Protect remains enabled."
-if ($Launch) {
-    & $adb shell monkey -p com.jupiterconnect -c android.intent.category.LAUNCHER 1 | Out-Null
-    Write-Host "Launched Jupiter Connect."
-}
+$target = "C:\Users\krish\Downloads\JupiterConnect.apk"
+Copy-Item $apk $target -Force
+Write-Host "Ready: $target"
+Write-Host "Copy this file to your phone and tap it to update in place. Do NOT use the CI app-debug.apk."
