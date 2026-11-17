@@ -46,7 +46,31 @@ BLE (API 26+).
 ```powershell
 # local.properties must contain: sdk.dir=<path to Android SDK>
 .\gradlew.bat :app:assembleDebug
-adb install -r app\build\outputs\apk\debug\app-debug.apk
+
+# or build a release APK signed with your own local keystore
+.\gradlew.bat :app:assembleRelease
+adb install -r app\build\outputs\apk\release\app-release.apk
+```
+
+### Play Protect blocks the install
+
+Play Protect flags brand-new sideloaded APKs signed with the shared **Android
+Debug** key, especially when the app also asks for Bluetooth, location and
+notification access. That is a reputation heuristic, not a code defect.
+The release build above uses your own unique keystore (`signing/jupiter.jks`,
+gitignored), which removes the debug-key signature problem.
+
+If Play Protect still says *"App blocked to protect your device"*:
+
+1. **Play Store → profile icon → Play Protect → Settings (gear) → Scan apps with
+   Play Protect → Off**
+2. Install the APK again.
+3. Turn the scan back on afterwards.
+
+Alternatively install over ADB, which does not show the blocking dialog:
+
+```powershell
+adb install -r app\build\outputs\apk\release\app-release.apk
 ```
 
 On the scooter:

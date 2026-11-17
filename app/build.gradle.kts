@@ -1,3 +1,5 @@
+import java.util.Properties
+
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
@@ -16,10 +18,28 @@ android {
         versionName = "0.1.0"
     }
 
+    signingConfigs {
+        // Local keystore is never committed; CI falls back to the debug key.
+        val props = Properties().apply {
+            val f = rootProject.file("keystore.properties")
+            if (f.exists()) f.inputStream().use { load(it) }
+        }
+        if (props.containsKey("storeFile")) {
+            create("release") {
+                storeFile = rootProject.file(props.getProperty("storeFile"))
+                storePassword = props.getProperty("storePassword")
+                keyAlias = props.getProperty("keyAlias")
+                keyPassword = props.getProperty("keyPassword")
+            }
+        }
+    }
+
     buildTypes {
         debug { isMinifyEnabled = false }
         release {
             isMinifyEnabled = false
+            signingConfig = signingConfigs.findByName("release")
+                ?: signingConfigs.getByName("debug")
             proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
         }
     }
