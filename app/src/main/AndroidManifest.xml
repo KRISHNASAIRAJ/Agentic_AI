@@ -45,44 +45,12 @@
          nothing re-attaches without this. -->
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
 
-    <!-- Discovers which navigation app is actually installed, so mirroring is
-         not limited to a hardcoded package list. Read-only; sees no app data. -->
-    <uses-permission android:name="android.permission.QUERY_ALL_PACKAGES"
-        tools:ignore="QueryAllPackagesPermission" />
-
-    <!-- "Last Parked" has to be recorded while the phone is in a pocket with
-         the screen off, which only a background location grant permits. -->
-    <uses-permission android:name="android.permission.ACCESS_BACKGROUND_LOCATION" />
-    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_LOCATION" />
-
-    <!-- Caller ID on the cluster. TVS's Ntorq 125 manual lists "CALLER ID and
-         SMS notification on speedometer" as a documented feature of the
-         connected cluster, with a green smart-connect LED for an incoming call
-         or message, so this is now requested rather than scoped out.
-
-         READ_PHONE_STATE  - the phone is ringing / in a call
-         READ_CALL_LOG     - missed calls, which the cluster shows like an SMS
-         READ_CONTACTS     - resolve a number to a name for the display
-
-         What the data can do: the app now holds INTERNET for map tiles and
-         routing (see above), so the old "nowhere to send them" argument no
-         longer applies and is not repeated here. The replacement guarantee is
-         narrower and checkable: no code path transmits contact or call-log
-         data. The only consumers are the caller-ID formatter (renders as
-         bytes on the cluster) and the on-device contact resolver. The
-         network call sites are confined to dev.tvsopen.nav.maps; grep
-         HttpURLConnection to verify nothing else opens a connection.
-
-         NOT requested: ANSWER_PHONE_CALLS and CALL_PHONE. Both are hard
-         restricted from Android 10 — only the app the user has set as the
-         default phone handler can ever hold them, and a third-party app asking
-         is denied instantly. Declaring them would mean shipping a permission
-         that can never be granted and a prompt that can only ever fail.
-         Answering a call from the cluster would first require becoming the
-         default dialer, which is a full InCallService and a different app. -->
-    <uses-permission android:name="android.permission.READ_PHONE_STATE" />
-    <uses-permission android:name="android.permission.READ_CALL_LOG" />
-    <uses-permission android:name="android.permission.READ_CONTACTS" />
+    <!-- Caller ID comes from the *notifications* of the phone/messaging apps
+         via the notification listener above. We deliberately do NOT declare
+         READ_PHONE_STATE, READ_CALL_LOG or READ_CONTACTS: no code path reads
+         those stores, and they are the largest Play Protect risk signal. The
+         cluster still shows the name/number carried in the notification; only
+         contact-name resolution is lost, which is cosmetic. -->
 
     <!-- Parked location, only when the user asks for it -->
     <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />

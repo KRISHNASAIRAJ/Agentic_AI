@@ -128,15 +128,9 @@ class MainActivity : AppCompatActivity() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             missing += Manifest.permission.POST_NOTIFICATIONS
         }
-        // Caller ID. Denying these costs only the cluster's caller display, and
-        // the navigation mirror works without them.
-        missing += Manifest.permission.READ_PHONE_STATE
-        missing += Manifest.permission.READ_CONTACTS
-        missing += Manifest.permission.READ_CALL_LOG
-
-        // Request CALL_PHONE only when it is declared (it is intentionally not:
-        // Android restricts it to the default dialer). READ_PHONE_STATE,
-        // READ_CONTACTS and READ_CALL_LOG are all runtime-grantable.
+        // No call-log / contacts / phone-state permissions: caller ID is read
+        // from notifications, and these three permissions are the main reason
+        // sideloaded builds get flagged by Play Protect.
 
         val needed = missing.filter {
             ContextCompat.checkSelfPermission(this, it) != PackageManager.PERMISSION_GRANTED

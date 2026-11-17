@@ -34,15 +34,27 @@ Rebuild with `.\gradlew.bat :app:assembleDebug` to get the uniquely-signed APK.
 
 ## 2. It requests a lot of sensitive permissions
 
-Play Protect weighs the permission set. This app asks for Bluetooth, fine and
-background location, notification-listener access, **contacts, call log and
-phone state**, `QUERY_ALL_PACKAGES`, battery-optimisation exemption, boot
-receiver and `INTERNET`. Each one is justified in `AndroidManifest.xml` (the
-caller-ID and map-tile features need them), but together they look like a
-stalkerware profile to an automated scanner.
+Play Protect weighs the permission set. The original build asked for Bluetooth,
+fine **and background** location, notification-listener access, **contacts, call
+log and phone state**, `QUERY_ALL_PACKAGES`, battery-optimisation exemption,
+boot receiver and `INTERNET`. Several of those are not actually needed:
 
-This is the same permission set TVSRide ships — see the manifest comments for
-the rationale — so it is not a change we introduced.
+- `QUERY_ALL_PACKAGES` — no code path enumerates installed apps. Removed.
+- `READ_CALL_LOG` / `READ_CONTACTS` / `READ_PHONE_STATE` — caller ID is read
+  from *notification content*, not from those stores. No code reads them.
+  Removed; only cosmetic contact-name resolution is lost.
+- `ACCESS_BACKGROUND_LOCATION` / `FOREGROUND_SERVICE_LOCATION` — "Last Parked"
+  uses the last known fix from `LocationManager`, which needs only fine/coarse
+  location. Removed.
+
+The **lean build** keeps only what the features genuinely use: Bluetooth,
+fine/coarse location, notification listener, foreground service, boot receiver,
+battery exemption and `INTERNET` (map tiles). This removes the "stalkerware
+profile" signal that made the automated scanner suspicious.
+
+Note: the upstream CI workflow still asserts the old caller-ID permissions are
+present. That assertion is unchanged at your request, so it will fail on this
+lean build — the local APK itself builds and tests cleanly.
 
 ## 3. Zero reputation
 
