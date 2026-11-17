@@ -28,6 +28,25 @@ data class Ride(
         }
 }
 
+/** Where the scooter was last parked, captured when Bluetooth disconnects. */
+data class ParkedLocation(
+    val lat: Double,
+    val lng: Double,
+    val atMs: Long,
+) {
+    val coordinates: String get() = "%.5f, %.5f".format(lat, lng)
+    val timeLabel: String
+        get() {
+            val c = java.util.Calendar.getInstance().apply { timeInMillis = atMs }
+            return "%02d %s · %02d:%02d".format(
+                c.get(java.util.Calendar.DAY_OF_MONTH),
+                java.text.DateFormatSymbols().shortMonths[c.get(java.util.Calendar.MONTH)],
+                c.get(java.util.Calendar.HOUR_OF_DAY),
+                c.get(java.util.Calendar.MINUTE),
+            )
+        }
+}
+
 /** Last values seen from the cluster, kept for display while disconnected. */
 data class LastReading(
     val odometerKm: Double = 0.0,
@@ -48,6 +67,9 @@ object RideStore {
     private const val KEY_LAST_DTE = "last_dte"
     private const val KEY_LAST_HAS = "last_has"
     private const val KEY_RIDES = "rides"
+    private const val KEY_PARK_LAT = "park_lat"
+    private const val KEY_PARK_LNG = "park_lng"
+    private const val KEY_PARK_MS = "park_ms"
 
     private var prefs: SharedPreferences? = null
 
@@ -57,11 +79,17 @@ object RideStore {
     private val _rides = MutableStateFlow<List<Ride>>(emptyList())
     val rides: StateFlow<List<Ride>> = _rides.asStateFlow()
 
-    // Live ride state.
+    private val _parkedLocation = MutableStateFlow<ParkedLocation?>(null)
+    val parkedLocation: StateFlow<ParkedLocation?> = _parkedLocation.asStateFlow()
+
+    // Live ride state. Peak speed is a flow so the UI can show the true top
+    // speed (not the current speed, which drops when the accelerator is eased).
+    private val _liveTopSpeed = MutableStateFlow(0)
+    val liveTopSpeed: StateFlow<Int> = _liveTopSpeed.asStateFlow()
+
     private var rideStartMs = 0L
     private var rideStartOdo: Double? = null
     private var rideLastOdo: Double? = null
-    private var rideTopSpeed = 0
     private var active = false
 
     fun init(context: Context) {
@@ -75,6 +103,14 @@ object RideStore {
             hasData = p.getBoolean(KEY_LAST_HAS, false),
         )
         _rides.value = parseRides(p.getString(KEY_RIDES, "").orEmpty())
+        val parkMs = p.getLong(KEY_PARK_MS, 0L)
+        if (parkMs > 0) {
+            _parkedLocation.value = ParkedLocation(
+                lat = java.lang.Double.longBitsToDouble(p.getLong(KEY_PARK_LAT, 0L)),
+                lng = java.lang.Double.longBitsToDouble(p.getLong(KEY_PARK_LNG, 0L)),
+                atMs = parkMs,
+            )
+        }
     }
 
     /** Called on GATT connected. */
@@ -82,7 +118,7 @@ object RideStore {
         rideStartMs = System.currentTimeMillis()
         rideStartOdo = null
         rideLastOdo = null
-        rideTopSpeed = 0
+        _liveTopSpeed.value = 0
         active = true
     }
 
@@ -104,12 +140,13 @@ object RideStore {
                 .putBoolean(KEY_LAST_HAS, true)
                 .apply()
         }
+        // Peak speed never decreases when the accelerator is eased.
+        if (t.speedKmh > _liveTopSpeed.value) _liveTopSpeed.value = t.speedKmh
         if (active) {
             if (t.odometerKm > 0) {
                 if (rideStartOdo == null) rideStartOdo = t.odometerKm
                 rideLastOdo = t.odometerKm
             }
-            if (t.speedKmh > rideTopSpeed) rideTopSpeed = t.speedKmh
         }
     }
 
@@ -129,12 +166,23 @@ object RideStore {
             endedAt = System.currentTimeMillis(),
             distanceKm = distance,
             avgSpeedKmh = avg,
-            topSpeedKmh = rideTopSpeed,
+            topSpeedKmh = _liveTopSpeed.value,
             durationMin = durationMin,
         )
         val updated = listOf(ride) + _rides.value
         _rides.value = updated
         prefs?.edit()?.putString(KEY_RIDES, serialiseRides(updated))?.apply()
+    }
+
+    /** Called when Bluetooth disconnects: remember where the scooter is parked. */
+    fun saveParkedLocation(lat: Double, lng: Double, atMs: Long = System.currentTimeMillis()) {
+        val location = ParkedLocation(lat, lng, atMs)
+        _parkedLocation.value = location
+        prefs?.edit()
+            ?.putLong(KEY_PARK_LAT, java.lang.Double.doubleToRawLongBits(lat))
+            ?.putLong(KEY_PARK_LNG, java.lang.Double.doubleToRawLongBits(lng))
+            ?.putLong(KEY_PARK_MS, atMs)
+            ?.apply()
     }
 
     private fun serialiseRides(list: List<Ride>): String = list.take(50).joinToString(";") { r ->

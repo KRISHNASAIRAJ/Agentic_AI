@@ -18,6 +18,7 @@ import android.content.Context
 import android.content.Intent
 import android.annotation.SuppressLint
 import android.content.pm.PackageManager
+import android.location.LocationManager
 import android.os.Build
 import android.os.Handler
 import android.os.IBinder
@@ -55,7 +56,18 @@ object ClusterRepository {
     val devices = MutableStateFlow<List<ScannedDevice>>(emptyList())
     val scanning = MutableStateFlow(false)
     val navInstruction = MutableStateFlow<NavInstruction?>(null)
+    // Diagnostic snapshot of the last Maps notification and how it was parsed.
+    val navDebug = MutableStateFlow("")
+    // Recent live speeds for the speedometer graph (oldest first).
+    val speedHistory = MutableStateFlow<List<Int>>(emptyList())
     val mirroring = MutableStateFlow(true)
+
+    private const val SPEED_HISTORY_SIZE = 48
+    fun recordSpeed(speedKmh: Int) {
+        val current = speedHistory.value
+        val next = if (current.lastOrNull() == speedKmh) current else (current + speedKmh).takeLast(SPEED_HISTORY_SIZE)
+        speedHistory.value = next
+    }
     var service: ClusterService? = null
 
     fun scan() = service?.startScan()
@@ -238,7 +250,26 @@ class ClusterService : Service() {
         gatt = device.connectGatt(this, false, gattCallback, BluetoothDevice.TRANSPORT_LE)
     }
 
+    /** Save the last known GPS fix as the parking spot when the link drops. */
+    @SuppressLint("MissingPermission")
+    private fun saveParkedLocation() {
+        val locationAllowed =
+            ContextCompat.checkSelfPermission(this, android.Manifest.permission.ACCESS_FINE_LOCATION) ==
+                PackageManager.PERMISSION_GRANTED ||
+                ContextCompat.checkSelfPermission(this, android.Manifest.permission.ACCESS_COARSE_LOCATION) ==
+                PackageManager.PERMISSION_GRANTED
+        if (!locationAllowed) return
+        val manager = getSystemService(Context.LOCATION_SERVICE) as? LocationManager ?: return
+        val best = listOf(LocationManager.GPS_PROVIDER, LocationManager.NETWORK_PROVIDER)
+            .mapNotNull { provider ->
+                runCatching { manager.getLastKnownLocation(provider) }.getOrNull()
+            }
+            .maxByOrNull { it.time }
+        best?.let { RideStore.saveParkedLocation(it.latitude, it.longitude, it.time) }
+    }
+
     fun disconnectNow() {
+        saveParkedLocation()
         keepaliveJob?.cancel()
         keepaliveJob = null
         navJob?.cancel()
@@ -277,6 +308,7 @@ class ClusterService : Service() {
 
                 BluetoothProfile.STATE_DISCONNECTED -> {
                     Log.w(TAG, "GATT disconnected, status=$status")
+                    saveParkedLocation()
                     RideStore.onDisconnected()
                     ClusterRepository.telemetry.value = ClusterRepository.telemetry.value.copy(
                         connected = false,
@@ -351,6 +383,7 @@ class ClusterService : Service() {
             decodeFrame(value, ClusterRepository.telemetry.value)?.let {
                 ClusterRepository.telemetry.value = it
                 RideStore.onFrame(it)
+                ClusterRepository.recordSpeed(it.speedKmh)
             }
         }
 
@@ -361,6 +394,7 @@ class ClusterService : Service() {
             decodeFrame(v, ClusterRepository.telemetry.value)?.let {
                 ClusterRepository.telemetry.value = it
                 RideStore.onFrame(it)
+                ClusterRepository.recordSpeed(it.speedKmh)
             }
         }
     }

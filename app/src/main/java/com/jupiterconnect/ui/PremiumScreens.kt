@@ -3,6 +3,7 @@ package com.jupiterconnect.ui
 import android.content.Intent
 import android.provider.Settings
 import androidx.compose.foundation.background
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -45,19 +46,26 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.collectAsState
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.Path
+import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.jupiterconnect.nav.NavInstruction
 import com.jupiterconnect.protocol.ScannedDevice
 import com.jupiterconnect.protocol.Telemetry
+import com.jupiterconnect.session.RideStore
 import com.jupiterconnect.transport.ClusterRepository
 import com.jupiterconnect.ui.theme.JupiterColors
 import com.jupiterconnect.ui.theme.NumberStyle
@@ -75,20 +83,20 @@ private fun Screen(content: @Composable ColumnScope.() -> Unit) {
 @Composable
 fun PremiumHomeScreen(
     telemetry: Telemetry,
-    devices: List<ScannedDevice>,
     scanning: Boolean,
     permissions: PermissionStatus,
     lastReading: com.jupiterconnect.session.LastReading,
     onGrantPermissions: () -> Unit,
-    onScan: () -> Unit,
-    onConnect: (String) -> Unit,
-    onViewMore: () -> Unit,
+    onOpenDevices: () -> Unit,
 ) {
     // While disconnected, fall back to the last reading the cluster sent so
     // the odometer and fuel range don't drop to a misleading zero.
     val shownOdo = if (telemetry.odometerKm > 0) telemetry.odometerKm else lastReading.odometerKm
     val shownFuel = if (telemetry.connected) telemetry.fuelBars else lastReading.fuelBars
     val shownDte = if (telemetry.connected) telemetry.distanceToEmptyKm else lastReading.distanceToEmptyKm
+    // Peak speed this ride - never drops when the accelerator is eased.
+    val liveTop = RideStore.liveTopSpeed.collectAsState().value
+    val speedHistory = ClusterRepository.speedHistory.collectAsState().value
     Screen {
         Spacer(Modifier.height(18.dp))
 
@@ -165,11 +173,8 @@ fun PremiumHomeScreen(
                     Modifier.fillMaxWidth().height(96.dp).clip(RoundedCornerShape(18.dp))
                         .background(Brush.radialGradient(listOf(
                             JupiterColors.Accent.copy(alpha = 0.10f), Color.Transparent))),
-                    contentAlignment = Alignment.Center,
                 ) {
-                    Icon(Icons.Rounded.TwoWheeler, contentDescription = "Scooter",
-                        tint = if (telemetry.connected) JupiterColors.Accent else JupiterColors.OnSurfaceVariant,
-                        modifier = Modifier.size(88.dp))
+                    SpeedGraph(values = speedHistory, active = telemetry.connected)
                 }
                 if (telemetry.error != null) {
                     Spacer(Modifier.height(10.dp))
@@ -178,7 +183,7 @@ fun PremiumHomeScreen(
                 Spacer(Modifier.height(14.dp))
                 if (!telemetry.connected) {
                     Button(
-                        onClick = onScan,
+                        onClick = onOpenDevices,
                         modifier = Modifier.fillMaxWidth(),
                         shape = RoundedCornerShape(999.dp),
                         colors = ButtonDefaults.buttonColors(
@@ -200,81 +205,6 @@ fun PremiumHomeScreen(
         }
         Spacer(Modifier.height(14.dp))
 
-        // Nearby devices - the only way to pick and connect to the cluster.
-        SectionHeading(
-            "Nearby devices",
-            trailing = if (scanning) "SCANNING..." else "${devices.size} FOUND",
-        )
-        Spacer(Modifier.height(10.dp))
-        PremiumCard {
-            Column(Modifier.padding(8.dp)) {
-                if (devices.isEmpty()) {
-                    Column(Modifier.padding(10.dp)) {
-                        Text(
-                            if (scanning) "Looking for Bluetooth devices..."
-                            else "No devices yet. Tap scan, then switch the ignition ON and hold MODE for 5s.",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
-                    }
-                } else {
-                    devices.take(3).forEach { d ->
-                        Surface(
-                            onClick = { onConnect(d.address) },
-                            shape = RoundedCornerShape(14.dp),
-                            color = Color.Transparent,
-                        ) {
-                            Row(
-                                Modifier.fillMaxWidth().padding(12.dp),
-                                verticalAlignment = Alignment.CenterVertically,
-                            ) {
-                                Icon(
-                                    Icons.Rounded.BluetoothConnected,
-                                    contentDescription = null,
-                                    tint = if (d.isCluster) JupiterColors.Accent
-                                    else MaterialTheme.colorScheme.onSurfaceVariant,
-                                    modifier = Modifier.size(20.dp),
-                                )
-                                Spacer(Modifier.width(12.dp))
-                                Column(Modifier.weight(1f)) {
-                                    Text(
-                                        "${if (d.isCluster) "â˜... " else ""}${d.name}",
-                                        style = MaterialTheme.typography.bodyMedium,
-                                        color = MaterialTheme.colorScheme.onSurface,
-                                    )
-                                    Text(
-                                        d.address,
-                                        style = MaterialTheme.typography.labelSmall,
-                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                    )
-                                }
-                                Text(
-                                    "${d.rssi} dBm",
-                                    style = MaterialTheme.typography.labelSmall,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                )
-                            }
-                        }
-                    }
-                }
-                if (devices.size > 3) {
-                    Spacer(Modifier.height(4.dp))
-                    TextButton(onClick = onViewMore, modifier = Modifier.fillMaxWidth()) {
-                        Text("View more (${devices.size - 3})", color = JupiterColors.Accent)
-                    }
-                }
-                Spacer(Modifier.height(8.dp))
-                Button(
-                    onClick = onScan,
-                    modifier = Modifier.fillMaxWidth(),
-                    shape = RoundedCornerShape(999.dp),
-                    colors = ButtonDefaults.buttonColors(
-                        containerColor = JupiterColors.High, contentColor = JupiterColors.Accent),
-                ) { Text(if (scanning) "Scanning..." else "Scan for devices") }
-            }
-        }
-        Spacer(Modifier.height(14.dp))
-
         SectionHeading("Ride statistics", trailing = if (telemetry.connected) "LIVE" else null)
         Spacer(Modifier.height(10.dp))
         Row(horizontalArrangement = Arrangement.spacedBy(12.dp),
@@ -282,7 +212,9 @@ fun PremiumHomeScreen(
             PremiumStat(Modifier.weight(1f), Icons.Rounded.History,
                 "%.1f".format(shownOdo), "km", "Odometer")
             PremiumStat(Modifier.weight(1f), Icons.Rounded.Speed,
-                "${telemetry.topSpeed()}", "km/h", "Top speed")
+                "$liveTop", "km/h", "Top speed")
+            PremiumStat(Modifier.weight(1f), Icons.Rounded.Bolt,
+                "${telemetry.rpm}", "rpm", "Engine RPM")
         }
         Spacer(Modifier.height(14.dp))
 
@@ -305,28 +237,49 @@ fun PremiumHomeScreen(
                 }
                 Spacer(Modifier.height(12.dp))
                 Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                    BigReadout("${shownDte}", "km",
-                        "Range left", modifier = Modifier.weight(1f), accent = true)
-                    BigReadout("${telemetry.engineTempC}", "Â°C", "Engine temp",
+                    BigReadout("$shownDte", "km", "Range",
+                        modifier = Modifier.weight(1f), accent = true)
+                    BigReadout("${telemetry.engineTempC}", "°C", "Coolant",
                         modifier = Modifier.weight(1f))
                 }
-            }
-        }
-        Spacer(Modifier.height(14.dp))
-
-        SectionHeading("Quick actions")
-        Spacer(Modifier.height(10.dp))
-        Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-            SmallAction(Modifier.weight(1f), Icons.Rounded.BluetoothConnected,
-                if (telemetry.connected) "Disconnect" else "Connect") {
-                if (telemetry.connected) ClusterRepository.disconnect() else onScan()
+                Spacer(Modifier.height(10.dp))
+                Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                    BigReadout("${telemetry.averageFuelEconomy}", "km/L", "Avg fuel econ",
+                        modifier = Modifier.weight(1f))
+                    BigReadout("%.1f".format(telemetry.batteryVoltage), "V", "Battery",
+                        modifier = Modifier.weight(1f))
+                }
             }
         }
         Spacer(Modifier.height(28.dp))
     }
 }
 
-private fun Telemetry.topSpeed(): Int = speedKmh
+/** Live speed trace drawn from the speeds actually received from the cluster. */
+@Composable
+private fun SpeedGraph(values: List<Int>, active: Boolean) {
+    val accent = if (active) JupiterColors.Accent else JupiterColors.OnSurfaceVariant
+    val grid = JupiterColors.Hairline.copy(alpha = 0.35f)
+    Canvas(Modifier.fillMaxSize()) {
+        val w = size.width
+        val h = size.height
+        for (i in 1..3) {
+            drawLine(grid, Offset(0f, h * i / 4f), Offset(w, h * i / 4f), strokeWidth = 1.dp.toPx())
+        }
+        if (values.size >= 2) {
+            val ceiling = (values.maxOrNull() ?: 0).coerceAtLeast(20).toFloat() * 1.15f
+            val step = w / (values.size - 1)
+            val path = Path().apply {
+                values.forEachIndexed { i, speed ->
+                    val x = i * step
+                    val y = h - (speed / ceiling) * h * 0.9f - h * 0.05f
+                    if (i == 0) moveTo(x, y) else lineTo(x, y)
+                }
+            }
+            drawPath(path, accent, style = Stroke(3.dp.toPx(), cap = StrokeCap.Round))
+        }
+    }
+}
 
 @Composable
 private fun PremiumStat(modifier: Modifier, icon: ImageVector, value: String, unit: String, label: String) {
@@ -395,13 +348,6 @@ fun PremiumNavigateScreen(
         }
         Spacer(Modifier.height(18.dp))
 
-        Surface(
-            Modifier.fillMaxWidth().height(220.dp).enterAnimated(delayMs = 0),
-            shape = RoundedCornerShape(24.dp), color = JupiterColors.Container,
-            border = androidx.compose.foundation.BorderStroke(1.dp, JupiterColors.Hairline),
-        ) { RouteCanvas(active = instruction != null) }
-        Spacer(Modifier.height(14.dp))
-
         PremiumCard(modifier = Modifier.enterAnimated(delayMs = 60), color = JupiterColors.High) {
             Column(Modifier.padding(18.dp)) {
                 Caption(if (instruction != null) "NEXT MANOEUVRE" else "NO ACTIVE ROUTE",
@@ -435,9 +381,17 @@ fun PremiumNavigateScreen(
         Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
             BigReadout("${telemetry.speedKmh}", "km/h", "Speed",
                 modifier = Modifier.weight(1f), accent = true)
-            BigReadout("${telemetry.distanceToEmptyKm}", "km", "Range left",
+            BigReadout("${telemetry.distanceToEmptyKm}", "km", "Range",
                 modifier = Modifier.weight(1f))
+            BigReadout("${telemetry.rpm}", "rpm", "Engine RPM",
+                modifier = Modifier.weight(1f))
+        }
+        Spacer(Modifier.height(10.dp))
+        Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
             BigReadout("${telemetry.fuelBars}", "/6", "Fuel", modifier = Modifier.weight(1f))
+            BigReadout("${telemetry.averageFuelEconomy}", "km/L", "Avg fuel econ",
+                modifier = Modifier.weight(1f))
+            BigReadout("${telemetry.engineTempC}", "°C", "Coolant", modifier = Modifier.weight(1f))
         }
         Spacer(Modifier.height(14.dp))
 
@@ -478,42 +432,6 @@ private fun NavInfo(value: String, unit: String, caption: String) {
     }
 }
 
-@Composable
-private fun RouteCanvas(active: Boolean) {
-    androidx.compose.foundation.Canvas(Modifier.fillMaxSize()) {
-        val w = size.width
-        val h = size.height
-        val grid = JupiterColors.Hairline.copy(alpha = 0.35f)
-        for (i in 1..5) {
-            drawLine(grid, androidx.compose.ui.geometry.Offset(0f, h * i / 6f),
-                androidx.compose.ui.geometry.Offset(w, h * i / 6f), strokeWidth = 1.dp.toPx())
-            drawLine(grid, androidx.compose.ui.geometry.Offset(w * i / 6f, 0f),
-                androidx.compose.ui.geometry.Offset(w * i / 6f, h), strokeWidth = 1.dp.toPx())
-        }
-        val route = androidx.compose.ui.graphics.Path().apply {
-            moveTo(w * 0.22f, h * 0.82f)
-            cubicTo(w * 0.30f, h * 0.62f, w * 0.42f, h * 0.66f, w * 0.48f, h * 0.46f)
-            cubicTo(w * 0.54f, h * 0.28f, w * 0.68f, h * 0.34f, w * 0.76f, h * 0.18f)
-        }
-        drawPath(route, Color.Black.copy(alpha = 0.5f),
-            style = androidx.compose.ui.graphics.drawscope.Stroke(16.dp.toPx(),
-                cap = androidx.compose.ui.graphics.StrokeCap.Round))
-        drawPath(route, JupiterColors.Accent,
-            style = androidx.compose.ui.graphics.drawscope.Stroke(6.dp.toPx(),
-                cap = androidx.compose.ui.graphics.StrokeCap.Round))
-        drawCircle(JupiterColors.Accent, radius = 8.dp.toPx(),
-            center = androidx.compose.ui.geometry.Offset(w * 0.22f, h * 0.82f))
-    }
-    Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-        Surface(Modifier.size(20.dp), shape = RoundedCornerShape(50),
-            color = JupiterColors.Accent.copy(alpha = 0.25f)) {
-            Box(Modifier.size(20.dp), contentAlignment = Alignment.Center) {
-                Icon(Icons.Rounded.Navigation, contentDescription = "You",
-                    tint = JupiterColors.Accent, modifier = Modifier.size(14.dp))
-            }
-        }
-    }
-}
 
 // ------------------------------------------------------------------ RIDES
 
@@ -574,6 +492,25 @@ fun PremiumRidesScreen(
                 }
             }
         }
+        Spacer(Modifier.height(18.dp))
+
+        // Diagnostic card: shows the raw Maps notification fields and what we
+        // parsed/sent. Screenshot this while "0m" blinks to see where Maps hides
+        // the distance, so the next fix is targeted rather than a guess.
+        val dbg = ClusterRepository.navDebug.collectAsState().value
+        if (dbg.isNotBlank()) {
+            SectionHeading("Nav diagnostic", trailing = "DEBUG")
+            Spacer(Modifier.height(10.dp))
+            PremiumCard {
+                Text(
+                    dbg,
+                    fontFamily = FontFamily.Monospace,
+                    fontSize = 11.sp,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.fillMaxWidth().padding(16.dp),
+                )
+            }
+        }
         Spacer(Modifier.height(28.dp))
     }
 }
@@ -593,7 +530,8 @@ private fun RideMetric(modifier: Modifier, label: String, value: String, unit: S
 // ------------------------------------------------------------------- FIND
 
 @Composable
-fun PremiumFindScreen(telemetry: Telemetry, onScan: () -> Unit) {
+fun PremiumFindScreen(telemetry: Telemetry, onOpenDevices: () -> Unit) {
+    val parked = RideStore.parkedLocation.collectAsState().value
     Screen {
         Spacer(Modifier.height(18.dp))
         Caption("SCOOTER")
@@ -614,18 +552,26 @@ fun PremiumFindScreen(telemetry: Telemetry, onScan: () -> Unit) {
             Column(Modifier.padding(18.dp)) {
                 Caption("LAST PARKED")
                 Spacer(Modifier.height(8.dp))
-                Text("Waiting for GPS fix", style = MaterialTheme.typography.titleLarge,
-                    color = MaterialTheme.colorScheme.onSurface)
-                Text("Parked location is recorded locally when the cluster is connected.",
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant)
+                if (parked != null) {
+                    Text(parked.coordinates, style = MaterialTheme.typography.titleLarge,
+                        color = MaterialTheme.colorScheme.onSurface)
+                    Spacer(Modifier.height(4.dp))
+                    Text("Saved ${parked.timeLabel}", style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant)
+                } else {
+                    Text("Waiting for GPS fix", style = MaterialTheme.typography.titleLarge,
+                        color = MaterialTheme.colorScheme.onSurface)
+                    Text("Parked location is saved on this phone when the cluster disconnects.",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
             }
         }
         Spacer(Modifier.height(14.dp))
         SmallAction(Modifier.fillMaxWidth(), Icons.Rounded.TwoWheeler,
-            if (telemetry.connected) "Connected to cluster" else "Find cluster",
+            if (telemetry.connected) "Connected to cluster" else "Find my cluster",
             telemetry.address.ifBlank { null }) {
-            if (!telemetry.connected) onScan()
+            if (!telemetry.connected) onOpenDevices()
         }
         Spacer(Modifier.height(28.dp))
     }

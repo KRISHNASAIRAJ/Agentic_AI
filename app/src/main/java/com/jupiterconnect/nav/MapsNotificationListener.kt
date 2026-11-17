@@ -42,6 +42,10 @@ class MapsNotificationListener : NotificationListenerService() {
             title.replace(Regex("""[\d.,\s]|(km|mi|ft|m)\b""", RegexOption.IGNORE_CASE), "").isBlank()
         if (!titleHasManeuver || titleIsDistanceOnly) return
 
+        // This is the notification we accepted - remember its key so a junk
+        // Maps notification being removed cannot clear the real instruction.
+        activeKey = n.key
+
         val parsed = NavParsing.parse(title, text, bigText, subText)
 
         // Google Maps sometimes puts the distance ("40 m") in a non-standard
@@ -73,6 +77,20 @@ class MapsNotificationListener : NotificationListenerService() {
             distance
         } else lastKnownDistance
 
+        // Diagnostic snapshot so one screenshot on the Rides tab shows exactly
+        // what Maps published and what we parsed/sent - no more guessing.
+        ClusterRepository.navDebug.value = buildString {
+            appendLine("TITLE: $title")
+            appendLine("TEXT: $text")
+            appendLine("BIG: $bigText")
+            appendLine("SUB: $subText")
+            appendLine("parsed.dist=${parsed.distanceMeters} fallback=$distance")
+            appendLine("eta=${parsed.etaMinutes} pic=${parsed.pictogram}")
+            appendLine("lastKnown=$lastKnownDistance sent=${effectiveDistance.coerceAtLeast(0)}")
+            appendLine("KEYS: ${extras.keySet().joinToString()}")
+            appendLine("hasContentView=${n.notification.contentView != null}")
+        }
+
         // Cancel a pending clear: Maps updates its notification by remove + re-post.
         pendingClear?.let { handler.removeCallbacks(it) }
         pendingClear = null
@@ -89,6 +107,9 @@ class MapsNotificationListener : NotificationListenerService() {
 
     override fun onNotificationRemoved(sbn: StatusBarNotification?) {
         if (sbn?.packageName !in MAP_PACKAGES) return
+        // Maps posts junk notifications too. Only the removal of the one we
+        // actually accepted may clear the instruction.
+        if (sbn?.key != activeKey) return
         // Maps remove+reposts its notification on every update. Clearing
         // immediately blanked the cluster text between remove and repost —
         // that is the flicker. Delay the clear so a quick repost cancels it.
@@ -97,6 +118,7 @@ class MapsNotificationListener : NotificationListenerService() {
             ClusterRepository.navInstruction.value = null
             pendingClear = null
             lastKnownDistance = -1 // new route must not inherit the old distance
+            activeKey = null
         }.also { handler.postDelayed(it, CLEAR_GRACE_MS) }
     }
 
@@ -104,6 +126,8 @@ class MapsNotificationListener : NotificationListenerService() {
     private var pendingClear: Runnable? = null
     // Last distance Maps actually published; reused when a notification omits it.
     private var lastKnownDistance: Int = -1
+    // Key of the Maps notification we accepted; only its removal clears nav.
+    private var activeKey: String? = null
 
     companion object {
         private const val CLEAR_GRACE_MS = 4000L

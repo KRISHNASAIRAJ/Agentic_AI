@@ -101,9 +101,9 @@ fun JupiterApp() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
             add(Manifest.permission.BLUETOOTH_SCAN)
             add(Manifest.permission.BLUETOOTH_CONNECT)
-        } else {
-            add(Manifest.permission.ACCESS_FINE_LOCATION)
         }
+        // Location is needed for last-parked capture on every Android version.
+        add(Manifest.permission.ACCESS_FINE_LOCATION)
         add(Manifest.permission.ACCESS_COARSE_LOCATION)
         if (Build.VERSION.SDK_INT >= 33) add(Manifest.permission.POST_NOTIFICATIONS)
     }.toTypedArray()
@@ -260,14 +260,11 @@ fun JupiterApp() {
             when (selected) {
                 0 -> PremiumHomeScreen(
                     telemetry = telemetry,
-                    devices = devices,
                     scanning = scanning,
                     permissions = permStatus,
                     lastReading = lastReading,
                     onGrantPermissions = { launcher.launch(permissions) },
-                    onScan = { scanForDevices() },
-                    onConnect = { address -> connectAndRemember(address) },
-                    onViewMore = { selected = 4 },
+                    onOpenDevices = { selected = 4 },
                 )
                 1 -> PremiumNavigateScreen(
                     instruction = navInstruction,
@@ -279,7 +276,7 @@ fun JupiterApp() {
                     },
                 )
                 2 -> PremiumRidesScreen(telemetry, rides)
-                3 -> PremiumFindScreen(telemetry, onScan = { scanForDevices() })
+                3 -> PremiumFindScreen(telemetry, onOpenDevices = { selected = 4 })
                 4 -> PremiumDevicesScreen(
                     devices = devices,
                     scanning = scanning,
