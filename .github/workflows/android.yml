@@ -28,7 +28,7 @@ jobs:
           test -f app/src/main/AndroidManifest.xml
           java -version
       - name: Check Gradle wrapper
-        run: ./gradlew --version
+        run: bash ./gradlew --version
 
   unit-tests:
     needs: validate-env
@@ -46,7 +46,7 @@ jobs:
       - name: Write local.properties
         run: echo "sdk.dir=$ANDROID_HOME" >> local.properties
       - name: Run JVM tests
-        run: ./gradlew :app:testDebugUnitTest --no-daemon --stacktrace
+        run: bash ./gradlew :app:testDebugUnitTest --no-daemon --stacktrace
       - name: Upload test reports
         if: always()
         uses: actions/upload-artifact@v4
@@ -70,7 +70,7 @@ jobs:
       - name: Write local.properties
         run: echo "sdk.dir=$ANDROID_HOME" >> local.properties
       - name: Build debug APK
-        run: ./gradlew :app:assembleDebug --no-daemon --stacktrace
+        run: bash ./gradlew :app:assembleDebug --no-daemon --stacktrace
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
