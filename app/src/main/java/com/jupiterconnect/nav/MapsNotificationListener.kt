@@ -32,14 +32,15 @@ class MapsNotificationListener : NotificationListenerService() {
         if (!n.isOngoing) return
 
         // Google Maps posts multiple ongoing notifications while navigating:
-        // the real turn instruction AND a near-empty one ("0 m" / distance
-        // only). Taking whichever arrives last made the cluster flicker
-        // between "Head east on" and a bare "0m". Require a real instruction:
-        // at least one field must contain a maneuver word or a street name.
-        val hasInstruction = listOf(title, text, bigText, subText).any { field ->
-            field.length > 3 && MANEUVER_WORDS.any { field.contains(it, true) }
-        }
-        if (!hasInstruction) return
+        // the real turn instruction AND a near-empty one whose title is only a
+        // distance ("0 m") but whose subText says "Arrive 5:49 pm". Taking that
+        // junk one made the cluster flicker between the real instruction and a
+        // bare "0m". Require the TITLE itself to contain a real maneuver word
+        // (turn/head/continue/left/right/...) and to not be distance-only.
+        val titleHasManeuver = MANEUVER_WORDS.any { title.contains(it, true) }
+        val titleIsDistanceOnly = NavParsing.findDistance(title) >= 0 &&
+            title.replace(Regex("""[\d.,\s]|(km|mi|ft|m)\b""", RegexOption.IGNORE_CASE), "").isBlank()
+        if (!titleHasManeuver || titleIsDistanceOnly) return
 
         val parsed = NavParsing.parse(title, text, bigText, subText)
 
