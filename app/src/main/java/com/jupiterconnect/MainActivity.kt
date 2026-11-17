@@ -19,6 +19,7 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
@@ -77,6 +78,7 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
 import com.jupiterconnect.nav.NavInstruction
 import com.jupiterconnect.protocol.Telemetry
@@ -233,13 +235,17 @@ private fun StatusPill(text: String, ok: Boolean) {
 }
 
 @Composable
-private fun CardBox(content: @Composable () -> Unit) {
+private fun CardBox(content: @Composable ColumnScope.() -> Unit) {
     Card(
         modifier = Modifier.fillMaxWidth(),
         shape = RoundedCornerShape(16.dp),
         colors = CardDefaults.cardColors(containerColor = JupiterColors.Container),
         border = BorderStroke(1.dp, JupiterColors.OutlineVariant),
-    ) { Box(Modifier.padding(16.dp)) { content() } }
+    ) {
+        // Must be a Column: a Box would stack every child on top of the next,
+        // which is exactly what made all the labels overlap.
+        Column(Modifier.padding(16.dp), content = content)
+    }
 }
 
 @Composable
@@ -345,16 +351,27 @@ private fun HomeScreen(
             }
         }
         SectionLabel("Quick actions")
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             Button(
                 onClick = { ClusterRepository.scan() },
+                modifier = Modifier.weight(1f),
+                contentPadding = PaddingValues(horizontal = 6.dp, vertical = 8.dp),
                 colors = ButtonDefaults.buttonColors(
                     containerColor = JupiterColors.Primary, contentColor = JupiterColors.OnPrimary),
                 shape = RoundedCornerShape(999.dp),
-            ) { Text(if (scanning) "Scanning…" else "Find cluster") }
-            OutlinedButton(onClick = { ClusterRepository.disconnect() },
-                shape = RoundedCornerShape(999.dp)) { Text("Disconnect") }
-            OutlinedButton(onClick = {}, shape = RoundedCornerShape(999.dp)) { Text("Mirror") }
+            ) { Text(if (scanning) "Scanning" else "Find", fontSize = 12.sp) }
+            OutlinedButton(
+                onClick = { ClusterRepository.disconnect() },
+                modifier = Modifier.weight(1f),
+                contentPadding = PaddingValues(horizontal = 6.dp, vertical = 8.dp),
+                shape = RoundedCornerShape(999.dp),
+            ) { Text("Disconnect", fontSize = 11.sp) }
+            OutlinedButton(
+                onClick = {},
+                modifier = Modifier.weight(1f),
+                contentPadding = PaddingValues(horizontal = 6.dp, vertical = 8.dp),
+                shape = RoundedCornerShape(999.dp),
+            ) { Text("Mirror", fontSize = 12.sp) }
         }
         if (!telemetry.connected) {
             SectionLabel("Nearby clusters")
