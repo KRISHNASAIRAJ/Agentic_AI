@@ -87,7 +87,7 @@ jobs:
             echo "storePassword=$JUPITER_KEYSTORE_PASS"
             echo "keyAlias=$JUPITER_KEY_ALIAS"
             echo "keyPassword=$JUPITER_KEY_PASS"
-          } > key.properties
+          } > keystore.properties
           echo "Signing key materialised from secrets."
       - name: Build debug APK
         run: bash ./gradlew :app:assembleDebug --no-daemon --stacktrace
