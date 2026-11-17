@@ -1,0 +1,82 @@
+package com.jupiterconnect
+
+import com.jupiterconnect.nav.NavInstruction
+import com.jupiterconnect.nav.NavParsing
+import com.jupiterconnect.protocol.buildKeepalive
+import com.jupiterconnect.protocol.buildNavControl
+import com.jupiterconnect.protocol.buildNavText
+import com.jupiterconnect.protocol.decodeFrame
+import com.jupiterconnect.protocol.sanitize
+import com.jupiterconnect.protocol.Telemetry
+import org.junit.Assert.assertEquals
+import org.junit.Assert.assertTrue
+import org.junit.Test
+
+class ProtocolTest {
+
+    @Test
+    fun keepalive_has_jupiter_checksum_and_terminator() {
+        val b = buildKeepalive()
+        assertEquals(20, b.size)
+        assertEquals(0x5B, b[0].toInt() and 0xFF)
+        assertEquals(0x4A, b[1].toInt() and 0xFF)
+        val expected = 255 - (b.take(18).sumOf { it.toInt() and 0xFF } % 256)
+        assertEquals(expected, b[18].toInt() and 0xFF)
+        assertEquals(0xFF, b[19].toInt() and 0xFF)
+    }
+
+    @Test
+    fun navigation_frames_have_expected_shape() {
+        val control = buildNavControl(550, 12, 8400, NavInstruction.RIGHT)
+        assertEquals(20, control.size)
+        assertEquals(0x5A, control[0].toInt() and 0xFF)
+        assertEquals(0x4E, control[1].toInt() and 0xFF)
+        assertEquals(550, (control[2].toInt() and 0xFF) shl 8 or (control[3].toInt() and 0xFF))
+        assertEquals(NavInstruction.RIGHT, control[9].toInt() and 0xFF)
+        assertEquals(0xFF, control[19].toInt() and 0xFF)
+
+        val text = buildNavText("Turn right onto NH44")
+        assertEquals(20, text.size)
+        assertEquals(0x5B, text[0].toInt() and 0xFF)
+        assertEquals(0x4F, text[1].toInt() and 0xFF)
+        assertEquals(0xFF, text[19].toInt() and 0xFF)
+    }
+
+    @Test
+    fun cluster_text_is_ascii_and_capped_at_17() {
+        assertEquals("NHX44 XXXX", sanitize("NH-44 தென்"))
+        assertEquals(17, sanitize("ABCDEFGHIJKLMNOPQRSTUVWXYZ").length)
+    }
+
+    @Test
+    fun telemetry_decodes_big_endian_offsets() {
+        val speed = "5A 10 2A 00 D6 C8 04 00 00 00 12 40 20 00 00 3B F0 0D FA 00 FF"
+            .split(" ").map { it.toInt(16).toByte() }.toByteArray()
+        val decoded = decodeFrame(speed, Telemetry())!!
+        assertEquals(42, decoded.speedKmh)
+        assertEquals(5498.4, decoded.odometerKm, 0.01)
+        assertEquals(4, decoded.fuelBars)
+        assertEquals(3578, decoded.rpm) // 0x0DFA
+
+        val engine = "5A 18 00 00 00 00 5F 4B 4B 00 00 7E 00 00 00 00 00 00 00 FF"
+            .split(" ").map { it.toInt(16).toByte() }.toByteArray()
+        val withTemp = decodeFrame(engine, decoded)!!
+        assertEquals(12.6, withTemp.batteryVoltage, 0.01)
+        assertTrue(withTemp.intakeTempC > 0)
+    }
+
+    @Test
+    fun parses_maps_notifications() {
+        val google = NavParsing.parse("550 m", "Turn right onto NH 44", "", "")
+        assertEquals(550, google.distanceMeters)
+        assertEquals(NavInstruction.RIGHT, google.pictogram)
+
+        val km = NavParsing.parse("1.2 km", "Turn left", "", "")
+        assertEquals(1200, km.distanceMeters)
+        assertEquals(NavInstruction.LEFT, km.pictogram)
+
+        val tvs = NavParsing.parse("Turn left", "2.32 km • 3 min • 11:40 AM ETA", "", "")
+        assertEquals(3, tvs.etaMinutes)
+        assertEquals(NavInstruction.LEFT, tvs.pictogram)
+    }
+}

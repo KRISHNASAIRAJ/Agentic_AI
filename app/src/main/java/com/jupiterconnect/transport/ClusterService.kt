@@ -16,6 +16,7 @@ import android.bluetooth.le.ScanCallback
 import android.bluetooth.le.ScanResult
 import android.content.Context
 import android.content.Intent
+import android.annotation.SuppressLint
 import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Handler
@@ -59,6 +60,8 @@ object ClusterRepository {
     fun disconnect() = service?.disconnectNow()
 }
 
+/** All BLE entry points are guarded by [hasBluetoothPermission] at runtime. */
+@SuppressLint("MissingPermission")
 class ClusterService : Service() {
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
@@ -71,7 +74,7 @@ class ClusterService : Service() {
     @Volatile private var lastAddress: String? = null
     private var keepaliveJob: Job? = null
     private var navJob: Job? = null
-    private var scanCallback: ScanCallback? = null
+    @SuppressLint("MissingPermission") private var scanCallback: ScanCallback? = null
 
     private val adapter: BluetoothAdapter?
         get() = (getSystemService(Context.BLUETOOTH_SERVICE) as? BluetoothManager)?.adapter
@@ -140,11 +143,7 @@ class ClusterService : Service() {
                 error = e.message)
             return
         }
-        gatt = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
-            device.connectGatt(this, false, gattCallback, BluetoothDevice.TRANSPORT_LE)
-        } else {
-            device.connectGatt(this, false, gattCallback)
-        }
+        gatt = device.connectGatt(this, false, gattCallback, BluetoothDevice.TRANSPORT_LE)
     }
 
     fun disconnectNow() {
@@ -169,6 +168,7 @@ class ClusterService : Service() {
         if (!g.discoverServices()) discoveryStarted = false
     }
 
+    @SuppressLint("MissingPermission")
     private val gattCallback = object : BluetoothGattCallback() {
 
         override fun onConnectionStateChange(g: BluetoothGatt, status: Int, newState: Int) {
@@ -317,11 +317,9 @@ class ClusterService : Service() {
     }
 
     private fun createChannel() {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            val channel = NotificationChannel(
-                "cluster", "Cluster link", NotificationManager.IMPORTANCE_LOW)
-            getSystemService(NotificationManager::class.java).createNotificationChannel(channel)
-        }
+        val channel = NotificationChannel(
+            "cluster", "Cluster link", NotificationManager.IMPORTANCE_LOW)
+        getSystemService(NotificationManager::class.java).createNotificationChannel(channel)
     }
 
     private fun buildNotification(): Notification {

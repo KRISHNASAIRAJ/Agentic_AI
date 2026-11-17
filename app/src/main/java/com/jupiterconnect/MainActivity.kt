@@ -3,6 +3,7 @@ package com.jupiterconnect
 import android.Manifest
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.os.Build
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -103,12 +104,16 @@ fun JupiterApp() {
     val navInstruction by ClusterRepository.navInstruction.collectAsState()
     var mirroring by remember { mutableStateOf(ClusterRepository.mirroring.value) }
 
-    val permissions = arrayOf(
-        Manifest.permission.BLUETOOTH_SCAN,
-        Manifest.permission.BLUETOOTH_CONNECT,
-        Manifest.permission.ACCESS_FINE_LOCATION,
-        Manifest.permission.POST_NOTIFICATIONS,
-    )
+    val permissions = buildList {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            add("android.permission.BLUETOOTH_SCAN")
+            add("android.permission.BLUETOOTH_CONNECT")
+        } else {
+            add(Manifest.permission.ACCESS_FINE_LOCATION)
+        }
+        add(Manifest.permission.ACCESS_COARSE_LOCATION)
+        if (Build.VERSION.SDK_INT >= 33) add("android.permission.POST_NOTIFICATIONS")
+    }.toTypedArray()
     fun granted() = permissions.all {
         ContextCompat.checkSelfPermission(context, it) == PackageManager.PERMISSION_GRANTED
     }
