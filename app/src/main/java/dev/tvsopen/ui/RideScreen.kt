@@ -23,6 +23,9 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Navigation
+import androidx.compose.material.icons.filled.NotificationsActive
+import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
@@ -59,6 +62,8 @@ fun RideScreen(
     hud: HudState,
     telemetry: Telemetry,
     navMirroring: Boolean,
+    notificationAccessGranted: Boolean,
+    onOpenNotificationAccess: () -> Unit,
     onNavMirrorChange: (Boolean) -> Unit,
     modifier: Modifier = Modifier,
 ) {
@@ -79,6 +84,45 @@ fun RideScreen(
             StatusPill(label = if (hud.active) "Nav live" else "Idle", ok = hud.active)
         }
         Spacer(Modifier.height(18.dp))
+
+        if (!notificationAccessGranted) {
+            PremiumCard(
+                modifier = Modifier.enterAnimated(delayMs = 0),
+                color = PremiumColors.Amber.copy(alpha = 0.12f),
+            ) {
+                Column(Modifier.padding(16.dp)) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Icon(
+                            Icons.Filled.NotificationsActive,
+                            contentDescription = null,
+                            tint = PremiumColors.Amber,
+                            modifier = Modifier.size(20.dp),
+                        )
+                        Spacer(Modifier.width(10.dp))
+                        Caption("NOTIFICATION ACCESS OFF", color = PremiumColors.Amber)
+                    }
+                    Spacer(Modifier.height(8.dp))
+                    Text(
+                        "Turn-by-turn can't be read until Android allows it. If the " +
+                            "toggle is greyed out, open App info → ⋮ → Allow restricted " +
+                            "settings first (Android 13+ sideload rule).",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurface,
+                    )
+                    Spacer(Modifier.height(12.dp))
+                    Button(
+                        onClick = onOpenNotificationAccess,
+                        modifier = Modifier.fillMaxWidth(),
+                        shape = RoundedCornerShape(999.dp),
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = PremiumColors.Amber,
+                            contentColor = Color(0xFF0A0C07),
+                        ),
+                    ) { Text("Open notification access") }
+                }
+            }
+            Spacer(Modifier.height(14.dp))
+        }
 
         RouteMap(active = hud.active, modifier = Modifier.enterAnimated(delayMs = 0))
         Spacer(Modifier.height(14.dp))

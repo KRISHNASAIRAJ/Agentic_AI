@@ -364,6 +364,8 @@ class MainActivity : AppCompatActivity() {
                             hud = hud,
                             telemetry = telemetry,
                             navMirroring = navMirroring,
+                            notificationAccessGranted = hasNotificationAccess,
+                            onOpenNotificationAccess = onOpenNotificationAccess,
                             onNavMirrorChange = { on ->
                                 navMirroring = on
                                 RidePrefs.load(this@MainActivity).navigationMirroring = on
