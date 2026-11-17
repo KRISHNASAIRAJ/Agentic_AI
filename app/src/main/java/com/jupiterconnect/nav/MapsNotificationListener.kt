@@ -32,6 +32,14 @@ class MapsNotificationListener : NotificationListenerService() {
         if (n.packageName !in MAP_PACKAGES) return
         if (!n.isOngoing) return
 
+        // Maps remove + re-post their ongoing notification on every update.
+        // ANY post from a maps app proves the route is still alive - cancel a
+        // pending clear even when this particular post is a junk/partial one
+        // the guard below rejects. Without this, a rejected repost leaves the
+        // clear armed and the cluster goes blank until the next accepted post.
+        pendingClear?.let { handler.removeCallbacks(it) }
+        pendingClear = null
+
         // Google Maps posts multiple ongoing notifications while navigating:
         // the real turn instruction AND a near-empty one whose title is only a
         // distance ("0 m") but whose subText says "Arrive 5:49 pm". Taking that
@@ -71,14 +79,25 @@ class MapsNotificationListener : NotificationListenerService() {
         val foundRemaining = NavParsing.findRemaining(*remainingCandidates.toTypedArray()).let { r ->
             if (r >= 0) r else NavParsing.findTripDistance(*remainingCandidates.toTypedArray())
         }
-        lastManeuver = parsed.maneuver
+        // A metrics-only update (Mappls "5 m" + "15.5 km • 27 min • ETA") has
+        // no maneuver word. Parsing it fresh turns the arrow into "straight"
+        // and the text row into "5 m" - that is the visible blinking. Reuse the
+        // last real turn until a notification actually carries a new one.
+        val maneuver = if (hasManeuver) parsed.maneuver else lastManeuver.ifBlank { parsed.maneuver }
+        val pictogram = if (hasManeuver) parsed.pictogram else lastPictogram
+        val street = if (hasManeuver) parsed.street else lastStreet
+        lastManeuver = maneuver
+        lastPictogram = pictogram
+        lastStreet = street
+
         // Maps apps post several notifications and each update can omit some
-        // fields. Hold each last real value for a short window so one partial
-        // update cannot blank the distance, ETA or trip total - that flip is
-        // what produced the blinking and the "0.0 km" remaining field.
+        // fields. Hold each last real value so one partial update cannot blank
+        // the distance, ETA or trip total. The hold is long because Google Maps
+        // can go many seconds between real updates - a short hold made the
+        // cluster flip back to "0m"/"0.0 km" between them.
         val now = System.currentTimeMillis()
         fun keep(found: Int, last: Int, at: Long): Int =
-            if (found >= 0) found else if (last >= 0 && now - at <= 10_000L) last else found
+            if (found >= 0) found else if (last >= 0 && now - at <= VALUE_HOLD_MS) last else found
 
         val effectiveDistance = if (distance >= 0) {
             lastKnownDistance = distance
@@ -93,11 +112,25 @@ class MapsNotificationListener : NotificationListenerService() {
             foundEta
         } else keep(foundEta, lastEta, lastEtaAtMs).coerceAtLeast(0)
 
-        val effectiveRemaining = if (foundRemaining >= 0) {
-            lastRemaining = foundRemaining
-            lastRemainingAtMs = now
-            foundRemaining
-        } else keep(foundRemaining, lastRemaining, lastRemainingAtMs)
+        // Google Maps never publishes the trip total in its notification. When
+        // a total IS seen once (Mappls, or Maps' route-start notification),
+        // anchor it to the odometer and decrease it as the bike moves - that
+        // gives Google Maps a live "km left" instead of a stuck 0.0 km.
+        val odoKm = runCatching { ClusterRepository.telemetry.value.odometerKm }.getOrDefault(0.0)
+        if (foundRemaining >= 0) {
+            remainingAnchorMeters = foundRemaining
+            remainingAnchorOdoKm = odoKm
+        }
+        val effectiveRemaining = when {
+            foundRemaining >= 0 -> {
+                lastRemaining = foundRemaining
+                lastRemainingAtMs = now
+                foundRemaining
+            }
+            remainingAnchorMeters >= 0 && remainingAnchorOdoKm > 0 && odoKm > remainingAnchorOdoKm ->
+                (remainingAnchorMeters - ((odoKm - remainingAnchorOdoKm) * 1000).toInt()).coerceAtLeast(0)
+            else -> keep(foundRemaining, lastRemaining, lastRemainingAtMs)
+        }
 
         // Diagnostic snapshot so one screenshot on the Rides tab shows exactly
         // what Maps published and what we parsed/sent - no more guessing.
@@ -109,6 +142,7 @@ class MapsNotificationListener : NotificationListenerService() {
             appendLine("parsed.dist=${parsed.distanceMeters} fallback=$distance")
             appendLine("eta=${parsed.etaMinutes} pic=${parsed.pictogram}")
             appendLine("lastKnown=$lastKnownDistance sent=$effectiveDistance")
+            appendLine("remaining=$effectiveRemaining anchor=$remainingAnchorMeters odo=$remainingAnchorOdoKm")
             appendLine("shortCritical=${runCatching { extras.get("android.shortCriticalText")?.toString() }.getOrNull()}")
             appendLine("info=${runCatching { extras.get("android.infoText")?.toString() }.getOrNull()}")
             appendLine("progress=${extras.getInt("android.progress")}/${extras.getInt("android.progressMax")}")
@@ -117,15 +151,12 @@ class MapsNotificationListener : NotificationListenerService() {
             appendLine("hasContentView=${n.notification.contentView != null}")
         }
 
-        // Cancel a pending clear: Maps updates its notification by remove + re-post.
-        pendingClear?.let { handler.removeCallbacks(it) }
-        pendingClear = null
         ClusterRepository.navInstruction.value = NavInstruction(
-            title = parsed.maneuver,
-            street = parsed.street,
+            title = maneuver,
+            street = street,
             distanceMeters = effectiveDistance,
             etaMinutes = effectiveEta,
-            pictogram = parsed.pictogram,
+            pictogram = pictogram,
             provider = n.packageName,
             remainingMeters = effectiveRemaining,
         )
@@ -141,6 +172,17 @@ class MapsNotificationListener : NotificationListenerService() {
         // that is the flicker. Delay the clear so a quick repost cancels it.
         pendingClear?.let { handler.removeCallbacks(it) }
         pendingClear = Runnable {
+            // Maps removes then re-posts its notification on every update. If
+            // any maps notification is still live, this was only an update -
+            // clearing now is what blanked the cluster. Only a genuine end of
+            // navigation (no maps notification left) clears the instruction.
+            val stillActive = runCatching {
+                activeNotifications?.any { it.packageName in MAP_PACKAGES && it.isOngoing }
+            }.getOrDefault(false) == true
+            if (stillActive) {
+                pendingClear = null
+                return@Runnable
+            }
             ClusterRepository.navInstruction.value = null
             pendingClear = null
             lastKnownDistance = -1 // new route must not inherit the old distance
@@ -149,7 +191,11 @@ class MapsNotificationListener : NotificationListenerService() {
             lastEtaAtMs = 0L
             lastRemaining = -1
             lastRemainingAtMs = 0L
+            remainingAnchorMeters = -1
+            remainingAnchorOdoKm = -1.0
             lastManeuver = ""
+            lastPictogram = NavInstruction.STRAIGHT
+            lastStreet = ""
             activeKey = null
         }.also { handler.postDelayed(it, CLEAR_GRACE_MS) }
     }
@@ -177,13 +223,20 @@ class MapsNotificationListener : NotificationListenerService() {
     private var lastEtaAtMs: Long = 0L
     private var lastRemaining: Int = -1
     private var lastRemainingAtMs: Long = 0L
+    // Odometer anchor used to keep Google Maps' "km left" live.
+    private var remainingAnchorMeters: Int = -1
+    private var remainingAnchorOdoKm: Double = -1.0
     // Key of the Maps notification we accepted; only its removal clears nav.
     private var activeKey: String? = null
-    // Maneuver of the last accepted step, to detect a genuine step change.
+    // Last real turn, reused for metrics-only updates so the arrow and text
+    // row do not blink between the real instruction and a bare distance.
     private var lastManeuver: String = ""
+    private var lastPictogram: Int = NavInstruction.STRAIGHT
+    private var lastStreet: String = ""
 
     companion object {
         private const val CLEAR_GRACE_MS = 4000L
+        private const val VALUE_HOLD_MS = 60_000L
         private val MANEUVER_WORDS = listOf(
             "turn", "head", "continue", "keep", "merge", "fork",
             "roundabout", "exit", "u-turn", "arrive", "destination", "onto",

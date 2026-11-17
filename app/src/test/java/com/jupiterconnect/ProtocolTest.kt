@@ -162,5 +162,10 @@ class ProtocolTest {
         val mapplsReal = NavParsing.parse("5 m", "15.5 km • 27 min • 11:11 pm ETA", "", "")
         assertEquals(5, mapplsReal.distanceMeters)
         assertEquals(27, mapplsReal.etaMinutes)
+        // This metrics-only post has no maneuver word, so parsed fresh it would
+        // render a straight arrow and a "5 m" text row. The listener reuses the
+        // last real turn instead - that is what stops the cluster blinking.
+        assertEquals("5 m", mapplsReal.maneuver)
+        assertEquals(NavInstruction.STRAIGHT, mapplsReal.pictogram)
     }
 }
