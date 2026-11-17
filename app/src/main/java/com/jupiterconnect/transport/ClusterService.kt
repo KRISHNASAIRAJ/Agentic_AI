@@ -30,6 +30,7 @@ import android.util.Log
 import androidx.core.app.NotificationCompat
 import androidx.core.content.ContextCompat
 import com.jupiterconnect.R
+import com.jupiterconnect.debug.FrameLog
 import com.jupiterconnect.protocol.Gatt
 import com.jupiterconnect.protocol.ScannedDevice
 import com.jupiterconnect.protocol.Telemetry
@@ -301,6 +302,7 @@ class ClusterService : Service() {
             when (newState) {
                 BluetoothProfile.STATE_CONNECTED -> {
                     Log.i(TAG, "GATT connected, status=$status - requesting MTU")
+                    FrameLog.note("GATT connected status=$status")
                     RideStore.onConnected()
                     gatt = g
                     ClusterRepository.telemetry.value = ClusterRepository.telemetry.value.copy(
@@ -311,6 +313,7 @@ class ClusterService : Service() {
 
                 BluetoothProfile.STATE_DISCONNECTED -> {
                     Log.w(TAG, "GATT disconnected, status=$status")
+                    FrameLog.note("GATT disconnected status=$status")
                     saveParkedLocation()
                     RideStore.onDisconnected()
                     ClusterRepository.telemetry.value = ClusterRepository.telemetry.value.copy(
@@ -383,6 +386,7 @@ class ClusterService : Service() {
             characteristic: BluetoothGattCharacteristic,
             value: ByteArray,
         ) {
+            FrameLog.record("RX", value)
             decodeFrame(value, ClusterRepository.telemetry.value)?.let {
                 ClusterRepository.telemetry.value = it
                 RideStore.onFrame(it)
@@ -394,6 +398,7 @@ class ClusterService : Service() {
         override fun onCharacteristicChanged(g: BluetoothGatt, characteristic: BluetoothGattCharacteristic) {
             @Suppress("DEPRECATION")
             val v = characteristic.value ?: return
+            FrameLog.record("RX", v)
             decodeFrame(v, ClusterRepository.telemetry.value)?.let {
                 ClusterRepository.telemetry.value = it
                 RideStore.onFrame(it)
@@ -492,6 +497,7 @@ class ClusterService : Service() {
         val g = gatt
         val ch = writeChar
         if (g == null || ch == null) return@withLock
+        FrameLog.record("TX", bytes)
         try {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
                 g.writeCharacteristic(ch, bytes, BluetoothGattCharacteristic.WRITE_TYPE_NO_RESPONSE)

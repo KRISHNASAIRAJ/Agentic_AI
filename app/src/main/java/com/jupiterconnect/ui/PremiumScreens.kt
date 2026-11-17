@@ -57,11 +57,14 @@ import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.jupiterconnect.debug.FrameLog
 import com.jupiterconnect.nav.NavInstruction
 import com.jupiterconnect.protocol.ScannedDevice
 import com.jupiterconnect.protocol.Telemetry
@@ -683,6 +686,7 @@ fun PremiumSettingsScreen(
     onOpenNotificationAccess: () -> Unit,
 ) {
     val context = LocalContext.current
+    val clipboard = LocalClipboardManager.current
     Screen {
         Spacer(Modifier.height(18.dp))
         Caption("PREFERENCES")
@@ -717,6 +721,50 @@ fun PremiumSettingsScreen(
                 InfoRow("Protocol", "SmartXonnect BLE")
                 InfoRow("Navigation", "5A 4E / 5B 4F")
                 InfoRow("Link", if (notificationAccess) "Ready" else "Needs notification access")
+            }
+        }
+        Spacer(Modifier.height(14.dp))
+
+        SectionHeading("Frame log", trailing = "DEVELOPER")
+        Spacer(Modifier.height(10.dp))
+        PremiumCard {
+            Column(Modifier.padding(16.dp)) {
+                val entries = FrameLog.entries.collectAsState().value
+                Text(
+                    if (entries.isEmpty())
+                        "No frames captured yet. Connect to the cluster to start logging."
+                    else entries.takeLast(12).joinToString("\n") { it.line },
+                    fontFamily = FontFamily.Monospace,
+                    fontSize = 10.sp,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.fillMaxWidth(),
+                )
+                Spacer(Modifier.height(12.dp))
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    OutlinedButton(
+                        onClick = {
+                            val text = FrameLog.exportText()
+                            if (text.isNotBlank()) clipboard.setText(AnnotatedString(text))
+                        },
+                        modifier = Modifier.weight(1f),
+                    ) { Text("Copy") }
+                    OutlinedButton(
+                        onClick = {
+                            val send = Intent(Intent.ACTION_SEND).apply {
+                                type = "text/plain"
+                                putExtra(Intent.EXTRA_TEXT, FrameLog.exportText())
+                            }
+                            runCatching {
+                                context.startActivity(Intent.createChooser(send, "Share frame log"))
+                            }
+                        },
+                        modifier = Modifier.weight(1f),
+                    ) { Text("Share") }
+                    OutlinedButton(
+                        onClick = { FrameLog.clear() },
+                        modifier = Modifier.weight(1f),
+                    ) { Text("Clear") }
+                }
             }
         }
         Spacer(Modifier.height(14.dp))
