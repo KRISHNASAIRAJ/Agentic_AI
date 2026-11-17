@@ -81,6 +81,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
 import com.jupiterconnect.nav.NavInstruction
+import com.jupiterconnect.protocol.ScannedDevice
 import com.jupiterconnect.protocol.Telemetry
 import com.jupiterconnect.transport.ClusterRepository
 import com.jupiterconnect.transport.ClusterService
@@ -306,7 +307,7 @@ private fun Screen(content: @Composable ColumnScope.() -> Unit) {
 @Composable
 private fun HomeScreen(
     telemetry: Telemetry,
-    devices: List<Pair<String, String>>,
+    devices: List<ScannedDevice>,
     scanning: Boolean,
 ) {
     Screen {
@@ -374,19 +375,29 @@ private fun HomeScreen(
             ) { Text("Mirror", fontSize = 12.sp) }
         }
         if (!telemetry.connected) {
-            SectionLabel("Nearby clusters")
+            SectionLabel("Nearby Bluetooth devices")
             CardBox {
                 if (devices.isEmpty()) {
-                    Text("No TVSBT cluster found. Switch ignition ON, hold MODE for 5s, then scan.",
+                    Text(
+                        if (scanning) "Scanning… switch the ignition ON and hold MODE for 5s."
+                        else "No devices yet. Tap Find to scan — all nearby Bluetooth devices appear here, with clusters marked ★.",
                         style = MaterialTheme.typography.bodyMedium,
                         color = MaterialTheme.colorScheme.onSurfaceVariant)
                 } else {
-                    devices.forEach { (address, name) ->
+                    Text("★ = looks like a TVS cluster", style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    Spacer(Modifier.height(8.dp))
+                    devices.forEach { d ->
                         OutlinedButton(
-                            onClick = { ClusterRepository.connect(address) },
+                            onClick = { ClusterRepository.connect(d.address) },
                             modifier = Modifier.fillMaxWidth(),
                             shape = RoundedCornerShape(12.dp),
-                        ) { Text("$name · $address") }
+                        ) {
+                            Text(
+                                "${if (d.isCluster) "★ " else ""}${d.name} · ${d.rssi} dBm",
+                                style = MaterialTheme.typography.bodySmall,
+                            )
+                        }
                         Spacer(Modifier.height(8.dp))
                     }
                 }

@@ -23,6 +23,14 @@ object InboundId {
     const val ECONOMY = 0x19
 }
 
+/** A device seen during a BLE scan. Clusters are flagged but never hidden. */
+data class ScannedDevice(
+    val address: String,
+    val name: String,
+    val rssi: Int,
+    val isCluster: Boolean,
+)
+
 /** One decoded snapshot of the cluster. All values are plain types for the UI. */
 data class Telemetry(
     val connected: Boolean = false,

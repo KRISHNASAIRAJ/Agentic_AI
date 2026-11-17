@@ -22,10 +22,12 @@ import android.os.Build
 import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
+import android.util.Log
 import androidx.core.app.NotificationCompat
 import androidx.core.content.ContextCompat
 import com.jupiterconnect.R
 import com.jupiterconnect.protocol.Gatt
+import com.jupiterconnect.protocol.ScannedDevice
 import com.jupiterconnect.protocol.Telemetry
 import com.jupiterconnect.nav.NavInstruction
 import com.jupiterconnect.protocol.buildKeepalive
@@ -49,7 +51,7 @@ import java.util.UUID
 /** Shared state between the foreground service and Compose UI. */
 object ClusterRepository {
     val telemetry = MutableStateFlow(Telemetry())
-    val devices = MutableStateFlow<List<Pair<String, String>>>(emptyList())
+    val devices = MutableStateFlow<List<ScannedDevice>>(emptyList())
     val scanning = MutableStateFlow(false)
     val navInstruction = MutableStateFlow<NavInstruction?>(null)
     val mirroring = MutableStateFlow(true)
@@ -105,37 +107,108 @@ class ClusterService : Service() {
         }
 
     fun startScan() {
-        if (!hasBluetoothPermission()) return
-        val scanner = adapter?.bluetoothLeScanner ?: return
+        if (!hasBluetoothPermission()) {
+            ClusterRepository.telemetry.value = ClusterRepository.telemetry.value.copy(
+                error = "Bluetooth permission not granted — grant it in Settings")
+            Log.w(TAG, "scan refused: no bluetooth permission")
+            return
+        }
+        val adapter = adapter
+        if (adapter == null || !adapter.isEnabled) {
+            ClusterRepository.telemetry.value = ClusterRepository.telemetry.value.copy(
+                error = "Bluetooth is off — turn it on and scan again")
+            Log.w(TAG, "scan refused: bluetooth off")
+            return
+        }
+        val scanner = adapter.bluetoothLeScanner
+        if (scanner == null) {
+            ClusterRepository.telemetry.value = ClusterRepository.telemetry.value.copy(
+                error = "BLE scanner unavailable on this device")
+            return
+        }
+        // Stop any previous scan so repeated taps never stack callbacks.
+        scanCallback?.let { old -> runCatching { scanner.stopScan(old) } }
+        ClusterRepository.devices.value = emptyList()
         ClusterRepository.scanning.value = true
-        scanCallback = object : ScanCallback() {
-            override fun onScanResult(callbackType: Int, result: ScanResult?) {
-                val r = result ?: return
-                val name = r.device.name ?: return
-                if (!name.startsWith("TVSBT", ignoreCase = true)) return
-                val entry = r.device.address to name
-                val current = ClusterRepository.devices.value.toMutableList()
-                if (current.none { it.first == entry.first }) {
-                    current.add(entry)
-                    ClusterRepository.devices.value = current
-                }
+        Log.i(TAG, "scan started")
+
+        val callback = object : ScanCallback() {
+            override fun onScanResult(callbackType: Int, result: ScanResult) {
+                record(result)
+            }
+
+            override fun onBatchScanResults(results: MutableList<ScanResult>) {
+                results.forEach { record(it) }
             }
 
             override fun onScanFailed(errorCode: Int) {
                 ClusterRepository.scanning.value = false
-                ClusterRepository.telemetry.value = ClusterRepository.telemetry.value.copy(
-                    error = "Scan failed: $errorCode")
+                val msg = when (errorCode) {
+                    SCAN_FAILED_ALREADY_STARTED -> "A scan is already running"
+                    SCAN_FAILED_APPLICATION_REGISTRATION_FAILED -> "App could not register for scanning"
+                    SCAN_FAILED_FEATURE_UNSUPPORTED -> "This phone does not support BLE scanning"
+                    SCAN_FAILED_INTERNAL_ERROR -> "Bluetooth stack error — try again"
+                    else -> "Scan failed (code $errorCode)"
+                }
+                ClusterRepository.telemetry.value = ClusterRepository.telemetry.value.copy(error = msg)
+                Log.w(TAG, "scan failed: $errorCode — $msg")
             }
         }
-        scanCallback?.let { scanner.startScan(it) }
+        scanCallback = callback
+        try {
+            scanner.startScan(callback)
+        } catch (e: SecurityException) {
+            ClusterRepository.scanning.value = false
+            ClusterRepository.telemetry.value = ClusterRepository.telemetry.value.copy(error = e.message)
+            Log.w(TAG, "startScan threw: ${e.message}")
+            return
+        }
+        // Time-box the scan: it is the most battery-hungry thing the app does.
+        main.postDelayed({
+            if (ClusterRepository.scanning.value) {
+                runCatching { scanner.stopScan(callback) }
+                ClusterRepository.scanning.value = false
+                Log.i(TAG, "scan timed out")
+            }
+        }, SCAN_TIMEOUT_MS)
+    }
+
+    private fun record(result: ScanResult) {
+        val device = result.device ?: return
+        val address = device.address ?: return
+        // Advertised name first: `device.name` is frequently null until bonded.
+        val advertised = runCatching { result.scanRecord?.deviceName }.getOrNull()
+        val name = advertised ?: device.name ?: "Unknown ${address.takeLast(5)}"
+        val byName = CLUSTER_NAME_RE.containsMatchIn(name)
+        val byUuid = runCatching {
+            result.scanRecord?.serviceUuids?.any {
+                it.uuid?.toString()?.equals(Gatt.SERVICE, ignoreCase = true) == true
+            } == true
+        }.getOrDefault(false)
+        val isCluster = byName || byUuid
+
+        // Keep every device — an already-paired sleeping cluster may advertise
+        // nothing recognisable, and hiding it made the scan look broken.
+        val entry = ScannedDevice(address, name, result.rssi, isCluster)
+        val current = ClusterRepository.devices.value.toMutableList()
+        val idx = current.indexOfFirst { it.address == address }
+        if (idx < 0) current.add(entry)
+        else if (result.rssi > current[idx].rssi) current[idx] = entry
+        ClusterRepository.devices.value = current.sortedWith(
+            compareByDescending<ScannedDevice> { it.isCluster }
+                .thenByDescending { it.rssi })
+        Log.d(TAG, "seen: $name [$address] rssi=${result.rssi} cluster=$isCluster")
     }
 
     fun connectTo(address: String) {
         if (!hasBluetoothPermission()) return
         lastAddress = address
-        scanCallback?.let { adapter?.bluetoothLeScanner?.stopScan(it) }
+        scanCallback?.let { cb -> runCatching { adapter?.bluetoothLeScanner?.stopScan(cb) } }
         ClusterRepository.scanning.value = false
-        if (gatt != null) return
+        if (gatt != null) {
+            Log.w(TAG, "connect ignored: gatt already active")
+            return
+        }
         val device: BluetoothDevice = try {
             adapter?.getRemoteDevice(address) ?: return
         } catch (e: IllegalArgumentException) {
@@ -143,6 +216,12 @@ class ClusterService : Service() {
                 error = e.message)
             return
         }
+        // Bond first when needed — some clusters refuse GATT until bonded.
+        if (device.bondState != BluetoothDevice.BOND_BONDED) {
+            runCatching { device.createBond() }
+            Log.i(TAG, "createBond requested for $address")
+        }
+        Log.i(TAG, "connectGatt -> $address")
         gatt = device.connectGatt(this, false, gattCallback, BluetoothDevice.TRANSPORT_LE)
     }
 
@@ -174,6 +253,7 @@ class ClusterService : Service() {
         override fun onConnectionStateChange(g: BluetoothGatt, status: Int, newState: Int) {
             when (newState) {
                 BluetoothProfile.STATE_CONNECTED -> {
+                    Log.i(TAG, "GATT connected, status=$status — requesting MTU")
                     gatt = g
                     ClusterRepository.telemetry.value = ClusterRepository.telemetry.value.copy(
                         connected = true, address = g.device.address, error = null)
@@ -182,6 +262,7 @@ class ClusterService : Service() {
                 }
 
                 BluetoothProfile.STATE_DISCONNECTED -> {
+                    Log.w(TAG, "GATT disconnected, status=$status")
                     ClusterRepository.telemetry.value = ClusterRepository.telemetry.value.copy(
                         connected = false,
                         error = if (status != 0) "Link lost (status $status)" else null,
@@ -205,10 +286,15 @@ class ClusterService : Service() {
         }
 
         override fun onMtuChanged(g: BluetoothGatt, mtu: Int, status: Int) {
+            Log.i(TAG, "MTU=$mtu status=$status")
             startDiscovery(g)
         }
 
         override fun onServicesDiscovered(g: BluetoothGatt, status: Int) {
+            Log.i(TAG, "services discovered, status=$status, count=${g.services?.size ?: 0}")
+            g.services?.forEach { s ->
+                Log.d(TAG, "  service ${s.uuid} chars=${s.characteristics.size}")
+            }
             val service = g.getService(UUID.fromString(Gatt.SERVICE))
                 ?: g.services?.firstOrNull {
                     it.getCharacteristic(UUID.fromString(Gatt.WRITE)) != null &&
@@ -218,8 +304,10 @@ class ClusterService : Service() {
             if (ch == null) {
                 ClusterRepository.telemetry.value = ClusterRepository.telemetry.value.copy(
                     error = "No SmartXonnect service on cluster")
+                Log.w(TAG, "write characteristic ${Gatt.WRITE} not found")
                 return
             }
+            Log.i(TAG, "write characteristic found — starting keepalive")
             writeChar = ch
             val notify = service.getCharacteristic(UUID.fromString(Gatt.READ))
             if (notify != null) {
@@ -342,5 +430,17 @@ class ClusterService : Service() {
         ClusterRepository.service = null
         scope.cancel()
         super.onDestroy()
+    }
+
+    companion object {
+        private const val TAG = "JupiterBle"
+        private const val SCAN_TIMEOUT_MS = 20_000L
+        /** Matches `TVS BT…` and `TVSBT…` — the advertised name is inferred
+         * from community pairing reports, so both spellings are accepted. */
+        private val CLUSTER_NAME_RE = Regex("""\bTVS\s*BT""", RegexOption.IGNORE_CASE)
+        private const val SCAN_FAILED_ALREADY_STARTED = 1
+        private const val SCAN_FAILED_APPLICATION_REGISTRATION_FAILED = 2
+        private const val SCAN_FAILED_INTERNAL_ERROR = 3
+        private const val SCAN_FAILED_FEATURE_UNSUPPORTED = 4
     }
 }
