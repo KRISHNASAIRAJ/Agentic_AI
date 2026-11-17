@@ -77,6 +77,8 @@ object ClusterRepository {
     fun scan() = service?.startScan()
     fun connect(address: String) = service?.connectTo(address)
     fun disconnect() = service?.disconnectNow()
+    /** Show a short reply (e.g. a voice answer) on the cluster's text row. */
+    fun showText(text: String) = service?.sendTextRow(text)
 }
 
 /** All BLE entry points are guarded by [hasBluetoothPermission] at runtime. */
@@ -84,7 +86,9 @@ object ClusterRepository {
 class ClusterService : Service() {
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
-    private val voiceBridge = VoiceAssistantBridge(applicationContext)
+    // applicationContext is null in a field initializer (before attachBaseContext),
+    // so create the bridge in onCreate once the Service has a real Context.
+    private lateinit var voiceBridge: VoiceAssistantBridge
     private val writeLock = Mutex()
     private val main = Handler(Looper.getMainLooper())
 
@@ -101,6 +105,7 @@ class ClusterService : Service() {
 
     override fun onCreate() {
         super.onCreate()
+        voiceBridge = VoiceAssistantBridge(this)
         RideStore.init(applicationContext)
         createChannel()
         ClusterRepository.service = this
@@ -271,6 +276,11 @@ class ClusterService : Service() {
             }
             .maxByOrNull { it.time }
         best?.let { RideStore.saveParkedLocation(it.latitude, it.longitude, it.time) }
+    }
+
+    /** Write a short text reply to the cluster's message row (0x5B 0x4C). */
+    fun sendTextRow(text: String) {
+        scope.launch { write(buildNavText(text, 0x4C)) }
     }
 
     fun disconnectNow() {

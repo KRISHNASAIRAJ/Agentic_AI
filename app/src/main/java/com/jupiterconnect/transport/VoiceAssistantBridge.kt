@@ -4,6 +4,7 @@ import android.content.Context
 import android.content.Intent
 import com.jupiterconnect.debug.FrameLog
 import com.jupiterconnect.protocol.Telemetry
+import com.jupiterconnect.voice.VoiceCommandActivity
 
 /**
  * Launches the phone's voice assistant when the cluster asks for it.
@@ -37,7 +38,10 @@ class VoiceAssistantBridge(private val context: Context) {
     }
 
     private fun launch() {
-        val intent = Intent(Intent.ACTION_ASSIST).apply {
+        // Launch our own listening screen so the command comes back to this
+        // app (weather, navigation, music, replies on the cluster), instead of
+        // going to the phone's generic assistant.
+        val intent = Intent(context, VoiceCommandActivity::class.java).apply {
             addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
         }
         runCatching { context.startActivity(intent) }
