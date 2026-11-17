@@ -149,8 +149,17 @@ object NavParsing {
     private val ETA_RE =
         Regex("""(\d+)\s*(min|mins|minute|minutes|hr|hrs|hour|hours)""", RegexOption.IGNORE_CASE)
 
-    /** A standalone arrival time: `1:58 PM`, `09:04 am`. */
-    private val CLOCK_RE = Regex("""^\s*(\d{1,2}):(\d{2})\s*([AaPp])\.?[Mm]\.?\s*$""")
+    /** Arrival/ETA sentences Maps puts in the text field, not a street name. */
+    private val ARRIVAL_TEXT_RE = Regex(
+        """\s*(?:arrive|arrival|eta|expected)\b[^,;]*""", RegexOption.IGNORE_CASE)
+
+    /**
+     * An arrival clock found anywhere in the string: `1:58 PM`,
+     * `Arrive 1:39 pm`, `ETA 4:16 AM`. Google Maps wraps the clock in a
+     * sentence on some builds, so the old fully-anchored form never matched
+     * and ETA stayed at 0. Word boundaries keep a bare number from matching.
+     */
+    private val CLOCK_RE = Regex("""\b(\d{1,2}):(\d{2})\s*([AaPp])\.?[Mm]\.?\b""")
 
     /**
      * Parse the four notification string fields.
@@ -167,7 +176,11 @@ object NavParsing {
         nowMinutes: Int = nowMinutes(),
     ): ParsedNav {
         val distance = extractDistance(title, text, bigText, subText)
-        val street = text.ifBlank { bigText }.ifBlank { subText }
+        // Strip arrival-clock sentences ("Arrive 1:39 pm") before using the
+        // text as a street name; otherwise the card shows a time as the road.
+        val rawStreet = text.ifBlank { bigText }.ifBlank { subText }
+        val street = rawStreet.replace(ARRIVAL_TEXT_RE, "").trim(' ', '-', ',', '.')
+            .let { if (minutesUntilClock(it, nowMinutes) >= 0 || it.isBlank()) "" else it }
         // Having found the distance in the title, do not then display the title
         // as the maneuver: "550 m" is not an instruction.
         val maneuver = title.trim().takeUnless { isDistanceOnly(it) }.orEmpty()

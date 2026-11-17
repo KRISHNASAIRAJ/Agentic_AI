@@ -104,6 +104,24 @@ class NavParsingTest {
         assertEquals("Arrive at 11:41 AM", parsed.maneuver)
     }
 
+    @Test
+    fun `head direction with arrival sentence yields ETA not time-as-street`() {
+        // Observed 2026-11-17 on the rider's phone: Maps posted a bare heading
+        // as the title and "Arrive 1:39 pm" in the text. The clock must become
+        // ETA minutes, and must NOT be displayed as the street name.
+        val onePm = 13 * 60 // 13:00 baseline -> 1:39 PM is 39 minutes away
+        val p = NavParsing.parse(
+            title = "Head south",
+            text = "Arrive 1:39 pm",
+            bigText = "",
+            subText = "",
+            nowMinutes = onePm,
+        )
+        assertEquals("Head south", p.maneuver)
+        assertEquals("", p.street)
+        assertEquals(39, p.etaMinutes)
+    }
+
     // --- ETA -----------------------------------------------------------------
 
     @Test
