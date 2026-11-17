@@ -61,12 +61,15 @@ class ProtocolTest {
         assertEquals(5498.4, decoded.odometerKm, 0.01)
         assertEquals(4, decoded.fuelBars)
         assertEquals(3578, decoded.rpm) // 0x0DFA
+        assertEquals(1534.4, decoded.tripMeterKm, 0.01) // 0x003BF0 / 10
+        assertEquals(false, decoded.ignitionOn) // no 0x80 bit set
 
         val engine = "5A 18 00 00 00 00 5F 4B 4B 00 00 7E 00 00 00 00 00 00 00 FF"
             .split(" ").map { it.toInt(16).toByte() }.toByteArray()
         val withTemp = decodeFrame(engine, decoded)!!
         assertEquals(12.6, withTemp.batteryVoltage, 0.01)
         assertTrue(withTemp.intakeTempC > 0)
+        assertEquals(95, withTemp.barometricPressureRaw) // 0x5F
     }
 
     @Test

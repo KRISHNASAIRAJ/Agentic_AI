@@ -209,7 +209,7 @@ fun PremiumHomeScreen(
         Spacer(Modifier.height(10.dp))
         Row(horizontalArrangement = Arrangement.spacedBy(12.dp),
             modifier = Modifier.enterAnimated(delayMs = 60)) {
-            PremiumStat(Modifier.weight(1f), Icons.Rounded.History,
+            PremiumStat(Modifier.weight(1.4f), Icons.Rounded.History,
                 "%.1f".format(shownOdo), "km", "Odometer")
             PremiumStat(Modifier.weight(1f), Icons.Rounded.Speed,
                 "$liveTop", "km/h", "Top speed")
@@ -251,7 +251,87 @@ fun PremiumHomeScreen(
                 }
             }
         }
+        Spacer(Modifier.height(14.dp))
+
+        SectionHeading("Vehicle details", trailing = if (telemetry.connected) "LIVE" else null)
+        Spacer(Modifier.height(10.dp))
+        PremiumCard(modifier = Modifier.enterAnimated(delayMs = 90)) {
+            Column(Modifier.padding(16.dp)) {
+                MiniRow(Triple("AVG SPEED", "${telemetry.averageSpeedKmh}", "km/h"),
+                    Triple("CLUSTER TOP", "${telemetry.clusterTopSpeedKmh}", "km/h"))
+                Spacer(Modifier.height(14.dp))
+                MiniRow(Triple("TRIP METER", "%.1f".format(telemetry.tripMeterKm), "km"),
+                    Triple("MODE", if (telemetry.powerMode) "POWER" else "ECO", ""))
+                Spacer(Modifier.height(14.dp))
+                MiniRow(Triple("ENGINE LOAD", "${telemetry.engineLoad}", "%"),
+                    Triple("INST ECONOMY", "${telemetry.instantEconomy}", "km/L"))
+                Spacer(Modifier.height(14.dp))
+                MiniRow(Triple("SERVICE", if (telemetry.serviceDue) "DUE" else "OK", ""),
+                    Triple("CHECK ENGINE", if (telemetry.milOn) "ON" else "OK", ""))
+                Spacer(Modifier.height(14.dp))
+                MiniRow(Triple("THROTTLE", "${telemetry.throttlePosition}", "%"),
+                    Triple("IGNITION", if (telemetry.ignitionOn) "ON" else "OFF", ""))
+                Spacer(Modifier.height(14.dp))
+                MiniRow(Triple("MAP", "${telemetry.manifoldPressure}", ""),
+                    Triple("BARO", "${telemetry.barometricPressure}", ""))
+                Spacer(Modifier.height(14.dp))
+                MiniRow(Triple("ENGINE RUN", "${telemetry.engineRunTime}", ""),
+                    Triple("INJ VOLUME", "${telemetry.fuelInjectionVolume}", ""))
+                Spacer(Modifier.height(14.dp))
+                MiniRow(Triple("INJ TIME", "${telemetry.fuelInjectionTime}", ""),
+                    Triple("DIST TRAVELLED", "${telemetry.distanceTravelledKm}", ""))
+                Spacer(Modifier.height(14.dp))
+                MiniRow(Triple("ISS TIME", "${telemetry.issDuration}", ""),
+                    Triple("ISS COUNT", "${telemetry.issCount}", ""))
+                Spacer(Modifier.height(14.dp))
+                MiniRow(Triple("ISS MODE", "${telemetry.issMode}", ""),
+                    Triple("OTA STATUS", "${telemetry.otaStatus}", ""))
+                Spacer(Modifier.height(14.dp))
+                MiniRow(Triple("SOFTWARE", "${telemetry.softwareVersion}", ""),
+                    Triple("VEH MODEL", "${telemetry.vehicleModel}", ""))
+                Spacer(Modifier.height(14.dp))
+                MiniRow(Triple("VEH STATE", "${telemetry.vehicleState}", ""),
+                    Triple("CLUSTER THEME", "${telemetry.clusterTheme}", ""))
+                Spacer(Modifier.height(14.dp))
+                MiniRow(Triple("FUEL SENSOR", if (telemetry.fuelSensorFault) "FAULT" else "OK", ""),
+                    Triple("CONNECTOR", "${telemetry.connectorStatus}", ""))
+                Spacer(Modifier.height(14.dp))
+                MiniRow(Triple("TURN SIGNAL", "${telemetry.turnIndicator}", ""),
+                    Triple("MIL BLINK", "${telemetry.milBlinkCode}", ""))
+                Spacer(Modifier.height(14.dp))
+                MiniRow(Triple("ISG BLINK", "${telemetry.isgBlinkCode}", ""),
+                    Triple("BACKLIGHT", "${telemetry.backlightMode}", ""))
+                Spacer(Modifier.height(14.dp))
+                MiniRow(Triple("0-60 RAW", "${telemetry.zeroToSixtyRaw}", ""),
+                    Triple("BARO RAW", "${telemetry.barometricPressureRaw}", ""))
+            }
+        }
         Spacer(Modifier.height(28.dp))
+    }
+}
+
+@Composable
+private fun MiniRow(left: Triple<String, String, String>, right: Triple<String, String, String>) {
+    Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+        MiniCell(Modifier.weight(1f), left.first, left.second, left.third)
+        MiniCell(Modifier.weight(1f), right.first, right.second, right.third)
+    }
+}
+
+@Composable
+private fun MiniCell(modifier: Modifier, label: String, value: String, unit: String) {
+    Column(modifier) {
+        Caption(label)
+        Spacer(Modifier.height(3.dp))
+        Row(verticalAlignment = Alignment.Bottom) {
+            Text(value, style = NumberStyle, fontSize = 17.sp, fontWeight = FontWeight.Bold,
+                color = MaterialTheme.colorScheme.onSurface, maxLines = 1, softWrap = false)
+            if (unit.isNotBlank()) {
+                Spacer(Modifier.width(3.dp))
+                Text(unit, style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+        }
     }
 }
 
@@ -284,13 +364,15 @@ private fun SpeedGraph(values: List<Int>, active: Boolean) {
 @Composable
 private fun PremiumStat(modifier: Modifier, icon: ImageVector, value: String, unit: String, label: String) {
     PremiumCard(modifier = modifier) {
-        Column(Modifier.padding(16.dp)) {
+        Column(Modifier.padding(12.dp)) {
             Icon(icon, contentDescription = null, tint = JupiterColors.Accent, modifier = Modifier.size(22.dp))
-            Spacer(Modifier.height(14.dp))
+            Spacer(Modifier.height(12.dp))
             Row(verticalAlignment = Alignment.Bottom) {
-                Text(value, style = NumberStyle, fontSize = 26.sp, fontWeight = FontWeight.Bold,
-                    color = MaterialTheme.colorScheme.onSurface)
-                Spacer(Modifier.width(4.dp))
+                // maxLines/softWrap keep a long odometer like "16593.2" on a
+                // single line instead of dropping the decimal to a second row.
+                Text(value, style = NumberStyle, fontSize = 22.sp, fontWeight = FontWeight.Bold,
+                    color = MaterialTheme.colorScheme.onSurface, maxLines = 1, softWrap = false)
+                Spacer(Modifier.width(3.dp))
                 Text(unit, style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(bottom = 4.dp))
             }

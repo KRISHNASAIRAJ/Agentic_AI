@@ -25,21 +25,52 @@ fun decodeFrame(raw: ByteArray, current: Telemetry): Telemetry? {
             // 125-family uses the low nibble of byte 6 for fuel bars.
             fuelBars = u8(raw[6]) and 0x0F,
             rpm = u16(raw, 17),
+            averageSpeedKmh = u8(raw[7]),
+            powerMode = u8(raw[8]) == 1, // 0 = Economy, 1 = Power
+            clusterTopSpeedKmh = u8(raw[9]),
+            throttlePosition = u8(raw[10]),
+            backlightMode = u8(raw[11]) and 0x0F,
+            ignitionOn = (u8(raw[12]) and 0x80) != 0,
+            zeroToSixtyRaw = u8(raw[13]),
+            tripMeterKm = u24(raw, 14) / 10.0,
         )
 
         InboundId.SERVICE -> base.copy(
-            // byte 7 is the software version on Jupiter; 14 is cluster theme.
+            fuelSensorFault = u8(raw[2]) != 0,
+            vehicleState = u8(raw[3]),
+            serviceDue = u8(raw[4]) != 0,
+            issMode = u8(raw[6]),
+            softwareVersion = u8(raw[7]),
+            milBlinkCode = u8(raw[8]),
+            vehicleModel = u8(raw[9]),
+            milOn = (u8(raw[10]) and 0x04) != 0,
+            isgBlinkCode = u8(raw[11]),
+            turnIndicator = u8(raw[12]),
+            connectorStatus = u8(raw[13]),
+            clusterTheme = u8(raw[14]),
         )
 
         InboundId.ENGINE -> base.copy(
+            engineLoad = u8(raw[2]),
+            fuelInjectionTime = u16(raw, 3),
+            manifoldPressure = u8(raw[5]),
+            barometricPressureRaw = u8(raw[6]),
             intakeTempC = u8(raw[7]) - 40,
             engineTempC = u8(raw[8]) - 40,
+            barometricPressure = u16(raw, 9),
             batteryVoltage = u8(raw[11]) * 0.1,
+            engineRunTime = u16(raw, 12),
+            distanceTravelledKm = u16(raw, 14),
+            fuelInjectionVolume = u16(raw, 16),
         )
 
         InboundId.ECONOMY -> base.copy(
+            issDuration = u24(raw, 2),
+            otaStatus = u8(raw[5]),
             averageFuelEconomy = u8(raw[8]),
+            instantEconomy = u8(raw[9]),
             distanceToEmptyKm = u16(raw, 11),
+            issCount = u24(raw, 15),
         )
 
         else -> base

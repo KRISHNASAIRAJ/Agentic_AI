@@ -43,6 +43,47 @@ data class Telemetry(
     val intakeTempC: Int = 0,
     val distanceToEmptyKm: Int = 0,
     val averageFuelEconomy: Int = 0,
+
+    // 0x10 primary telemetry
+    val averageSpeedKmh: Int = 0,
+    val clusterTopSpeedKmh: Int = 0,
+    val powerMode: Boolean = false,
+    val throttlePosition: Int = 0,
+    val backlightMode: Int = 0,
+    val ignitionOn: Boolean = false,
+    val zeroToSixtyRaw: Int = 0,
+    val tripMeterKm: Double = 0.0,
+
+    // 0x11 service / diagnostics
+    val fuelSensorFault: Boolean = false,
+    val vehicleState: Int = 0,
+    val serviceDue: Boolean = false,
+    val issMode: Int = 0,
+    val softwareVersion: Int = 0,
+    val milBlinkCode: Int = 0,
+    val vehicleModel: Int = 0,
+    val milOn: Boolean = false,
+    val isgBlinkCode: Int = 0,
+    val turnIndicator: Int = 0,
+    val connectorStatus: Int = 0,
+    val clusterTheme: Int = 0,
+
+    // 0x18 engine telemetry
+    val engineLoad: Int = 0,
+    val fuelInjectionTime: Int = 0,
+    val manifoldPressure: Int = 0,
+    val barometricPressureRaw: Int = 0,
+    val barometricPressure: Int = 0,
+    val engineRunTime: Int = 0,
+    val distanceTravelledKm: Int = 0,
+    val fuelInjectionVolume: Int = 0,
+
+    // 0x19 economy
+    val issDuration: Int = 0,
+    val otaStatus: Int = 0,
+    val instantEconomy: Int = 0,
+    val issCount: Int = 0,
+
     val frameCount: Long = 0,
     val lastFrame: String = "-",
     val address: String = "",
