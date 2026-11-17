@@ -9,19 +9,16 @@ data class NavInstruction(
     val pictogram: Int = STRAIGHT,
     val provider: String = "",
 ) {
-    /** Best single line for the cluster's 17-byte text row. */
     val displayLine: String
         get() = listOf(title, street).firstOrNull { it.isNotBlank() } ?: "Navigating"
 
     companion object {
-        // Pictogram IDs are inherited from the Jupiter reference and are
-        // UNVERIFIED on the real 2026 cluster. Keep them named.
-        const val LEFT = 1
-        const val RIGHT = 2
-        const val MERGE = 3
-        const val FORK = 4
-        const val ROUNDABOUT = 5
-        const val STRAIGHT = 7
+        const val LEFT = Pictograms.TURN_LEFT
+        const val RIGHT = Pictograms.TURN_RIGHT
+        const val MERGE = 14
+        const val FORK = 15
+        const val ROUNDABOUT = Pictograms.ROUNDABOUT
+        const val STRAIGHT = Pictograms.CONTINUE_STRAIGHT
     }
 }
 
@@ -37,13 +34,26 @@ data class ParsedNav(
 object NavParsing {
     private val DISTANCE = Regex("""(\d+(?:[.,]\d+)?)\s*(km|mi|ft|m)(?![A-Za-z])""", RegexOption.IGNORE_CASE)
     private val ETA = Regex("""(\d+)\s*(?:min|mins|minutes|hr|hrs|hour|hours)\b""", RegexOption.IGNORE_CASE)
-
-    /** Arrival clock anywhere in a string: `1:39 pm`, `Arrive 1:39 pm`, `ETA 4:16 AM`. */
     private val CLOCK = Regex("""\b(\d{1,2}):(\d{2})\s*([AaPp])\.?[Mm]\.?\b""")
-
-    /** Arrival sentences Maps puts in the text field, not a street name. */
     private val ARRIVAL_TEXT = Regex(
         """\s*(?:arrive|arrival|eta|expected)\b[^,;]*""", RegexOption.IGNORE_CASE)
+
+    /** Extract a distance in metres from any string, or -1. */
+    fun findDistance(vararg texts: String): Int {
+        for (t in texts) {
+            if (t.isBlank()) continue
+            val m = DISTANCE.find(t) ?: continue
+            val value = m.groupValues[1].replace('/', '.').replace(',', '.').toDoubleOrNull()
+                ?: continue
+            return when (m.groupValues[2].lowercase()) {
+                "km" -> (value * 1000).toInt()
+                "mi" -> (value * 1609).toInt()
+                "ft" -> (value * 0.3048).toInt()
+                else -> value.toInt()
+            }
+        }
+        return -1
+    }
 
     fun parse(title: String, text: String, bigText: String, subText: String): ParsedNav {
         val all = listOf(title, text, bigText, subText).joinToString(" ")
@@ -58,7 +68,6 @@ object NavParsing {
             }
         } ?: -1
 
-        // Duration first; if none, fall back to an arrival clock ("1:39 pm").
         var eta = ETA.findAll(all).mapNotNull { m ->
             val n = m.groupValues[1].toIntOrNull() ?: return@mapNotNull null
             when (m.groupValues[0].substringAfter(m.groupValues[1]).trim().lowercase()) {
@@ -82,21 +91,12 @@ object NavParsing {
             }
         }
 
-        val lower = all.lowercase()
-        val (maneuver, pictogram) = when {
-            "roundabout" in lower -> "Roundabout" to NavInstruction.ROUNDABOUT
-            "fork" in lower -> "Fork" to NavInstruction.FORK
-            "merge" in lower -> "Merge" to NavInstruction.MERGE
-            "turn left" in lower || "left turn" in lower -> "Turn left" to NavInstruction.LEFT
-            "turn right" in lower || "right turn" in lower -> "Turn right" to NavInstruction.RIGHT
-            "continue" in lower || "straight" in lower -> "Continue" to NavInstruction.STRAIGHT
-            else -> "" to NavInstruction.STRAIGHT
-        }
+        // Resolve the arrow from the full instruction text using the official
+        // TVS pictogram table — not hand-picked IDs that render the wrong arrow.
+        val pictogram = Pictograms.fromText(all) ?: NavInstruction.STRAIGHT
+        val maneuver = listOf(title, text, bigText, subText)
+            .firstOrNull { it.isNotBlank() }.orEmpty().take(17)
 
-        // Google Maps posts distance as the title and the road as text;
-        // TVS Connect posts the maneuver as title and metrics as text.
-        // Strip arrival clocks and sentences ("Arrive 1:39 pm") before using
-        // text as a street name; otherwise the card shows a time as the road.
         val street = listOf(text, bigText, subText, title)
             .map {
                 it.replace(ARRIVAL_TEXT, "")

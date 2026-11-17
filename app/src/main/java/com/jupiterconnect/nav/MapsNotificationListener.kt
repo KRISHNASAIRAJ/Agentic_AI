@@ -32,10 +32,21 @@ class MapsNotificationListener : NotificationListenerService() {
         if (!n.isOngoing) return
 
         val parsed = NavParsing.parse(title, text, bigText, subText)
+
+        // Google Maps sometimes puts the distance ("40 m") in a non-standard
+        // extra rather than the four fields above. Scan every CharSequence
+        // extra as a fallback so the cluster shows the real distance.
+        var distance = parsed.distanceMeters
+        if (distance < 0) {
+            val allText = extras.keySet().mapNotNull { key ->
+                runCatching { extras.getCharSequence(key)?.toString() }.getOrNull()
+            }.filter { it.isNotBlank() }.toTypedArray()
+            distance = NavParsing.findDistance(*allText)
+        }
         ClusterRepository.navInstruction.value = NavInstruction(
             title = parsed.maneuver,
             street = parsed.street,
-            distanceMeters = parsed.distanceMeters.coerceAtLeast(0),
+            distanceMeters = distance.coerceAtLeast(0),
             etaMinutes = parsed.etaMinutes,
             pictogram = parsed.pictogram,
             provider = n.packageName,
