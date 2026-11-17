@@ -63,13 +63,23 @@ class MapsNotificationListener : NotificationListenerService() {
                 NavParsing.findRemaining(*allText)
             }
         }
+        // Maps alternates between two notification formats: one carries the
+        // distance ("120 m · Turn right…"), the next drops it entirely
+        // ("Head east on 2nd Ln" + "Arrive 6:05 pm"). Sending 0 for the missing
+        // one makes the cluster blink between the real distance and "0m".
+        // Hold the last known distance when this notification has none.
+        val effectiveDistance = if (distance >= 0) {
+            lastKnownDistance = distance
+            distance
+        } else lastKnownDistance
+
         // Cancel a pending clear: Maps updates its notification by remove + re-post.
         pendingClear?.let { handler.removeCallbacks(it) }
         pendingClear = null
         ClusterRepository.navInstruction.value = NavInstruction(
             title = parsed.maneuver,
             street = parsed.street,
-            distanceMeters = distance.coerceAtLeast(0),
+            distanceMeters = effectiveDistance.coerceAtLeast(0),
             etaMinutes = parsed.etaMinutes,
             pictogram = parsed.pictogram,
             provider = n.packageName,
@@ -86,11 +96,14 @@ class MapsNotificationListener : NotificationListenerService() {
         pendingClear = Runnable {
             ClusterRepository.navInstruction.value = null
             pendingClear = null
+            lastKnownDistance = -1 // new route must not inherit the old distance
         }.also { handler.postDelayed(it, CLEAR_GRACE_MS) }
     }
 
     private val handler = android.os.Handler(android.os.Looper.getMainLooper())
     private var pendingClear: Runnable? = null
+    // Last distance Maps actually published; reused when a notification omits it.
+    private var lastKnownDistance: Int = -1
 
     companion object {
         private const val CLEAR_GRACE_MS = 4000L
