@@ -440,7 +440,7 @@ fun PremiumNavigateScreen(
                     color = if (instruction != null) JupiterColors.Accent else MaterialTheme.colorScheme.onSurfaceVariant)
                 Spacer(Modifier.height(10.dp))
                 Text(
-                    instruction?.displayLine ?: "Start navigation in Google Maps",
+                    instruction?.displayLine ?: "Start navigation in Google Maps or Mappls",
                     style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold,
                     color = MaterialTheme.colorScheme.onSurface,
                 )

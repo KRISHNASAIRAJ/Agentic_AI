@@ -84,6 +84,7 @@ object ClusterRepository {
 class ClusterService : Service() {
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+    private val voiceBridge = VoiceAssistantBridge(applicationContext)
     private val writeLock = Mutex()
     private val main = Handler(Looper.getMainLooper())
 
@@ -303,6 +304,7 @@ class ClusterService : Service() {
                 BluetoothProfile.STATE_CONNECTED -> {
                     Log.i(TAG, "GATT connected, status=$status - requesting MTU")
                     FrameLog.note("GATT connected status=$status")
+                    voiceBridge.reset()
                     RideStore.onConnected()
                     gatt = g
                     ClusterRepository.telemetry.value = ClusterRepository.telemetry.value.copy(
@@ -390,6 +392,7 @@ class ClusterService : Service() {
             decodeFrame(value, ClusterRepository.telemetry.value)?.let {
                 ClusterRepository.telemetry.value = it
                 RideStore.onFrame(it)
+                voiceBridge.onFrame(it)
                 ClusterRepository.recordSpeed(it.speedKmh)
             }
         }
@@ -402,6 +405,7 @@ class ClusterService : Service() {
             decodeFrame(v, ClusterRepository.telemetry.value)?.let {
                 ClusterRepository.telemetry.value = it
                 RideStore.onFrame(it)
+                voiceBridge.onFrame(it)
                 ClusterRepository.recordSpeed(it.speedKmh)
             }
         }

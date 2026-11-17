@@ -38,10 +38,13 @@ class MapsNotificationListener : NotificationListenerService() {
         // junk one made the cluster flicker between the real instruction and a
         // bare "0m". Require the TITLE itself to contain a real maneuver word
         // (turn/head/continue/left/right/...) and to not be distance-only.
-        val titleHasManeuver = MANEUVER_WORDS.any { title.contains(it, true) }
+        // Mappls sometimes puts the maneuver in TEXT while Google Maps puts it
+        // in TITLE. Since only known maps apps can reach this point, accept
+        // either field - this keeps both providers working.
+        val hasManeuver = MANEUVER_WORDS.any { title.contains(it, true) || text.contains(it, true) }
         val titleIsDistanceOnly = NavParsing.findDistance(title) >= 0 &&
             title.replace(Regex("""[\d.,\s]|(km|mi|ft|m)\b""", RegexOption.IGNORE_CASE), "").isBlank()
-        if (!titleHasManeuver || titleIsDistanceOnly) return
+        if (!hasManeuver || titleIsDistanceOnly) return
 
         // This is the notification we accepted - remember its key so a junk
         // Maps notification being removed cannot clear the real instruction.
@@ -163,6 +166,8 @@ class MapsNotificationListener : NotificationListenerService() {
             "com.mappls.app",
             "com.mappls.app.pro",
             "com.mapmyindia.android.app",
+            // Mappls (MapmyIndia) ships as com.mmi.maps on current Play builds.
+            "com.mmi.maps",
             "com.mmi.android.mmaps",
             "org.organicmaps",
             "com.here.app.maps",
