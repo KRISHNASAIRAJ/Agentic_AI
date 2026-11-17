@@ -16,7 +16,10 @@ import android.bluetooth.le.ScanCallback
 import android.bluetooth.le.ScanResult
 import android.content.Context
 import android.content.Intent
+import android.content.IntentFilter
 import android.annotation.SuppressLint
+import android.os.BatteryManager
+import android.telephony.TelephonyManager
 import android.content.pm.PackageManager
 import android.location.LocationManager
 import android.os.Build
@@ -399,11 +402,50 @@ class ClusterService : Service() {
         }
     }
 
+    /** Phone battery percentage, or -1 when unavailable. */
+    private fun phoneBatteryPct(): Int {
+        val i = runCatching {
+            registerReceiver(null, IntentFilter(Intent.ACTION_BATTERY_CHANGED))
+        }.getOrNull() ?: return -1
+        val level = i.getIntExtra(BatteryManager.EXTRA_LEVEL, -1)
+        val scale = i.getIntExtra(BatteryManager.EXTRA_SCALE, -1)
+        return if (level >= 0 && scale > 0) level * 100 / scale else -1
+    }
+
+    /** Cellular signal as 0..4 bars, or -1 when unavailable. */
+    @SuppressLint("MissingPermission")
+    private fun phoneSignalBars(): Int {
+        val allowed =
+            ContextCompat.checkSelfPermission(this, android.Manifest.permission.ACCESS_FINE_LOCATION) ==
+                PackageManager.PERMISSION_GRANTED ||
+                ContextCompat.checkSelfPermission(this, android.Manifest.permission.ACCESS_COARSE_LOCATION) ==
+                PackageManager.PERMISSION_GRANTED
+        if (!allowed) return -1
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R) return -1
+        val tm = getSystemService(Context.TELEPHONY_SERVICE) as? TelephonyManager ?: return -1
+        val dbm = runCatching {
+            tm.allCellInfo?.mapNotNull { it.cellSignalStrength?.dbm }?.filter { it > -120 }?.maxOrNull()
+        }.getOrNull() ?: return -1
+        return when {
+            dbm >= -80 -> 4
+            dbm >= -95 -> 3
+            dbm >= -105 -> 2
+            dbm >= -115 -> 1
+            else -> 0
+        }
+    }
+
     private fun startKeepalive() {
         if (keepaliveJob?.isActive == true) return
         keepaliveJob = scope.launch {
             while (isActive) {
-                write(buildKeepalive())
+                // Real phone values stop the cluster flipping between
+                // "full signal / full battery" and "no signal / low battery"
+                // every time our keepalive arrived with zeros.
+                write(buildKeepalive(
+                    batteryPct = phoneBatteryPct(),
+                    signalBars = phoneSignalBars(),
+                ))
                 delay(2000)
             }
         }

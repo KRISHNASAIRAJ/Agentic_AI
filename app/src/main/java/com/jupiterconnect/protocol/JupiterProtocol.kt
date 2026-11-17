@@ -104,10 +104,17 @@ fun sanitize(input: String): String {
  *    the keepalive as corrupt, which is what produced the flickering/glitchy
  *    nav area. The mobile-data frame carries no checksum.
  */
-fun buildKeepalive(findMy: Boolean = false): ByteArray {
+fun buildKeepalive(findMy: Boolean = false, batteryPct: Int = -1, signalBars: Int = -1): ByteArray {
     val b = ByteArray(20)
     b[0] = 0x5B
     b[1] = OutboundId.MOBILE_DATA.toByte()
+    // Jupiter's enriched mobile-data layout: byte 2 packs cellular signal in
+    // the high nibble and a phone-battery bucket (ceil(pct/25)) in the low
+    // nibble. Leaving it zero made the cluster show "no signal / low battery".
+    val bucket = if (batteryPct >= 0) ((batteryPct + 24) / 25).coerceIn(0, 4) else 0
+    val bars = signalBars.coerceIn(0, 4)
+    b[2] = ((bars shl 4) or bucket).toByte()
+    b[4] = 40 // ambient temperature + 40 (40 = 0 C / unknown)
     val now = Calendar.getInstance()
     val hour = now.get(Calendar.HOUR).let { if (it == 0) 12 else it }
     b[6] = hour.toByte()
