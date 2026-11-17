@@ -381,10 +381,14 @@ class ClusterService : Service() {
                         // rendered as "-1m"); send 0 and omit the number from
                         // the text row instead.
                         val distance = step.distanceMeters.coerceAtLeast(0)
+                        // Remaining distance (the cluster's "km left" field):
+                        // use Maps' value when present, else 0 so the cluster
+                        // applies its documented fallback to distance-to-turn.
+                        val remaining = step.remainingMeters.coerceAtLeast(0)
                         write(buildNavControl(
                             distance,
                             step.etaMinutes,
-                            distance, // remaining falls back to distance
+                            remaining,
                             step.pictogram,
                         ))
                         // Send only the instruction text. The cluster renders

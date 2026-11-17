@@ -8,6 +8,8 @@ data class NavInstruction(
     val etaMinutes: Int = 0,
     val pictogram: Int = STRAIGHT,
     val provider: String = "",
+    /** Total distance left to the destination (cluster's "km left" field). */
+    val remainingMeters: Int = -1,
 ) {
     val displayLine: String
         get() = listOf(title, street).firstOrNull { it.isNotBlank() } ?: "Navigating"
@@ -37,6 +39,27 @@ object NavParsing {
     private val CLOCK = Regex("""\b(\d{1,2}):(\d{2})\s*([AaPp])\.?[Mm]\.?\b""")
     private val ARRIVAL_TEXT = Regex(
         """\s*(?:arrive|arrival|eta|expected)\b[^,;]*""", RegexOption.IGNORE_CASE)
+
+    /**
+     * Total distance remaining to the destination (the cluster's "km left"
+     * field beside the ETA). Maps usually does NOT publish this in the
+     * notification — only the distance to the next turn. But some builds put
+     * "12.4 km remaining" or "X km to destination" in bigText/subText, so look
+     * for those phrases specifically. Returns -1 when genuinely absent.
+     */
+    private val REMAINING = Regex(
+        """(\d+(?:[.,]\d+)?)\s*(km|m)\s*(?:remaining|left|to (?:go|destination|dest))""",
+        RegexOption.IGNORE_CASE,
+    )
+    fun findRemaining(vararg texts: String): Int {
+        for (t in texts) {
+            if (t.isBlank()) continue
+            val m = REMAINING.find(t) ?: continue
+            val value = m.groupValues[1].replace(',', '.').toDoubleOrNull() ?: continue
+            return if (m.groupValues[2].equals("km", true)) (value * 1000).toInt() else value.toInt()
+        }
+        return -1
+    }
 
     /** Extract a distance in metres from any string, or -1. */
     fun findDistance(vararg texts: String): Int {

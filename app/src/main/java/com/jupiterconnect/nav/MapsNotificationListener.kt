@@ -53,6 +53,15 @@ class MapsNotificationListener : NotificationListenerService() {
             }.filter { it.isNotBlank() }.toTypedArray()
             distance = NavParsing.findDistance(*allText)
         }
+        // Total remaining distance, if Maps publishes it anywhere.
+        val remaining = NavParsing.findRemaining(title, text, bigText, subText).let { r ->
+            if (r >= 0) r else {
+                val allText = extras.keySet().mapNotNull { key ->
+                    runCatching { extras.getCharSequence(key)?.toString() }.getOrNull()
+                }.toTypedArray()
+                NavParsing.findRemaining(*allText)
+            }
+        }
         ClusterRepository.navInstruction.value = NavInstruction(
             title = parsed.maneuver,
             street = parsed.street,
@@ -60,6 +69,7 @@ class MapsNotificationListener : NotificationListenerService() {
             etaMinutes = parsed.etaMinutes,
             pictogram = parsed.pictogram,
             provider = n.packageName,
+            remainingMeters = remaining,
         )
     }
 
