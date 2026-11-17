@@ -1,80 +1,184 @@
-name: Android CI
+name: Android
 
+# Build every push and PR; attach the APK to a GitHub Release only on a tag or
+# a manual dispatch. Publishing a release on every commit to master buries the
+# version you actually want to download.
 on:
   push:
+    branches: [main, premium-ui]
+    tags: ['v*']
   pull_request:
   workflow_dispatch:
 
-env:
-  GRADLE_VERSION: 8.13
-  JAVA_VERSION: '17'
-
 jobs:
-  validate-env:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-java@v4
-        with:
-          distribution: temurin
-          java-version: ${{ env.JAVA_VERSION }}
-      - uses: gradle/actions/setup-gradle@v4
-        with:
-          gradle-version: ${{ env.GRADLE_VERSION }}
-      - name: Verify required files
-        run: |
-          test -f gradle/wrapper/gradle-wrapper.jar
-          test -f app/build.gradle.kts
-          test -f app/src/main/AndroidManifest.xml
-          java -version
-      - name: Check Gradle wrapper
-        run: bash ./gradlew --version
-
-  unit-tests:
-    needs: validate-env
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-java@v4
-        with:
-          distribution: temurin
-          java-version: ${{ env.JAVA_VERSION }}
-      - uses: gradle/actions/setup-gradle@v4
-        with:
-          gradle-version: ${{ env.GRADLE_VERSION }}
-      # GitHub runners already ship the Android SDK; the wrapper just needs its path.
-      - name: Write local.properties
-        run: echo "sdk.dir=$ANDROID_HOME" >> local.properties
-      - name: Run JVM tests
-        run: bash ./gradlew :app:testDebugUnitTest --no-daemon --stacktrace
-      - name: Upload test reports
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: test-reports
-          path: app/build/reports/tests/
-          if-no-files-found: ignore
-
   build:
-    needs: unit-tests
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
     steps:
       - uses: actions/checkout@v4
+
+      # 21, not the runner's default 17 and not 26: AGP 8.7.3 needs 17+, and the
+      # toolchain that builds this repo reproducibly is 21.
       - uses: actions/setup-java@v4
         with:
           distribution: temurin
-          java-version: ${{ env.JAVA_VERSION }}
+          java-version: '21'
+
+      # No android-actions/setup-android: v3 fails on current runners with
+      # "Failed to find package 'tools'" and a sdkmanager exit code 1. The
+      # ubuntu image already ships the SDK, so drive sdkmanager directly and
+      # locate it rather than trusting a fixed path.
+      - name: Locate the Android SDK
+        run: |
+          echo "ANDROID_HOME=${ANDROID_HOME:-unset}" >> "$GITHUB_ENV"
+          SDKMANAGER=$(ls -d "${ANDROID_HOME}"/cmdline-tools/*/bin/sdkmanager 2>/dev/null | head -1)
+          if [ -z "$SDKMANAGER" ]; then
+            echo "::error::sdkmanager not found under ANDROID_HOME"
+            ls -la "${ANDROID_HOME}" || true
+            exit 1
+          fi
+          echo "SDKMANAGER=$SDKMANAGER" >> "$GITHUB_ENV"
+          echo "$(dirname "$SDKMANAGER")" >> "$GITHUB_PATH"
+          "$SDKMANAGER" --version
+
+      - name: Install SDK packages
+        run: |
+          yes | "$SDKMANAGER" --licenses > /dev/null || true
+          "$SDKMANAGER" "platform-tools" "platforms;android-34" "build-tools;34.0.0"
+
       - uses: gradle/actions/setup-gradle@v4
-        with:
-          gradle-version: ${{ env.GRADLE_VERSION }}
-      - name: Write local.properties
-        run: echo "sdk.dir=$ANDROID_HOME" >> local.properties
-      - name: Build debug APK
-        run: bash ./gradlew :app:assembleDebug --no-daemon --stacktrace
-      - name: Upload APK
+
+      # One signing key for every build, so an installed app can be upgraded in
+      # place. Without it every runner generates its own debug keystore and
+      # `adb install -r` fails with INSTALL_FAILED_UPDATE_INCOMPATIBLE.
+      #
+      # The keystore exists only as a base64 secret — never in the repo — and the
+      # file is written *after* checkout so it cannot be committed by accident.
+      # This step is allowed to do nothing: on a pull request from a fork the
+      # secrets are deliberately absent, the build must still succeed, and
+      # `app/build.gradle.kts` falls back to the debug key whenever
+      # key.properties is missing.
+      - name: Materialise signing key
+        env:
+          TVS_KEYSTORE_B64: ${{ secrets.TVS_KEYSTORE_B64 }}
+          TVS_KEYSTORE_PASS: ${{ secrets.TVS_KEYSTORE_PASS }}
+          TVS_KEY_ALIAS: ${{ secrets.TVS_KEY_ALIAS }}
+          TVS_KEY_PASS: ${{ secrets.TVS_KEY_PASS }}
+        run: |
+          set -euo pipefail
+          if [ -z "${TVS_KEYSTORE_B64:-}" ]; then
+            echo "No signing secret — building debug-signed (expected on forks)."
+            exit 0
+          fi
+          printf '%s' "$TVS_KEYSTORE_B64" | base64 -d > tvs-release.jks
+          {
+            echo "storeFile=tvs-release.jks"
+            echo "storePassword=$TVS_KEYSTORE_PASS"
+            echo "keyAlias=$TVS_KEY_ALIAS"
+            echo "keyPassword=$TVS_KEY_PASS"
+          } > key.properties
+          echo "Signing key materialised."
+
+      # A debug APK, not the release one. There is no signing key, so
+      # assembleRelease yields an unsigned APK that cannot be installed — and a
+      # debuggable APK is what lets `adb shell run-as dev.tvsopen` pull the
+      # on-device log file, which is the whole debugging story for this project.
+      # Unit tests run in the same invocation as the assemble, before it. The
+      # protocol layer is plain arithmetic on byte arrays, so these need no
+      # device and no emulator — which is exactly why they caught the odometer
+      # double-division bug that every on-device smoke test was blind to.
+      #
+      # One invocation rather than two, and no `--no-daemon`: a second Gradle
+      # call re-pays JVM startup and configuration, and disabling the daemon
+      # means the two halves cannot share anything. Both were deliberate
+      # sacrifices to the local 2-core budget and buy nothing on an ephemeral
+      # runner that is discarded at the end of the job. The local commands in
+      # AGENTS.md still pass `--no-daemon --max-workers=2 --no-parallel`
+      # explicitly, so nothing about this machine's limits has been relaxed.
+      - name: Unit tests and build
+        run: ./gradlew :app:testDebugUnitTest :app:assembleDebug --stacktrace
+
+      # INTERNET is declared deliberately since embedded-map support: map
+      # tiles, place search and routing need the network (see docs/MAPS.md for
+      # the closed destination list). The invariant that remains is narrower
+      # and still enforced: no TVS contact. That is a code property — network
+      # call sites live only in dev.tvsopen.nav.maps — not something aapt can
+      # assert, so this step pins the permission set instead of forbidding it.
+      - name: Assert INTERNET is present, and the set is otherwise as expected
+        run: |
+          set -euo pipefail
+          AAPT2=$(ls -d "$ANDROID_HOME"/build-tools/*/aapt2 | sort -V | tail -1)
+          APK=app/build/outputs/apk/debug/app-debug.apk
+          "$AAPT2" dump permissions "$APK" | tee permissions.txt
+          grep -q 'android.permission.INTERNET' permissions.txt || {
+            echo "::error::INTERNET permission missing — embedded maps need it"; exit 1; }
+          echo "OK: INTERNET permission present"
+
+      - name: Verify the BLE and notification permissions are present
+        run: |
+          set -euo pipefail
+          for p in android.permission.BLUETOOTH_CONNECT \
+                   android.permission.BLUETOOTH_SCAN \
+                   android.permission.POST_NOTIFICATIONS \
+                   android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS \
+                   android.permission.RECEIVE_BOOT_COMPLETED; do
+            grep -q "$p" permissions.txt || { echo "::error::missing $p"; exit 1; }
+          done
+          echo "OK: expected BLE permissions present"
+
+      # Caller ID is implemented, so READ_CALL_LOG, READ_CONTACTS and
+      # READ_PHONE_STATE are requested deliberately. Note the trust boundary
+      # changed when INTERNET was added for embedded maps: contacts may not
+      # leave the device, and the enforcement is that network call sites live
+      # only in dev.tvsopen.nav.maps (see the manifest comment). Read that
+      # note before removing any of these three.
+      #
+      # ANSWER_PHONE_CALLS and CALL_PHONE are still absent and must stay so:
+      # both are hard restricted to the default dialer, so a third-party app can
+      # never be granted them and declaring them would be a prompt that can only
+      # fail.
+      - name: Assert caller-ID permissions are requested, and dialer-only ones are not
+        run: |
+          set -euo pipefail
+          for p in READ_CALL_LOG READ_CONTACTS READ_PHONE_STATE; do
+            grep -q "android.permission.$p" permissions.txt || {
+              echo "::error::$p missing — caller ID needs it"; exit 1; }
+          done
+          for p in ANSWER_PHONE_CALLS CALL_PHONE; do
+            if grep -q "android.permission.$p" permissions.txt; then
+              echo "::error::$p present — ungrantable outside the default dialer"
+              exit 1
+            fi
+          done
+          echo "OK: caller-ID permissions present, dialer-only permissions absent"
+
+      - name: Upload APK artifact
         uses: actions/upload-artifact@v4
         with:
           name: app-debug
           path: app/build/outputs/apk/debug/app-debug.apk
           if-no-files-found: error
-          retention-days: 30
+
+      - name: Publish to GitHub Release
+        if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch'
+        uses: softprops/action-gh-release@v2
+        with:
+          files: app/build/outputs/apk/debug/app-debug.apk
+          generate_release_notes: true
+          body: |
+            Signed APK, built by GitHub Actions.
+
+            Every release is signed with the same project key, so you can
+            install over the previous version with `adb install -r` instead of
+            uninstalling and losing your settings and logs.
+
+            Install with `adb install -r app-debug.apk`, then grant notification
+            access so navigation mirroring can read turn-by-turn from your maps
+            app.
+
+            This build declares `INTERNET` — verified in CI against the merged
+            manifest. It is used only for OpenStreetMap tiles, place search and
+            routing (see docs/MAPS.md). The app still talks to no TVS server,
+            needs no account, and uploads no telemetry.

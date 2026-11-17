@@ -3,45 +3,80 @@ import java.util.Properties
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
+    // Kotlin 2.0 moved Compose compilation into a compiler plugin; the old
+    // `kotlinCompilerExtensionVersion` string is rejected outright.
     id("org.jetbrains.kotlin.plugin.compose")
 }
 
+/**
+ * Release signing, when a key has been provided.
+ *
+ * `key.properties` is **not in the repo and must never be**. CI writes it from
+ * GitHub Actions secrets immediately before building; a local build can write it
+ * by hand. When it is absent — a fork, a contributor without the secrets,
+ * anyone cloning to read the source — this is null and every build falls back to
+ * the ordinary debug key, so the build never depends on a secret existing.
+ *
+ * The reason for having a key at all: each CI runner generates its *own* debug
+ * keystore, so without this every build was signed differently and
+ * `adb install -r` failed with INSTALL_FAILED_UPDATE_INCOMPATIBLE. One key,
+ * held only as a secret, makes an installed app upgradeable in place.
+ */
+val keyProps = Properties().apply {
+    val f = rootProject.file("key.properties")
+    if (f.exists()) f.inputStream().use { load(it) }
+}
+val hasReleaseKey = keyProps.getProperty("storeFile")
+    ?.let { rootProject.file(it).exists() } == true
+
 android {
-    namespace = "com.jupiterconnect"
-    compileSdk = 35
+    namespace = "dev.tvsopen"
+    compileSdk = 34
 
     defaultConfig {
-        applicationId = "com.jupiterconnect"
+        // Separate identity from the rider's own "Jupiter Connect" app so both
+        // can be installed side by side. Namespace stays dev.tvsopen to avoid
+        // touching every package declaration in the backend.
+        applicationId = "com.jupiterdrive"
         minSdk = 26
-        targetSdk = 35
-        versionCode = 1
-        versionName = "0.1.0"
+        targetSdk = 34
+        versionCode = 3
+        versionName = "0.2.0"
     }
 
     signingConfigs {
-        // Local keystore is never committed; CI falls back to the debug key.
-        val props = Properties().apply {
-            val f = rootProject.file("keystore.properties")
-            if (f.exists()) f.inputStream().use { load(it) }
-        }
-        if (props.containsKey("storeFile")) {
+        if (hasReleaseKey) {
             create("release") {
-                storeFile = rootProject.file(props.getProperty("storeFile"))
-                storePassword = props.getProperty("storePassword")
-                keyAlias = props.getProperty("keyAlias")
-                keyPassword = props.getProperty("keyPassword")
+                storeFile = rootProject.file(keyProps.getProperty("storeFile"))
+                storePassword = keyProps.getProperty("storePassword")
+                keyAlias = keyProps.getProperty("keyAlias")
+                keyPassword = keyProps.getProperty("keyPassword")
             }
         }
     }
 
     buildTypes {
-        debug { isMinifyEnabled = false }
-        release {
-            isMinifyEnabled = false
+        // Signed with the project key when one exists, debug-signed otherwise.
+        // `assembleDebug` stays the shipped variant and stays debuggable, so
+        // `adb shell run-as` can still pull the on-device log without root,
+        // which is the entire debugging story for this project.
+        debug {
             signingConfig = signingConfigs.findByName("release")
                 ?: signingConfigs.getByName("debug")
-            proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
         }
+        release {
+            isMinifyEnabled = true
+            proguardFiles(
+                getDefaultProguardFile("proguard-android-optimize.txt"),
+                "proguard-rules.pro",
+            )
+            signingConfig = signingConfigs.findByName("release")
+                ?: signingConfigs.getByName("debug")
+        }
+    }
+
+    buildFeatures {
+        compose = true
     }
 
     compileOptions {
@@ -49,28 +84,44 @@ android {
         targetCompatibility = JavaVersion.VERSION_17
     }
 
-    kotlin {
-        compilerOptions {
-            jvmTarget.set(org.jetbrains.kotlin.gradle.dsl.JvmTarget.JVM_17)
-        }
+    kotlinOptions {
+        jvmTarget = "17"
     }
-
-    buildFeatures { compose = true }
 }
 
 dependencies {
-    implementation("androidx.core:core-ktx:1.15.0")
-    implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.8.7")
-    implementation("androidx.lifecycle:lifecycle-runtime-compose:2.8.7")
-    implementation("androidx.activity:activity-compose:1.9.3")
+    implementation("androidx.core:core-ktx:1.13.1")
+    implementation("androidx.appcompat:appcompat:1.7.0")
+    implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.8.6")
+    implementation("androidx.activity:activity-ktx:1.9.2")
+    implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.9.0")
 
-    implementation(platform("androidx.compose:compose-bom:2024.12.01"))
+    // Jetpack Compose. BOM 2024.09.03 (Compose 1.7.2) is the last line that
+    // compiles against compileSdk 34. The 2024.12 BOM and core-ktx 1.15 both
+    // hard-require compileSdk 35. Raise compileSdk to 35 and these together.
+    implementation(platform("androidx.compose:compose-bom:2024.09.03"))
     implementation("androidx.compose.ui:ui")
-    implementation("androidx.compose.ui:ui-tooling-preview")
+    implementation("androidx.compose.ui:ui-graphics")
     implementation("androidx.compose.material3:material3")
     implementation("androidx.compose.material:material-icons-extended")
-
+    implementation("androidx.activity:activity-compose:1.9.2")
+    // collectAsStateWithLifecycle, used by Session-backed screens.
+    implementation("androidx.lifecycle:lifecycle-runtime-compose:2.8.6")
     debugImplementation("androidx.compose.ui:ui-tooling")
 
+    // Pure-JVM tests for the protocol layer. No Android, no device: the packet
+    // builders and the frame decoder are plain arithmetic on byte arrays, and
+    // the double-division bug that made the odometer read 10x low was invisible
+    // to the compiler and to every smoke test on a disconnected phone.
     testImplementation("junit:junit:4.13.2")
+
+    // Embedded OpenStreetMap view (docs/MAPS.md). Pinned, not ranged: tile
+    // fetching behaviour must not shift under a future release unreviewed.
+    // Verified not to add INTERNET itself — the permission is declared
+    // explicitly in the manifest for map use; CI pins the merged set.
+    implementation("org.osmdroid:osmdroid-android:6.1.20")
 }
+
+// CPU budget: see AGENTS.md and gradle.properties — workers.max=2, daemon off.
+// No extra compiler flags are needed; `-Xjvm-default=all` is the default from
+// Kotlin 2.0 and referencing it here broke the script.

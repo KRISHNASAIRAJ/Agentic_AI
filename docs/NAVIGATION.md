@@ -1,0 +1,422 @@
+# Navigation
+
+How turn-by-turn gets from any maps app onto the cluster.
+
+## The key architectural fact
+
+The official app's outbound surface splits cleanly in two:
+
+| Over BLE only | Requires TVS cloud (`iceApiService`) |
+| :--- | :--- |
+| `sendNavigationData` | `sendWeatherData` |
+| `sendNavigationInstructions` | `sendCricketData` |
+| `sendNavigationAssistOn` | `sendFootballData` |
+| `sendManuverString` | `sendNewsData` |
+| `sendCustomTextLineOne/Two` | `sendTrafficSequence` |
+| `sendDestReachedCustomText` | |
+| `sendMobileData` (keepalive) | |
+| `sendVehicleMode` | |
+
+Navigation and custom text never touch the network. That is the whole reason
+this app can run with no account: everything the dashboard shows is produced
+locally and pushed over BLE. The cloud only adds *remote* and *content* features,
+which this project drops by design. See `docs/SCOPE.md`.
+
+## Source: the maps app, not a maps SDK
+
+`NotificationListenerService` in the official app (`com.tvs.ble.feature`)
+intercepts navigation notifications. That is what makes it provider-agnostic:
+any app that posts a turn-by-turn notification in the conventional shape works.
+
+For Google Maps the payload of interest is:
+
+- `EXTRA_TITLE` — the maneuver, e.g. "Turn left"
+- `EXTRA_TEXT` — the street, e.g. "Onto NH44"
+- `EXTRA_LARGE_ICON` — the maneuver bitmap, when the provider supplies one
+- `EXTRA_BIG_TEXT` / ongoing notification text — distance and ETA
+
+### The above is wrong for Google Maps — measured, not assumed
+
+Recorded from a live navigation on an Android 15 phone, 2026-10-12:
+
+| Extra | Actual value |
+| :--- | :--- |
+| `EXTRA_TITLE` | `"550 m"` — **the distance**, not a maneuver |
+| `EXTRA_TEXT` | `"Example Road"` — the street |
+| `EXTRA_BIG_TEXT` | `""` — empty, despite being documented above as holding distance |
+| `EXTRA_SUB_TEXT` | `"6 hr 21 min · 307 km · 4:34 AM ETA"` |
+
+A second shape arrives near the destination (recorded 2026-10-14):
+
+| Extra | Actual value |
+| :--- | :--- |
+| `EXTRA_TITLE` | `"Arrive at 11:41 AM"` — an instruction, not a distance |
+| `EXTRA_TEXT` | `"Drive 1 min (450 m) to Perambra"` — metrics **and** the real distance |
+| `EXTRA_SUB_TEXT` | `"1 hr 8 min · 38 km · 9:16 PM ETA"` — trip totals, not turn distance |
+
+That second shape carried a real bug: longest-first unit matching read the
+"mi" in "1 min" as one **mile**, so every arrival decoded to a 1609 m turn and
+the parenthesised 450 m was never reached. A unit match now requires a
+non-letter after it (`(?![A-Za-z])`), which keeps genuine `"1 mi"` working.
+
+So the distance is in the title and nowhere else, and the ETA is a *duration
+with extra units*, not a clock. `EXTRA_LARGE_ICON` is not supplied, so
+`pictogram` resolves from the wording instead, via `ManeuverResolver`.
+
+Every consequence of getting this wrong is silent: `distanceMeters` stays at its
+`-1` sentinel, the UI falls back to its no-distance branch, and a title of
+`"550 m"` gets displayed where a turn instruction belongs. All of it still
+*looks* like a working navigation. `NavParsing` handles both the observed
+Google shape and the conventional one, and `NavParsingTest` pins both — see
+`app/src/main/java/dev/tvsopen/nav/NavParsing.kt`.
+
+One provider behaviour is worth recording on its own: **Google Maps cancels its
+own navigation notification and reposts it**, roughly 9–13 seconds apart,
+depending on whether the route is actively guiding. Clearing the HUD the instant
+a notification is removed therefore blanked the cluster mid-journey. Removal is
+debounced by 12 s and a repost cancels the pending clear — a period chosen from
+those observed gaps, not from a guess.
+
+### The live provider is the official TVS app, not Google Maps
+
+Observed on device 2026-10-14, and this changes which field matters:
+
+| Extra | Actual value |
+| :--- | :--- |
+| `EXTRA_TITLE` | `"Turn left onto Perambra Chembra Koorachundu Road"` — maneuver **with** the street |
+| `EXTRA_TEXT` | `"2.32 km • 3 min • 11:40 AM ETA"` — trip metrics, not a street |
+
+So `displayLine` prefers the title: it is the only field carrying the turn
+instruction. Preferring the street showed an ETA fragment on both cluster lines
+and the maneuver never reached the dash at all — which reads as "only ETA, no
+turn-by-turn". The Google shape still works because a distance-only title parses
+to an empty maneuver and falls through to the street.
+
+The maneuver goes on the **primary** text channel (`0x5B 0x4F`,
+`DATA_ID_NAVIGATIONDATA1` — the only nav text ID the current official sender
+defines), with ETA/distance on the secondary `0x50`. An earlier revision had
+this backwards, and since the two-row path is taken whenever both lines are
+non-blank, the primary line carried ETA on every single frame. The cluster takes
+the line-1 distance from the `0x4E` control frame itself, so the text line must
+be the instruction — matching the manual's "AFTER 900m / TAKE RIGHT" layout.
+
+MapMyIndia (also present in the official APK) posts its own shape; Organic Maps
+follows the Android navigation notification convention. Neither has been observed
+on hardware, so both are still assumptions.
+
+The official app bundles Mappls (`com.mappls.*`) — that is the *server-side*
+turn engine and needs an API key, so it is out of scope here.
+
+## The Ntorq 125 cluster's display zones
+
+From a photograph of the owner's own instrument cluster, captured in
+display-test mode with all segments lit. This is **observation of hardware**,
+not of the protocol — but it bounds what the protocol has to drive.
+
+| Zone | Displayed as | Our decoded field |
+| :--- | :--- | :--- |
+| Trip selector | `TRIP A / B` | `SELECTED_TRIP` |
+| Distance | `ODO / TRIP A / TRIP B`, km | `ODOMETER` (SM1 idx 3-5), `TRIP_F_METER` (idx 14-16) |
+| Timer | `MIN / SEC / MILLI` | `LAP_TIME`, `TIME_60KMPH` |
+| **Avg speed** | `AVG SPEED` km/h | `AVERAGE_SPEED` (SM1 idx 7) |
+| **Top speed** | `TOP SPEED` km/h | `TOP_SPEED` (SM1 idx 9) |
+| **0-60** | seconds | `TIME_60KMPH` (SM1 idx 13) |
+| Speed | large central digits, `KM/H` | `SPEED` (SM1 idx 2) |
+| Fuel | two gauges — an `H-E-F` bar and a segment bar with a pump icon | `FUEL_LEVEL` (SM1 idx 6) |
+
+Two dedicated icon zones sit on the lower right: a **navigation/location pin**
+and a **phone/notification** glyph. Both have a display region, so this cluster
+is built to show caller ID and turn-by-turn.
+
+This independently corroborates the byte offsets — `AVG SPEED`, `TOP SPEED` and
+`0-60` are exactly the three values the official app's Vehicle Overview screen
+renders from `NtorqSpeedOMeter1`.
+
+### What the cluster actually displays — TVS's own list
+
+The table above comes from a photograph. TVS's Ntorq 125 connected-cluster
+manual enumerates the display elements outright, which settles a question the
+photo could not: **which decoded fields are displayable at all.**
+
+Street mode (the riding mode):
+
+| Manual ref | Element |
+| :--- | :--- |
+| 1a | Odometer, km |
+| 1b | Digital clock, 12-hour |
+| 1c | Fuel gauge — **six** digital bars |
+| 1d | Speedometer, km/h |
+| 1e | Engine temperature gauge — **six** digital bars |
+| 1f | Helmet icon |
+| 1g | Low battery indicator |
+| 1h | **Service reminder** (spanner icon) |
+| 1k | Trip A, B and F |
+| 1m | Side stand indicator |
+
+Sport mode adds lap distance, lap timer and the shortest-time (0–60) indicator.
+Ride stats mode adds previous/best lap distance, timer, **average speed**,
+shortest time and **top speed** — but only when the bike is in sport mode and
+static.
+
+Two consequences that cost a wrong tile each:
+
+- **Range is not on this cluster.** `DISTANCE_TO_EMPTY` decodes from `0x19`
+  indexes 11–12, but the cluster has no element for it. It is an app or cloud
+  figure, and this app has neither. Same for `AVERAGE_FUEL_ECONOMY`. The manual
+  goes further and tells riders not to derive mileage from the fuel gauge at
+  all. Neither is shown.
+- **The fuel gauge has six bars, not five.** `FUEL_LEVEL` is a nibble; the
+  dashboard now reports `n/6`. A clamp at 5 was silently discarding a full
+  tank.
+
+The dashboard's tile set is therefore generated from `ui/ClusterTiles.kt`, where
+every entry cites a manual reference. Adding a tile needs a cluster element,
+not just a byte offset we can decode.
+
+### The display is asymmetric: 10 characters on line 1, 12 on line 2
+
+The Jupiter reference implementation targets a single 17-character row, and the
+protocol's text payload is 17 bytes. Neither carries over. The Ntorq 125 manual
+renders every navigation string the cluster can produce, and the **longest
+examples fit 12 characters on line 2**:
+
+| Displayed | Chars |
+| :--- | ---: |
+| `AFTER 900m` | 10 |
+| `TAKE RIGHT` | 10 |
+| `10Km 700m` | 9 |
+| `STAY SAME RD` | 12 |
+| `DISTANCE REM` | 12 |
+| `TAKE U-TURN` | 11 |
+| `MOBILE DATA` | 11 |
+| `YOU ARRIVED` | 11 |
+| `RE-ROUTING` | 10 |
+
+Two of those are exactly 12 **and are truncations**:
+
+- `DISTANCE REMAINING` → `DISTANCE REM`
+- `STAY SAME ROAD` → `STAY SAME RD`
+
+TVS's own UI truncates at **12** on the longer row. The rider has confirmed the
+display is asymmetric: **line 1 has 10 characters, line 2 has 12**. The
+all-segments-on photograph's segment grid corroborates the unequal line widths.
+
+`RowChars.NTORQ_LINE_1 = 10` and `RowChars.NTORQ_LINE_2 = 12` in
+`MapsNotificationListener.kt` implement this asymmetry, with the manual page
+cited. `RowChars.NTORQ = 12` is retained for the legacy single-row path. The
+17-byte payload is still sent — the extra bytes are zero-padded and the
+terminator stays at index 19 — because that is the frame shape the cluster
+expects; only the *usable characters* differ per line.
+
+Two consequences worth having:
+
+- A street name no longer loses its tail to the row width. It used to be cut
+  at 12 on line 2, so `"Example Road - Hill Route"` (17) became
+  `"Example Rd -"` — the destination half gone. Compression
+  (`Road` → `Rd`, filler dropped) shrinks it first, and whatever still
+  overflows rolls instead of clipping.
+- The `+` and `-` that `sanitize()` now preserves both **appear in TVS's own
+  rendered strings** (`TAKE U-TURN`, `10Km 700m`), which is the first direct
+  evidence that the cluster renders them. The nav arrow prefixes (`<-`, `->`,
+  `^`) are kept on the same ASCII-printable reasoning but are still
+  unverified on hardware.
+
+**Note:** How the cluster places a 17-character packet across the two unequal
+lines (wraps, scrolls, truncates, or uses only one line) still needs a live
+hardware capture. The simulator wraps into 10 then 12 as a development model;
+that is not a claim about firmware behavior.
+
+## Packet layouts (proven)
+
+Transcribed from `BleNavigationPacketBuilder` in the working third-party Jupiter
+app. These are **not inferred** — that app drives a real cluster over the same
+GATT service this project uses.
+
+### Control packet — `0x5A 0x4E`, 20 bytes, no checksum
+
+```
+[0]      0x5A        start byte (START_BYTE_CONTROL = 90)
+[1]      0x4E        DATA_ID_NAVIGATION_CONTROL = 78
+[2..3]   distance to turn, metres   saturating uint16; >= 65535 -> 0xFFFF
+[4..5]   remaining time, minutes    uint16
+[6..8]   remaining distance, metres uint24; if <= 0, reuses distance-to-turn
+[9]      maneuver id (pictogram)
+[10]     text rows in use            (upstream hardcodes 1)
+[11]     active flag                 1 = navigating
+[12..18] zero
+[19]     0xFF        terminator
+```
+
+The start byte is `0x5A` for the control frame but `0x5B` for the text frame —
+not a typo in the reference app, and easy to get wrong.
+
+**No checksum byte.** Only the mobile-data keepalive carries one. An earlier
+draft of this repo added a checksum to the nav frames; that was wrong and has
+been corrected in `PacketBuilder.navigationControl`.
+
+### Text packet — `0x5B 0x4F`, 20 bytes, no checksum
+
+```
+[0]      0x5B        start byte (START_BYTE_TEXT = 91)
+[1]      0x4F        DATA_ID_NAVIGATIONDATA1 = 79
+[2..18]  17 characters of UTF-8, zero-padded
+[19]     0xFF
+```
+
+`0x50` is the second text channel (`DATA_ID_NAVIGATIONDATA2`). Message rows use
+`0x4C` (76) and `0x63` (99).
+
+> Text is truncated to 17 **characters**, then encoded — so a multibyte
+> character can overrun the field and displace the terminator. `PacketBuilder`
+> clamps by bytes as well as characters.
+
+### Text compression, arrows and rolling
+
+A 10/12-character display cannot show a Maps sentence, so each line is
+compressed before it is framed (`NavShortCodes`, pinned by
+`NavShortCodesTest`):
+
+- Maneuvers become codes: `Turn left` → `LFT`, `Turn slight right` → `SRG`,
+  `Make a U-turn` → `UTN`, `roundabout` → `RND`, `merge` → `MRG`,
+  `fork keep left` → `FRK-L`, `ramp` → `RMP`, `exit` → `EXT`.
+- Modifiers shrink: `toward(s)` → `twd`, `then` → `>`, `onto` → `to`,
+  `Street/Road/Avenue/Highway` → `St/Rd/Ave/Hwy`, filler (`in`, `the`, `at`,
+  `take`, `make`, bare `turn`) is dropped.
+- `In 200 meters, turn slight right onto Main Street, then turn left.`
+  becomes `200 m, SRG to Main St, > LFT`.
+
+The maneuver line gains an ASCII arrow prefix from the pictogram
+(`<-` left, `->` right, `^` straight, `U` U-turn, `O` roundabout) for
+glanceability; the phone strip shows the unicode equivalent
+(`← → ↑ ↩ ↻`). Wire-safe by construction: every arrow character survives
+`PacketBuilder.sanitize()`, pinned by `SanitizeTest`.
+
+Whatever still overflows its row rolls instead of clipping: `RollingText`
+shows one window per send over `text + " - "`, advancing each control-frame
+tick and restarting at the head for a new instruction. A short line is
+returned untouched.
+
+### Two rows at once, alternating fallback
+
+The bridge sends the maneuver on the primary channel (`0x5B 0x4F`) and the
+ETA/distance on the secondary (`0x5B 0x50`), with the control frame
+advertising `rows = 2` — whenever the driver offers a secondary builder and
+both lines have content. Otherwise it falls back to alternating a single row
+every few seconds, which is the only path known to reach a display. The
+reference Jupiter app alternated on a 5-second boundary
+(`(System.currentTimeMillis() / 5000) % 2`; street on one phase,
+`time` + padding + `distance` on the other); that cadence survives only in the
+fallback.
+
+## What still needs the Ntorq
+
+The layout is proven on the Jupiter. The open question is whether the Ntorq's
+larger TFT accepts the same 17-character text field or expects more, and whether
+its pictogram set matches. See `docs/CAPTURE.md` §3.
+
+## Pictogram IDs
+
+`Pictogram.kt` holds the full table transcribed from the official
+`ManeuverUtils.getShortInstruction()`. Notable points:
+
+- **The upstream switch has a bug-shaped quirk**: `case 21` returns
+  `continue_straight`, identical to `case 7`. Preserved as-is rather than
+  "fixed", because the cluster may genuinely treat 7 and 21 as the same glyph
+  under different conditions, and changing it would hide that.
+- **Roundabouts are 65–71**, an exit bearing in 45° steps. India drives left,
+  so these are clockwise. The Jupiter report documents a separate 82–88 block
+  for counter-clockwise/right-hand traffic; the official Ntorq-path table does
+  not contain those, which is consistent with an India-only cluster image.
+- **Highway exit/enter appears twice** — as `9`/`10` in the main switch and as
+  `34`/`35` in the default branch. Both kept.
+- `41` is special-cased *before* the switch in both vehicle branches, so it is
+  treated as a U-turn that predates the table.
+
+### Conflict with the Jupiter table
+
+The Jupiter report's table differs where the two overlap:
+
+| ID | Official app | Jupiter report |
+| :--- | :--- | :--- |
+| 1 | sharp left turn | slight left (down) |
+| 2 | slight left | slight left (up) |
+| 13 | left at junction | left branch off straight |
+| 15 | left at fork | Y-junction left |
+| 21 | continue straight | crossroad |
+
+The official table is preferred: it is the vendor's own current mapping, while
+the Jupiter table is one owner's empirical work on a different cluster. A user
+override table (below) settles it per device.
+
+## Two-tier resolution
+
+Tier 1 — explicit override, stored per device.
+Tier 2 — `ManeuverResolver.fromText()` keyword matching.
+
+The official app does not do the hash-harvesting the Jupiter companion app
+documents; it ships a fixed table plus the string resource names. Simpler, and
+the table can be patched without a firmware flash.
+
+## Calibration
+
+`NtorqCalibrationResponse` (data id `0x37`) and
+`JupiterCalibrationResponse` expose:
+
+```
+byte 1   data id (0x37)
+byte 2   CALIBRATION_COMMAND
+byte 3   CALIBRATION_ID
+byte 4   DATA_LENGTH
+bytes 5-8 CALIBRATION_DATA_1..4
+byte 9   CHECKSUM
+byte 10  reserved[9]
+byte 19  end byte
+```
+
+Commands seen upstream: `MODIFY_CALIBRATION_PARAMS`, `WRITE_CALIBRATION`,
+`WRITE_REQUEST_CALIBRATION`, `READ_CALIBRATION`.
+
+Calibration ids: `FOLLOW_ME_HEAD_LAMP_CALIBRATION_ID`,
+`TSL_ON_OFF_CALIBRATION_ID`, `IDLE_START_STOP_CALIBRATION_ID`.
+
+This is the mechanism for pushing a corrected pictogram table to a cluster that
+mis-renders one. It is the right hook for the override UI. **Untested on
+hardware** — see `docs/CAPTURE.md`.
+
+## Picture-in-picture / caller image
+
+`NtorqCallerImageResponse` declares the same layout as the calibration response,
+which suggests the cluster reuses that frame shape for image transfer. The
+official app has `DELAY_FOR_WIFI_CALLER_IMAGE_TRANSFER` and
+`updateProfilePictureToCluster`, so caller images are a Wi-Fi-mirrored feature
+(`WIFI_MIRRORING_PACKET`). Out of scope for v1.
+
+## Conflict with the Jupiter table
+
+The pictogram table in `Pictogram.kt` comes from the **official** app. The
+third-party Jupiter app ships its own mapping in `NavigationTurnData`, and it
+differs. Both are recorded below rather than merged silently — the reference
+app's is the one known to work on hardware, the official one is the vendor's
+current intent.
+
+| ID | Official app | Jupiter companion |
+| :--- | :--- | :--- |
+| 0 | turn left | turn left |
+| 5 | slight right | continue straight |
+| 7 | continue straight | slight right |
+| 8 | destination | continue straight |
+| 13 | left at junction | left branch off straight |
+| 15 | left at fork | Y-junction left |
+| 21 | continue straight | crossroad |
+| 41 | U-turn (pre-switch) | roundabout sharp right |
+| 65 | roundabout exit 45° | roundabout slight left |
+| 68 | roundabout exit 180° | roundabout straight |
+| 88 | (absent) | roundabout U-turn, counter-clockwise |
+
+The official app's own switch also has `case 41` returning `make_a_u_turn`
+before the switch in both vehicle branches, while the companion app assigns 41
+to a roundabout bearing. These are two different tables, not one with typos.
+
+`PacketBuilder`/`Pictogram.kt` currently use the **official** table. If the
+Ntorq renders arrows wrongly, flipping to the companion table is the first
+thing to try — see `docs/CAPTURE.md` §3.

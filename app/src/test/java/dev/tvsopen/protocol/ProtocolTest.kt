@@ -1,0 +1,284 @@
+package dev.tvsopen.protocol
+
+import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
+import org.junit.Test
+
+/**
+ * Protocol-layer regression tests.
+ *
+ * These exist because the worst bug found in this codebase was invisible to the
+ * compiler, to lint, and to every on-device smoke test run with no scooter
+ * connected: `FrameLayout.decode` divided odometer by 10 while `Session.onFrame`
+ * divided again, so the odometer tile would have read ~10x low the first time a
+ * real cluster streamed a frame.
+ *
+ * Everything here is pure arithmetic on byte arrays — no Android, no BLE, no
+ * device — so it runs in seconds and CI catches it.
+ */
+class ProtocolTest {
+
+    /** Builds a 20-byte inbound frame with the Ntorq speedometer header. */
+    private fun frame(dataId: Int, body: (ByteArray) -> Unit): ByteArray {
+        val f = ByteArray(20)
+        f[0] = 0x5A.toByte()
+        f[1] = dataId.toByte()
+        body(f)
+        f[19] = 0xFF.toByte()
+        return f
+    }
+
+    /**
+     * Big-endian fixture writer.
+     *
+     * Added with the endianness fix. `setLE` below wrote the *test's* idea of
+     * byte order into the frame and then read it back with the reader, so the
+     * two agreed by construction and the wrong assumption could never be
+     * caught. The cluster's real frame settles it: `5A 10 00 02 88 2A …` is
+     * 16,593 km big-endian, which the rider confirmed against the dash.
+     */
+    private fun ByteArray.setBE(offset: Int, value: Int, length: Int) {
+        for (i in 0 until length) {
+            this[offset + i] = ((value shr (8 * (length - 1 - i))) and 0xFF).toByte()
+        }
+    }
+
+    private fun ByteArray.setLE(offset: Int, value: Int, length: Int) {
+        for (i in 0 until length) {
+            this[offset + i] = ((value shr (8 * i)) and 0xFF).toByte()
+        }
+    }
+
+    @Test
+    fun `decode leaves values raw`() {
+        // 30980 tenths of a km == 3098.0 km, written big-endian as the cluster
+        // does.
+        val raw = frame(0x10) { it.setBE(3, 30980, 3) }
+
+        val decoded = NtorqFrames.SM1.decode(raw)
+        assertTrue("frame should decode", decoded != null)
+
+        // The decoder must hand back the raw integer. If it pre-divided, the
+        // second division in Session would compound it.
+        assertEquals(30980L, decoded!!.field(Field.ODOMETER))
+    }
+
+    @Test
+    fun `odometer is divided exactly once at the presentation layer`() {
+        val raw = frame(0x10) { it.setBE(3, 30980, 3) }
+        val decoded = NtorqFrames.SM1.decode(raw)!!
+
+        val once = decoded.field(Field.ODOMETER)!! / 10.0
+        assertEquals(3098.0, once, 0.001)
+        // And the bug itself, pinned: dividing what is already scaled again.
+        assertTrue("must not divide twice", once / 10.0 != once)
+    }
+
+    @Test
+    fun `multi-byte fields are big-endian`() {
+        // Was asserted little-endian, on the strength of a fixture writer that
+        // encoded the same assumption. Reading 02 88 2A as 2A 88 02 turned a
+        // 16,593 km odometer into 278,733 km on the dashboard.
+        val raw = frame(0x10) { it.setBE(17, 0x1234, 2) }
+        val decoded = NtorqFrames.SM1.decode(raw)!!
+        assertEquals(0x1234L, decoded.field(Field.ENGINE_RPM))
+    }
+
+    @Test
+    fun `signed fields read as negative`() {
+        val spec = FieldSpec(Field.ENGINE_LOAD, 0, length = 1, signed = true)
+        assertEquals(-1L, spec.read(byteArrayOf(0xFF.toByte())))
+        assertEquals(1L, spec.read(byteArrayOf(0x01)))
+    }
+
+    @Test
+    fun `a field past the end of the buffer reads as null rather than throwing`() {
+        val short = ByteArray(5) { 0x5A }
+        assertNull(FieldSpec(Field.SPEED, 19).read(short))
+    }
+
+    @Test
+    fun `decode rejects a frame with the wrong start byte or data id`() {
+        val wrongStart = frame(0x10) { it[0] = 0x99.toByte() }
+        assertNull(NtorqFrames.SM1.decode(wrongStart))
+
+        val wrongId = frame(0x11) { }
+        assertNull(NtorqFrames.SM1.decode(wrongId))
+
+        assertNull("short frame", NtorqFrames.SM1.decode(ByteArray(4)))
+    }
+
+    // ---- outbound ----
+
+    @Test
+    fun `mobile data has no checksum and the documented layout`() {
+        // Header, terminator and the zero tail, which are unchanged. The clock
+        // bytes are no longer zero and are covered by KeepaliveClockTest; this
+        // test keeps the parts of the frame that did not move honest.
+        val p = PacketBuilder.mobileData(
+            DashState(0L, batteryBars = 3, signalBars = 2, networkCode = 0x04),
+        )
+        assertEquals(20, p.size)
+        assertEquals(0x5B, p[0].toInt() and 0xFF)
+        assertEquals(0x4A, p[1].toInt() and 0xFF)
+        assertEquals(2, p[2].toInt())   // signal
+        assertEquals(3, p[3].toInt())   // battery
+        assertEquals(0x02, p[7].toInt())
+        assertEquals(0xFF.toByte(), p[19])
+        // [15..18] stay zero and there is never a checksum. [12..14] used to be
+        // asserted zero too, which is what let the missing clock through: the
+        // assertion was true, and the bug was that it should not have been.
+        for (i in 15..18) assertEquals("byte $i", 0, p[i].toInt())
+    }
+
+    @Test
+    fun `the keepalive the driver sends carries the clock`() {
+        // The builder above is the superseded layout, kept for the bytes that
+        // did not change. This is what actually goes over the air, and it must
+        // not be the zero-clock one.
+        val cal = java.util.Calendar.getInstance(java.util.TimeZone.getTimeZone("UTC"))
+        cal.clear()
+        cal.set(2026, 9, 13, 13, 35, 19)
+        val p = Keepalive.build(DashState(0L), calendar = cal)
+        assertEquals(1, p[6].toInt())    // 1 PM, 12-hour
+        assertEquals(35, p[7].toInt())   // minute
+        assertEquals(19, p[8].toInt())   // second
+        assertEquals(1, p[9].toInt())    // PM
+        assertEquals(13, p[12].toInt())  // day
+        assertEquals(10, p[13].toInt())  // month
+        assertEquals(26, p[14].toInt())  // year mod 100
+    }
+
+    @Test
+    fun `navigation control writes the documented bytes`() {
+        val p = PacketBuilder.navigationControl(
+            NavStep(
+                distanceToTurnMeters = 350,
+                etaMinutes = 12,
+                remainingDistanceMeters = 4200,
+                pictogram = 3,
+                streetName = "",
+            ),
+        )
+        assertEquals(0x5A, p[0].toInt() and 0xFF)
+        assertEquals(0x4E, p[1].toInt() and 0xFF)
+        // Big-endian: 350 is 0x015E, so the high byte comes first. The
+        // little-endian form this test used to assert is superseded — see
+        // PacketBuilder.navigationControl's note and docs/PROTOCOL.md.
+        assertEquals(0x01, p[2].toInt() and 0xFF)
+        assertEquals(0x5E, p[3].toInt() and 0xFF)
+        assertEquals(0x00, p[4].toInt() and 0xFF)
+        assertEquals(0x0C, p[5].toInt() and 0xFF)
+        assertEquals(0x00, p[6].toInt() and 0xFF)
+        assertEquals(0x10, p[7].toInt() and 0xFF)
+        assertEquals(0x68, p[8].toInt() and 0xFF)
+        assertEquals(3, p[9].toInt())
+        assertEquals(1, p[10].toInt())
+        assertEquals(1, p[11].toInt())
+        assertEquals(0xFF.toByte(), p[19])
+    }
+
+    @Test
+    fun `negative distance saturates to zero, not to 0xFFFF`() {
+        // -1 is the "unknown" sentinel. Unsigned, it would become 65535 — the
+        // largest possible distance, i.e. "turn in 65 km".
+        val p = PacketBuilder.navigationControl(
+            NavStep(-1, 0, 0, 7, ""),
+        )
+        // Big-endian 16-bit zero.
+        assertEquals(0, p[2].toInt())
+        assertEquals(0, p[3].toInt())
+    }
+
+    @Test
+    fun `rows field reaches the wire`() {
+        val p = PacketBuilder.navigationControl(
+            NavStep(100, 1, 100, 0, "", rows = 3),
+        )
+        assertEquals(3, p[10].toInt())
+    }
+
+    @Test
+    fun `text payload never overruns the terminator`() {
+        val long = "A".repeat(200)
+        for (p in listOf(
+            PacketBuilder.navigationText(long),
+            PacketBuilder.textRow(OutboundId.TEXT_ROW1, long),
+            PacketBuilder.textRow(OutboundId.TEXT_ROW2, long, maxChars = 40),
+        )) {
+            assertEquals(20, p.size)
+            assertEquals("terminator must survive", 0xFF.toByte(), p[19])
+        }
+    }
+
+    @Test
+    fun `sanitiser keeps alphanumerics, keeps +-, and folds the rest`() {
+        assertEquals(
+            "Turn right NH44",
+            PacketBuilder.sanitize("Turn right NH44").decodeToString(),
+        )
+        // Each emoji collapses to exactly one 'X', not one per UTF-16 unit —
+        // which is also the official wire result (upstream routes emoji through
+        // a transient '@' that its own filter then converts to 'X').
+        assertEquals("XX TURN", PacketBuilder.sanitize("🚦⚠ TURN").decodeToString())
+        // An em dash is a separator, so it folds to a space and trims away
+        // rather than becoming an "X". Emoji above still become X.
+        assertEquals("", PacketBuilder.sanitize("\u2014").decodeToString())
+    }
+
+    @Test
+    fun `sanitiser truncates to the 17-character row`() {
+        // The row is 17 characters wide; a longer street name is cut, not wrapped.
+        val out = PacketBuilder.sanitize("Turn right onto NH44").decodeToString()
+        assertEquals("Turn right onto N", out)
+        assertEquals(17, out.length)
+    }
+
+    @Test
+    fun `sanitiser output is ASCII only`() {
+        val out = PacketBuilder.sanitize("தென் NH44 🛵 →", maxBytes = 40)
+        assertTrue("must be ASCII", out.all { it in 0..0x7F })
+        assertTrue("within budget", out.size <= 40)
+    }
+
+    @Test
+    fun `emoji collapses to X, matching the official wire result`() {
+        // Upstream writes this in two steps — emoji runs become '@', then every
+        // character outside `[A-Za-z0-9 ]` (including that '@') becomes 'X' —
+        // so the observable result is 'X' either way. A prior revision of the
+        // sanitiser emitted '@' directly, which our own filter then folded to a
+        // space: "Hi 🙂 there" came out as "Hi there", silently joining two
+        // words. The marker must survive our filter, and only 'X' does.
+        val out = String(PacketBuilder.sanitize("Hi 🙂 there"), Charsets.UTF_8)
+        assertEquals("Hi X there", out)
+    }
+
+    @Test
+    fun `challenge response is a 20-byte 9A F1 frame`() {
+        val challenge = ByteArray(20)
+        challenge[0] = 0x9B.toByte()
+        challenge[1] = 0xF2.toByte()
+
+        val r = Challenge.buildResponse(challenge)
+        assertTrue("should respond", r != null)
+        assertEquals(20, r!!.size)
+        assertEquals(0x9A, r[0].toInt() and 0xFF)
+        assertEquals(0xF1, r[1].toInt() and 0xFF)
+        assertEquals(0xFF.toByte(), r[19])
+    }
+
+    @Test
+    fun `a non-challenge frame produces no response`() {
+        val telemetry = frame(0x10) { }
+        assertNull(Challenge.buildResponse(telemetry))
+    }
+
+    @Test
+    fun `the two handshake keys differ in exactly one byte`() {
+        val a = HandshakeKey.OFFICIAL
+        val b = HandshakeKey.JUPITER_COMPANION
+        assertEquals(16, a.size)
+        assertEquals(1, a.indices.count { a[it] != b[it] })
+    }
+}

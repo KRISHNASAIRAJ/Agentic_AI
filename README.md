@@ -1,172 +1,358 @@
-# Jupiter Connect
+# Jupiter Drive
 
-A standalone Android companion app for the **2026 TVS Jupiter 125 (Copper
-Matte)**. It talks to the instrument cluster over TVS SmartXonnect Bluetooth
-Low Energy, shows live telemetry and mirrors turn-by-turn navigation from the
-maps app you already use.
+> **This `premium-ui` branch** is Jupiter Drive: the TVSRide BLE backend with a
+> premium automotive UI (dark canvas, electric-lime accent, animated fuel ring
+> for the 5.2 L tank, stylised route map, entrance animations). It uses
+> `applicationId = com.jupiterdrive`, so it installs **side by side** with the
+> `com.jupiterconnect` app on the `main` branch and does not disturb it.
+>
+> - Install: `.\install-jupiter-drive.ps1` (ADB, keeps Play Protect on).
+> - Build: `.\gradlew.bat :app:assembleDebug`
+> - The backend, protocol and tests are TVSRide's, credited in `research/SOURCES.md`.
+>
+> ---
 
-**No TVS account. No TVS cloud. No telemetry upload.**
+## Upstream TVSRide (original README below)
 
-> Personal, non-commercial interoperability project. See [CREDITS.md](CREDITS.md)
-> and the disclaimer at the end of this file.
-
----
-
-## What it does today
-
-| Feature | Status |
-|---|---|
-| Scan for `TVSBT…` cluster and connect over BLE GATT | ✅ |
-| Foreground service with 2-second keepalive and reconnect backoff | ✅ |
-| Live telemetry: speed, odometer, fuel bars, engine/intake temperature, battery voltage, distance-to-empty, RPM | ✅ |
-| Navigation mirroring from Google Maps / MapMyIndia / Waze and others | ✅ |
-| Five-screen Material 3 UI in the shared dark design language | ✅ |
-| Ride history and last-parked storage | ⏳ planned |
-
-### Screen previews
-
-Open [`design/index.html`](design/index.html) in a browser for all five screens,
-or view the rendered [`design/preview.png`](design/preview.png).
-
-| Home | Navigate |
-|---|---|
-| Connection hero, live telemetry tiles, cluster discovery | Navigation HUD, mirror switch, packet stream |
-
-| Rides | Find | Settings |
-|---|---|---|
-| Ride history | Last-parked + find-me | Permissions and cluster info |
-
----
-
-## Quick start
-
-Requirements: **JDK 17–21**, Android SDK platform **35**, Android device with
-BLE (API 26+).
-
-```powershell
-# local.properties must contain: sdk.dir=<path to Android SDK>
-.\gradlew.bat :app:assembleDebug
-
-# or build a release APK signed with your own local keystore
-.\gradlew.bat :app:assembleRelease
-adb install -r app\build\outputs\apk\release\app-release.apk
-```
-
-### Play Protect blocks the install
-
-Play Protect flags brand-new sideloaded APKs signed with the shared **Android
-Debug** key, especially when the app also asks for Bluetooth, location and
-notification access. That is a reputation heuristic, not a code defect.
-The release build above uses your own unique keystore (`signing/jupiter.jks`,
-gitignored), which removes the debug-key signature problem.
-
-If Play Protect still says *"App blocked to protect your device"*:
-
-1. **Play Store → profile icon → Play Protect → Settings (gear) → Scan apps with
-   Play Protect → Off**
-2. Install the APK again.
-3. Turn the scan back on afterwards.
-
-Alternatively install over ADB, which does not show the blocking dialog:
-
-```powershell
-adb install -r app\build\outputs\apk\release\app-release.apk
-```
-
-On the scooter:
-
-1. Switch **ignition ON** (the engine does not need to run).
-2. Hold the **MODE** button on the speedometer for ~5 s until the cluster shows
-   `BT PAIR`.
-3. Open the app, grant Bluetooth, Location and Notifications.
-4. On **Home**, tap **Find cluster**, then choose the `TVSBT…` device.
-5. For navigation, allow **Notification access** for Jupiter Connect in
-   Android Settings, then start a route in Google Maps.
-
-Without notification access the app connects fine but navigation mirroring
-silently does nothing — this is an Android platform rule, not an app bug.
-
----
-
-## Architecture
+A third-party companion app for **TVS SmartXonnect** vehicles — Ntorq, Jupiter,
+Apache, Raider, iQube. Speaks the instrument cluster's Bluetooth LE protocol
+directly and mirrors turn-by-turn navigation from **whatever maps app you
+already use**, with **no TVS account, no TVS servers, and no telemetry upload**.
 
 ```
-app/src/main/java/com/jupiterconnect/
-├── MainActivity.kt                  Compose shell + five screens
-├── protocol/
-│   ├── Constants.kt                 GATT UUIDs, frame IDs, Telemetry model
-│   └── JupiterProtocol.kt           byte decoders + packet builders
-├── nav/
-│   ├── MapsNotificationListener.kt  reads turn-by-turn from any maps app
-│   └── NavParsing.kt                normalises instruction + pictogram
-├── transport/
-│   └── ClusterService.kt            BLE GATT, keepalive, navigation bridge
-└── ui/theme/                        Color / Type / Theme
+Google Maps / MapMyIndia / Organic Maps / Waze
+        │  (notification, read-only)
+        ▼
+  NotificationListenerService  ──►  pictogram + text  ──►  BLE  ──►  cluster
 ```
 
-### Data flow
+`INTERNET` is declared only for embedded map tiles, place search and routing
+(OpenStreetMap / user-supplied routing keys where configured). It is never used
+to contact TVS or to upload data, and contact/call-log data stays on the device.
+
+---
+
+## Status
+
+| Area | State |
+| :--- | :--- |
+| Ntorq + Raider inbound | 8 frame layouts, **confirmed against a real cluster** |
+| GATT / transport | **working on hardware** — GATT up in ~0.4 s, MTU 65, 20-byte frames |
+| Discovery + connect | **connected to the rider's own Ntorq 125**; reconnects after a drop |
+| AES-CTR handshake | built, and **the cluster never sends a challenge** — unused on this vehicle |
+| Navigation HUD packets | **observed on the wire** — `0x5A 0x4E` and `0x5B 0x4F` reaching the cluster |
+| Caller ID / SMS | packets wired; cluster supports it per the manual; **not yet seen live** |
+| Text sanitiser | fixed on hardware — punctuation no longer becomes `X` |
+| Cluster alpha-numeric rows | **layout still unconfirmed** — see the open questions below |
+| UI | adapted Material 3, light/dark/auto, **running on device** |
+| Tests | 48 JVM tests over the protocol layer, run in CI |
+| APK analysis | complete for the protocol packages |
+
+The handshake, GATT and navigation layouts are cross-checked against **two**
+independent applications. Where they agree, a fact is solid; where they differ,
+both are documented rather than silently merged.
+
+### Screenshots
+
+Captured from the running app. The cluster is currently out of service with a
+flat battery, so these show the **disconnected** state — which is also the state
+a new user sees first. No location, no street names, no device identifiers: the
+cluster MAC is redacted wherever the UI shows it.
+
+| Home | Overview |
+| :--- | :--- |
+| ![Home](docs/screenshots/home.png) | ![Overview](docs/screenshots/overview.png) |
+
+| More | Frame log |
+| :--- | :--- |
+| ![More](docs/screenshots/more.png) | ![Log](docs/screenshots/log.png) |
+
+Overview is the interesting one when disconnected: every tile reads `—` and the
+fuel gauge says **No usable reading**. Neither is a placeholder. A tile showing
+`0` with no scooter connected would mean the UI was inventing data.
+
+Home shows **Mirror navigation** already on, with nothing to switch. It is the
+app's reason to exist, and the bridge does nothing until a maps app posts a
+navigation notification — so enabling it costs nothing and asking twice is a
+worse default. The toggle is still there for anyone who wants the cluster left
+alone.
+
+The Log tab is the project's evidence base: every frame in and out is hex-dumped
+with a timestamp, and **Export** writes a bundle to
+`Android/data/dev.tvsopen/files/logs/` that can be pulled without root. In the
+shot above the log is 12 lines for a full launch and two connect attempts. An
+earlier build logged a dropped write every two seconds for as long as the link
+was down, which was 28% of every log file — the same failure hiding in the
+evidence as in the display.
+
+## Download
+
+- **Debug APK (every push/PR):** open the latest successful [Android Actions run](https://github.com/athulkrishna2015/TVSRideCompanion/actions/workflows/android.yml), download the **`app-debug`** artifact, and install `app-debug.apk` (`adb install -r app-debug.apk`). This is the debug-signed build used for development and `run-as` log access.
+- **Tagged releases:** a `v*` tag (or a manual workflow dispatch) also attaches the same APK to a [GitHub Release](https://github.com/athulkrishna2015/TVSRideCompanion/releases).
+
+### Tested on a phone. Never connected to a scooter.
+
+Those are two very different claims and it is worth keeping them apart.
+
+`:app:assembleDebug` succeeds with zero warnings; CI runs the unit tests and
+asserts the merged manifest's permission set (including `INTERNET` for embedded
+maps, and the expected BLE/caller-ID permissions). The app has been installed
+and driven on a real device many times — which is how the Overview/Log tab swap,
+an unreachable Ride Mode toggle, and a log sink that discarded every session
+were all found. None of them were visible to any test.
+
+### Connected, and what that changed
+
+A Bluetooth connection to the owner's own Ntorq 125 happened on 2026-10-13, and
+it corrected more assumptions than it confirmed:
+
+- **The cluster advertises no service UUID.** A scan filtered on the documented
+  UUID finds nothing. It has to be found by name.
+- **No pair mode and no bonding are needed**, and the cluster sends **no `9B F2`
+  challenge** — the handshake is implemented and unused on this vehicle.
+- **The transcribed frame table is partly wrong.** `0x16` arrives nearly as often
+  as the speedometer and is not in it; `0x19` is listed and never arrives.
+- **Multi-byte fields were read little-endian** while the cluster sends
+  big-endian. The odometer read 278,733 km on a bike ridden 16,593 km.
+- **Navigation mirroring had never sent a frame.** The bridge was handed a null
+  instruction on every frame, and the UI strip read a different flow, so it
+  *looked* end-to-end on the phone while having never once run over BLE.
+
+Every one of those produced a screen that looked right. That is the argument for
+reading the raw bytes rather than trusting the display.
+
+Still unconfirmed: the cluster's own text scrolling, the second text line, the
+rider-name greeting, and caller ID end to end.
+
+### Defaults, and why each obvious-looking default is wrong
+
+A first launch now works end to end without touching a switch:
+
+- **Permissions are asked for up front**, in one sequence — Bluetooth,
+  notifications, and the caller-ID set — plus a pointer to Notification access,
+  which is a Settings toggle that no dialog in the app can grant. It matters
+  because notification access is what turn-by-turn is *built on*: without it a
+  rider could install, connect successfully, start a route and see nothing on the
+  cluster, with nothing indicating why.
+- **The last scooter reconnects on launch**, with no scanning. The stored MAC is
+  the only thing that identifies a cluster, and this one advertises no service
+  UUID — so a scan is both slower and less certain than reconnecting to the
+  address already known.
+- **Navigation mirroring is on** (above).
+- **The scan does not filter on service UUID.** Measured, not preferred: a
+  `ScanFilter.setServiceUuid` is applied to the advertisement packet, and this
+  cluster advertises no UUID, so the filtered default found *nothing* on the one
+  vehicle known to work.
+- **Ntorq is preselected** in the scan screen. The advertised name is `TVSBT…`
+  with no model in it, so the name-based guess resolves to `UNKNOWN`, which
+  selects a driver with no frame table, no navigation and no caller ID — a
+  connection that looks successful while decoding nothing.
+- **First run asks for the permission set up front.** Bluetooth and optional
+  caller-ID permissions are requested together; notification access is a
+  separate Settings toggle because Android does not grant it through a runtime
+  permission dialog. Declining caller-ID access does not block BLE/navigation.
+- **The scan filter and chosen model are remembered.** The default filter is
+  off; a user's filter toggle and per-scooter model selection are persisted so
+  reopening Scan does not silently reset either one.
+
+### Rider name: editable, and sent to the cluster
+
+TVS's manual documents the cluster greeting you as `HELLO RIDER`, or your name
+if one is set. The More screen has a **Console greeting** editor (up to 17
+characters). Saving sends the name at once when connected, otherwise on the
+next connection; clearing it restores `HELLO RIDER`, which needs no frame.
+
+The packet ID is verified three independent ways, after two guessed values
+were written and reverted rather than shipped: v2.13.0's
+`createRiderNameArray` inlines `{91, 82}` in its bytecode, v8.14.1's equivalent
+emits a `[5B 52]` array-data payload, and `NtorqMobileToCluster.sendRiderName`
+calls `createMobileToClusterArray(name, DATA_ID_52)` with `DATA_ID_52 = 82`
+stated symbolically. The frame is `0x5B 0x52` with the standard sanitised
+17-character payload — the same builder as every other text row.
+
+---
+
+## Developing without the scooter
+
+The independent project [ntorq-console](https://github.com/athulkrishna2015/ntorq-console)
+is a digital clone of the instrument cluster — the same Bluetooth LE protocol,
+the same advertised name, and a dash drawn from TVS's own Ntorq 125 manual. It
+is maintained and released separately; this repository does not vendor or link
+its source.
+
+```bash
+git clone https://github.com/athulkrishna2015/ntorq-console.git
+cd ntorq-console
+python3 -m ntorq.cli serve --ble     # your laptop is the scooter
+```
+
+**The app is not modified in any way.** It scans, connects, writes to
+`00005352-…` and reads notifications from `00005354-…`, exactly as it does
+against a parked Ntorq, so the scanner, service discovery, MTU exchange, write
+path and every decoder are exercised for real. The web display works without
+Bluetooth at all, for when you only want the frame log.
+
+It reproduces what the vehicle *does*, not what the protocol transcription says:
+no service UUID in the advertisement, no `9B F2` challenge, no `5A 19`, plus the
+all-zero frames that arrive at connect time. Each is switchable, so the app can
+be tested against a cluster that does something the real one does not — which is
+how you find out whether it copes.
+
+Two observations documented by the simulator project:
+
+- **The alpha-numeric row layout is asymmetric**, previously "unconfirmed" above.
+  Per the cluster reference supplied for the display: **line 1 has 10 characters;
+  line 2 has 12**. The simulator models this asymmetry rather than assuming a
+  uniform grid. `PacketBuilder` carries 17 characters in its fixed-size text
+  field. That exceeds line 1 and also exceeds line 2 when sent as one line. How
+  the real cluster places, wraps, scrolls or truncates the packet still needs a
+  live hardware capture. The simulator wraps text into 10 characters on line 1
+  and up to 12 on line 2 as a useful development model, not as a claim that the
+  real firmware wraps identically.
+- **The outbound byte order**, also previously unestablished. `PacketBuilder`
+  writes little-endian while every field the cluster sends is big-endian. 550 m
+  little-endian is `26 02`; read big-endian the same two bytes are 9730. The
+  simulator reports both readings on every navigation frame instead of picking
+  one. These are simulator observations/hypotheses, not hardware verification;
+  see `docs/NAVIGATION.md` and `docs/CAPTURE.md` for the app repository's current
+  evidence and remaining questions.
+
+**Display-geometry caveat:** the simulator now models an asymmetric display
+(line 1 = 10, line 2 = 12). The manual's rendered navigation strings show a
+12-character row 2 (`docs/NAVIGATION.md`). Until a live cluster capture confirms
+the wrapping/layout behavior, the app's `RowChars.NTORQ_LINE_1 = 10` and
+`RowChars.NTORQ_LINE_2 = 12` model the requested simulator geometry but are not
+hardware-verified.
+
+---
+
+## Universal by architecture, Ntorq-verified by hardware
+
+The official app splits its protocol one package per model
+(`protocol/ntorq`, `protocol/jupiter`, `protocol/apache`, `protocol/raider`,
+`protocol/u388`, …). We mirror that:
 
 ```
-cluster → BLE notify → decodeFrame() → ClusterRepository.telemetry → Compose UI
-
-maps notification → MapsNotificationListener → NavInstruction
-                  → NavigationBridge (5A 4E control every 1.5 s + 5B 4F text)
-                  → BLE write → cluster
+protocol/
+  Constants.kt        frame ids, GATT UUIDs, checksum
+  VehicleModel.kt     model registry + capability flags
+  ProtocolDriver.kt   the per-model interface + generic fallback
+  NtorqDriver.kt      Ntorq + Raider: transcribed frame layouts
+  PacketBuilder.kt    outbound frames (nav layout proven)
+  Handshake.kt        AES-CTR challenge/response
+  Pictogram.kt        maneuver table + text-keyword fallback
+transport/
+  ScooterScanner.kt      BLE discovery, filtered on the SmartXonnect service
+  ScooterBleService.kt   GATT, write mutex, frame stream
+  RideService.kt         foreground service
+  BootReceiver.kt        re-attach after reboot, when the user opts in
+nav/
+  MapsNotificationListener.kt   any maps app → NavInstruction
+  NavigationBridge.kt           NavInstruction → cluster frames
+session/  process-scoped store the UI observes; the only shared state
+prefs/    ride mode, last known cluster, appearance
+log/      logger: ring buffer, rotating file sink, hex frame capture
+ui/       Compose screens (Home, Overview, More, Scan, Log) + theme
 ```
 
-### Protocol notes
+A model with no driver still **connects and streams raw frames** — that is how a
+new vehicle gets characterised without writing a driver first.
 
-The SmartXonnect cluster is a BLE GATT peripheral:
-
-- Service `5456534D-5647-5341-5342-454E544F5251`
-- Write characteristic `00005352-…`, notify characteristic `00005354-…`
-- 20-byte frames: 2-byte header, 17-byte payload, `0xFF` terminator
-- Keepalive `5B 4A` every 2 s (clock, signal, battery, find-me flag, checksum)
-- Navigation `5A 4E` control (distance, ETA, pictogram) and `5B 4F` text
-- Telemetry: `0x10` speed/odometer/fuel/RPM, `0x18` temperatures and battery,
-  `0x19` economy and distance-to-empty — all big-endian
-- Cluster renders ASCII only; other characters are folded to `X`
-
-Reliability details copied from the reference implementation: serialised GATT
-writes, MTU exchange before service discovery, closing the GATT client on
-disconnect, keepalive every 2 s, and 5/10/20/40/60 s reconnect backoff.
+Adding a model means writing one `ProtocolDriver`. The transport does not change.
 
 ---
 
-## CI
+## What it does
 
-`.github/workflows/android.yml` runs on every push and pull request:
+- **Navigation on the cluster** from any maps app, no account
+- **Find my scooter** — injects the flag into the keepalive packet
+- **Live telemetry** — speed, odometer, fuel, trip, engine temp, service status
+- **Find and connect** — BLE scan filtered on the SmartXonnect service
+- **No cloud** — nothing leaves the phone
 
-1. **validate-env** — JDK 21, Gradle wrapper, project files
-2. **unit-tests** — JVM tests
-3. **build** — assembles the debug APK and uploads it as an artifact
-
----
-
-## How this project was researched
-
-The full workflow — four information streams, provenance tags, the
-simulate → capture → correct loop, and the reliability lessons — is in
-[`HOW_THEY_BUILT_IT.md`](HOW_THEY_BUILT_IT.md) and in the 12-slide PowerPoint
-[`docs/how-it-was-built.pptx`](docs/how-it-was-built.pptx).
-
-Regenerate the deck with `python docs/make_ppt.py`.
+Telemetry is limited to values the Ntorq cluster is documented to display. TVS's
+own manual enumerates every display element, and **range and fuel economy are
+not among them** — they are app or cloud figures, and this app has neither. So
+they are decoded but not shown; see [docs/NAVIGATION.md](docs/NAVIGATION.md).
 
 ---
 
-## Roadmap
+## Build
 
-1. Ride history and last-parked location persistence.
-2. Verify pictogram IDs and text-row layout on the real 2026 Jupiter cluster.
-3. Caller ID / SMS mirroring, rider-name greeting, find-me verification.
-4. Harden notification parsing for more map providers.
+```bash
+./gradlew :app:testDebugUnitTest :app:assembleDebug
+```
+
+CPU budget is capped at 2 cores by `gradle.properties`; see
+[AGENTS.md](AGENTS.md) for the full rule, and [BUILD.md](docs/BUILD.md) for
+prerequisites.
+
+CI (`.github/workflows/android.yml`) runs the unit tests, asserts the merged
+manifest has **no** `INTERNET` permission, asserts the caller-ID permissions
+stay **absent**, and attaches the APK to a release on a `v*` tag.
 
 ---
 
-## Disclaimer
+## Documentation
 
-This is an independent interoperability project. It is not affiliated with,
-endorsed by, or connected to TVS Motor Company. TVS, Jupiter and SmartXonnect
-are trademarks of their respective owners. Use at your own risk; do not
-interact with the app while riding. Protocol documentation is derived from
-public sources with attribution in [CREDITS.md](CREDITS.md).
+| File | Contents |
+| :--- | :--- |
+| [docs/SCOPE.md](docs/SCOPE.md) | what this project is and deliberately is not |
+| [docs/PROTOCOL.md](docs/PROTOCOL.md) | the BLE protocol, with per-fact provenance |
+| [docs/NAVIGATION.md](docs/NAVIGATION.md) | navigation architecture, pictogram tables, cluster display zones |
+| [docs/UI_REFERENCE.md](docs/UI_REFERENCE.md) | which apps the UI draws on, and privacy rules |
+| [docs/BUILD.md](docs/BUILD.md) | prerequisites, CPU-capped build command, gotchas |
+| [docs/CAPTURE.md](docs/CAPTURE.md) | what still needs a scooter, and how to get it |
+| [research/SOURCES.md](research/SOURCES.md) | every source, and what it contributed |
+| [AGENTS.md](AGENTS.md) | working rules for agents on this repo |
+
+`ref/` holds UI reference screenshots and is **gitignored** — it contains
+personal data (registration number, home location). See
+[docs/UI_REFERENCE.md](docs/UI_REFERENCE.md) §3.
+
+---
+
+## Sources
+
+Full attribution, licences and per-source contribution notes are in
+[research/SOURCES.md](research/SOURCES.md). Every third-party repository there is
+pinned to an exact commit with a clone command, so a reader reproduces precisely
+what was read rather than whatever `master` is today.
+
+| Repository | Clone URL | Licence |
+| :--- | :--- | :--- |
+| [overclock98/JupiterRideCompanion](https://github.com/overclock98/JupiterRideCompanion) | `https://github.com/overclock98/JupiterRideCompanion.git` | CC BY-NC 4.0 |
+| [Hyundai-Kia-Connect/kia_uvo.wiki](https://github.com/Hyundai-Kia-Connect/kia_uvo.wiki) | `https://github.com/Hyundai-Kia-Connect/kia_uvo.wiki.git` | CC0 |
+| [aaravavi/TVS-Connect-Application-VAPT](https://github.com/aaravavi/TVS-Connect-Application-VAPT) | `https://github.com/aaravavi/TVS-Connect-Application-VAPT.git` | CC0 1.0 |
+
+What each contributed:
+
+- **`overclock98/JupiterRideCompanion`** — the only working third-party app
+  available. Source of the proven navigation packet layout, an independent crypto
+  cross-check, and the Home-screen layout this app adapts.
+- **`aaravavi/TVS-Connect-Application-VAPT`** — FEV LTD's pentest. Its crypto
+  finding (CVE-2024-35537) is what demonstrated the BLE "auth" key is hardcoded.
+  Background only; the server-side CVEs are unused by design, see SCOPE.
+- **`Hyundai-Kia-Connect/kia_uvo.wiki`** — an unrelated vehicle, but its
+  methodology (intercept, observe, reimplement) is the transferable part.
+
+**Local artifacts** (parent folder, not redistributed here)
+
+- `TVS Connect_8.14.1.apk` — the official app, primary protocol source, cited
+  by SHA-256
+- `JupiterRideCompanion/JupiterRideCompanion.apk` — that project's own build
+- TechEnclave thread + `research/refs.txt` — supplied reference list
+- `ref/` — TVS's Ntorq 125 owner manual, gitignored for containing personal data
+
+**Web** — TVS product docs, Google Play listing, r/indianbikes,
+1013503897/jadx-headless-mcp, morluto/rea.
+
+---
+
+## Licence
+
+Non-commercial. See [LICENSE](LICENSE).
+
+The protocol documentation in `docs/` reuses prose and the maneuver byte table
+from `overclock98/JupiterRideCompanion` (CC BY-NC 4.0) under attribution, on
+the same non-commercial terms.
