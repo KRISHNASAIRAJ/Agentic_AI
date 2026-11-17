@@ -122,7 +122,8 @@ object NavParsing {
         // Google Maps 2026 title format: "120 m · Turn right after Sri Devi ..."
         // Strip the leading "<distance> · " so the maneuver text is clean.
         val LEADING_DISTANCE = Regex(
-            """^\s*\d+(?:[.,]\d+)?\s*(?:km|mi|ft|m)\s*[·|\-]\s*""", RegexOption.IGNORE_CASE)
+            """^\s*\d+(?:[.,]\d+)?\s*(?:km|mi|ft|m)\s*[·•|\-\u2013\u2014:]\s*""",
+            RegexOption.IGNORE_CASE)
         val maneuverSource = title.replace(LEADING_DISTANCE, "").trim()
         val pictogram = Pictograms.fromText(maneuverSource)
             ?: Pictograms.fromText(title)

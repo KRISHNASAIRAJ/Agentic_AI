@@ -77,8 +77,19 @@ object ClusterRepository {
     fun scan() = service?.startScan()
     fun connect(address: String) = service?.connectTo(address)
     fun disconnect() = service?.disconnectNow()
-    /** Show a short reply (e.g. a voice answer) on the cluster's text row. */
-    fun showText(text: String) = service?.sendTextRow(text)
+    /** Show a short reply on the cluster, overriding the nav text briefly. */
+    fun showText(text: String) {
+        replyText = text
+        replyUntilMs = System.currentTimeMillis() + 6000L
+        service?.sendTextRow(text)
+    }
+
+    @Volatile private var replyText: String? = null
+    @Volatile private var replyUntilMs = 0L
+
+    /** Reply text to show in the nav row while the override is active. */
+    fun currentReplyText(): String? =
+        if (System.currentTimeMillis() < replyUntilMs) replyText else null
 }
 
 /** All BLE entry points are guarded by [hasBluetoothPermission] at runtime. */
@@ -496,10 +507,10 @@ class ClusterService : Service() {
                             remaining,
                             step.pictogram,
                         ))
-                        // Send only the instruction text. The cluster renders
-                        // the distance from the control frame; prefixing "0 m "
-                        // here produced the wrong "0 m Head east on" row.
-                        write(buildNavText(step.displayLine))
+                        // While a voice reply is active, show it in this row so
+                        // the answer appears on the dash like the TVS demo.
+                        val text = ClusterRepository.currentReplyText() ?: step.displayLine
+                        write(buildNavText(text))
                     }
                 }
                 delay(1500)

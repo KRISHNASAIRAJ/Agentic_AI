@@ -149,5 +149,9 @@ class ProtocolTest {
         assertEquals(1500, mapplsHead.distanceMeters)
         assertEquals(4, mapplsHead.etaMinutes)
         assertEquals(NavInstruction.STRAIGHT, mapplsHead.pictogram)
+
+        // Distance prefix must be stripped so the cluster never shows "15 m X ...".
+        val prefixed = NavParsing.parse("15 m · Turn left", "", "", "")
+        assertEquals("Turn left", prefixed.maneuver)
     }
 }
