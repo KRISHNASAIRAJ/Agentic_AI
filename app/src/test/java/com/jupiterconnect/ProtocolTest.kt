@@ -82,5 +82,13 @@ class ProtocolTest {
         val tvs = NavParsing.parse("Turn left", "2.32 km • 3 min • 11:40 AM ETA", "", "")
         assertEquals(3, tvs.etaMinutes)
         assertEquals(NavInstruction.LEFT, tvs.pictogram)
+
+        // Google Maps 2026: distance is prefixed to the title with a dot.
+        val modern = NavParsing.parse(
+            "120 m · Turn right after Sri Devi Medical", "", "", "Arrive 5:58 pm")
+        assertEquals(120, modern.distanceMeters)
+        assertEquals(NavInstruction.RIGHT, modern.pictogram)
+        assertTrue("maneuver must not start with the distance",
+            !modern.maneuver.trimStart().startsWith("120"))
     }
 }

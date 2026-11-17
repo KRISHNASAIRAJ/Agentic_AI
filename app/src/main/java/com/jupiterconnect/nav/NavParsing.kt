@@ -119,11 +119,18 @@ object NavParsing {
         // Resolve arrow from the TITLE first (it holds the real maneuver like
         // "Head east on"). A bigText may mention "roundabout" in passing and
         // wrongly win if we search all fields at once.
-        val pictogram = Pictograms.fromText(title)
+        // Google Maps 2026 title format: "120 m · Turn right after Sri Devi ..."
+        // Strip the leading "<distance> · " so the maneuver text is clean.
+        val LEADING_DISTANCE = Regex(
+            """^\s*\d+(?:[.,]\d+)?\s*(?:km|mi|ft|m)\s*[·|\-]\s*""", RegexOption.IGNORE_CASE)
+        val maneuverSource = title.replace(LEADING_DISTANCE, "").trim()
+        val pictogram = Pictograms.fromText(maneuverSource)
+            ?: Pictograms.fromText(title)
             ?: Pictograms.fromText(all)
             ?: NavInstruction.STRAIGHT
-        val maneuver = listOf(title, text, bigText, subText)
-            .firstOrNull { it.isNotBlank() }.orEmpty().take(17)
+        val maneuver = maneuverSource.ifBlank {
+            listOf(text, bigText, subText).firstOrNull { it.isNotBlank() }.orEmpty()
+        }.take(17)
 
         val street = listOf(text, bigText, subText, title)
             .map {
