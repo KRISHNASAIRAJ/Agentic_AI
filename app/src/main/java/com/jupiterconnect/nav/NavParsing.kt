@@ -61,6 +61,23 @@ object NavParsing {
         return -1
     }
 
+    /**
+     * Mappls publishes the trip total as "15.5 km • 27 min • 11:11 pm ETA",
+     * with no "remaining" keyword. Recognise a km figure in a string that also
+     * carries minutes/ETA - that is the trip distance, not the turn distance.
+     */
+    private val TRIP_KM = Regex("""(\d+(?:[.,]\d+)?)\s*km\b""", RegexOption.IGNORE_CASE)
+    fun findTripDistance(vararg texts: String): Int {
+        for (t in texts) {
+            if (t.isBlank()) continue
+            if (!t.contains("min", true) && !t.contains("eta", true)) continue
+            val m = TRIP_KM.find(t) ?: continue
+            val value = m.groupValues[1].replace(',', '.').toDoubleOrNull() ?: continue
+            return (value * 1000).toInt()
+        }
+        return -1
+    }
+
     /** Extract a distance in metres from any string, or -1. */
     fun findDistance(vararg texts: String): Int {
         for (t in texts) {

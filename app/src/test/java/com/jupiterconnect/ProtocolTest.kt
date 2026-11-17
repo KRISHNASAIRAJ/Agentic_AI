@@ -153,5 +153,8 @@ class ProtocolTest {
         // Distance prefix must be stripped so the cluster never shows "15 m X ...".
         val prefixed = NavParsing.parse("15 m · Turn left", "", "", "")
         assertEquals("Turn left", prefixed.maneuver)
+
+        // Mappls trip total: "15.5 km • 27 min • 11:11 pm ETA" -> 15500 m.
+        assertEquals(15500, NavParsing.findTripDistance("5 m", "15.5 km • 27 min • 11:11 pm ETA"))
     }
 }

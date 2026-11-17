@@ -59,23 +59,25 @@ class MapsNotificationListener : NotificationListenerService() {
         val extraTexts = collectExtraTexts(extras)
         var distance = parsed.distanceMeters
         if (distance < 0) distance = NavParsing.findDistance(*extraTexts)
-        // Total remaining distance, if Maps publishes it anywhere.
-        val remaining = NavParsing.findRemaining(title, text, bigText, subText).let { r ->
-            if (r >= 0) r else NavParsing.findRemaining(*extraTexts)
+        // Total remaining distance. Try explicit "remaining" phrases first,
+        // then Mappls' "15.5 km • 27 min • ETA" format, then all extras.
+        val remainingCandidates = buildList { addAll(listOf(title, text, bigText, subText)); addAll(extraTexts) }
+        val remaining = NavParsing.findRemaining(*remainingCandidates.toTypedArray()).let { r ->
+            if (r >= 0) r else NavParsing.findTripDistance(*remainingCandidates.toTypedArray())
         }
-        // A different maneuver is a different step - never reuse the previous
-        // step's distance. Only hold the last value across re-posts of the SAME
-        // step (Maps removes and re-posts its notification on every update).
-        if (parsed.maneuver != lastManeuver) {
-            lastKnownDistance = -1
-            lastManeuver = parsed.maneuver
-        }
-        // When Maps publishes no distance at all (e.g. the start-of-route
-        // "Head towards ..." step), keep -1 as "unknown". Coercing it to 0
-        // made the cluster blink "0m" even though no distance was known.
+        lastManeuver = parsed.maneuver
+        // Maps apps remove and re-post notifications rapidly, and one of the
+        // alternating updates can omit the distance. Hold the last real value
+        // for a short window instead of sending 0 ("0m") on that update -
+        // that flip is what produced the blinking. The window is short enough
+        // that a genuinely new step cannot keep a stale number for long.
+        val now = System.currentTimeMillis()
         val effectiveDistance = if (distance >= 0) {
             lastKnownDistance = distance
+            lastDistanceAtMs = now
             distance
+        } else if (lastKnownDistance >= 0 && now - lastDistanceAtMs <= 5_000L) {
+            lastKnownDistance
         } else lastKnownDistance
 
         // Diagnostic snapshot so one screenshot on the Rides tab shows exactly
@@ -123,6 +125,7 @@ class MapsNotificationListener : NotificationListenerService() {
             ClusterRepository.navInstruction.value = null
             pendingClear = null
             lastKnownDistance = -1 // new route must not inherit the old distance
+            lastDistanceAtMs = 0L
             lastManeuver = ""
             activeKey = null
         }.also { handler.postDelayed(it, CLEAR_GRACE_MS) }
@@ -146,6 +149,7 @@ class MapsNotificationListener : NotificationListenerService() {
     private var pendingClear: Runnable? = null
     // Last distance Maps actually published; reused when a notification omits it.
     private var lastKnownDistance: Int = -1
+    private var lastDistanceAtMs: Long = 0L
     // Key of the Maps notification we accepted; only its removal clears nav.
     private var activeKey: String? = null
     // Maneuver of the last accepted step, to detect a genuine step change.
