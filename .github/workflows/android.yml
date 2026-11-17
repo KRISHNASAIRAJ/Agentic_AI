@@ -69,6 +69,26 @@ jobs:
           gradle-version: ${{ env.GRADLE_VERSION }}
       - name: Write local.properties
         run: echo "sdk.dir=$ANDROID_HOME" >> local.properties
+      - name: Materialise signing key
+        env:
+          JUPITER_KEYSTORE_B64: ${{ secrets.JUPITER_KEYSTORE_B64 }}
+          JUPITER_KEYSTORE_PASS: ${{ secrets.JUPITER_KEYSTORE_PASS }}
+          JUPITER_KEY_ALIAS: ${{ secrets.JUPITER_KEY_ALIAS }}
+          JUPITER_KEY_PASS: ${{ secrets.JUPITER_KEY_PASS }}
+        run: |
+          set -euo pipefail
+          if [ -z "${JUPITER_KEYSTORE_B64:-}" ]; then
+            echo "No signing secret - building with the shared debug key."
+            exit 0
+          fi
+          printf '%s' "$JUPITER_KEYSTORE_B64" | base64 -d > jupiter-release.jks
+          {
+            echo "storeFile=jupiter-release.jks"
+            echo "storePassword=$JUPITER_KEYSTORE_PASS"
+            echo "keyAlias=$JUPITER_KEY_ALIAS"
+            echo "keyPassword=$JUPITER_KEY_PASS"
+          } > key.properties
+          echo "Signing key materialised from secrets."
       - name: Build debug APK
         run: bash ./gradlew :app:assembleDebug --no-daemon --stacktrace
       - name: Upload APK
