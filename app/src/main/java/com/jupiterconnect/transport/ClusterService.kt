@@ -34,6 +34,7 @@ import com.jupiterconnect.protocol.buildKeepalive
 import com.jupiterconnect.protocol.buildNavControl
 import com.jupiterconnect.protocol.buildNavText
 import com.jupiterconnect.protocol.decodeFrame
+import com.jupiterconnect.session.RideStore
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -83,6 +84,7 @@ class ClusterService : Service() {
 
     override fun onCreate() {
         super.onCreate()
+        RideStore.init(applicationContext)
         createChannel()
         ClusterRepository.service = this
         startForeground(1, buildNotification())
@@ -253,7 +255,8 @@ class ClusterService : Service() {
         override fun onConnectionStateChange(g: BluetoothGatt, status: Int, newState: Int) {
             when (newState) {
                 BluetoothProfile.STATE_CONNECTED -> {
-                    Log.i(TAG, "GATT connected, status=$status — requesting MTU")
+                    Log.i(TAG, "GATT connected, status=$status - requesting MTU")
+                    RideStore.onConnected()
                     gatt = g
                     ClusterRepository.telemetry.value = ClusterRepository.telemetry.value.copy(
                         connected = true, address = g.device.address, error = null)
@@ -263,6 +266,7 @@ class ClusterService : Service() {
 
                 BluetoothProfile.STATE_DISCONNECTED -> {
                     Log.w(TAG, "GATT disconnected, status=$status")
+                    RideStore.onDisconnected()
                     ClusterRepository.telemetry.value = ClusterRepository.telemetry.value.copy(
                         connected = false,
                         error = if (status != 0) "Link lost (status $status)" else null,
@@ -335,6 +339,7 @@ class ClusterService : Service() {
         ) {
             decodeFrame(value, ClusterRepository.telemetry.value)?.let {
                 ClusterRepository.telemetry.value = it
+                RideStore.onFrame(it)
             }
         }
 
@@ -344,6 +349,7 @@ class ClusterService : Service() {
             val v = characteristic.value ?: return
             decodeFrame(v, ClusterRepository.telemetry.value)?.let {
                 ClusterRepository.telemetry.value = it
+                RideStore.onFrame(it)
             }
         }
     }

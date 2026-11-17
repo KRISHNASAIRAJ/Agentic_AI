@@ -43,6 +43,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -77,9 +78,16 @@ fun PremiumHomeScreen(
     devices: List<ScannedDevice>,
     scanning: Boolean,
     permissions: PermissionStatus,
+    lastReading: com.jupiterconnect.session.LastReading,
     onGrantPermissions: () -> Unit,
     onScan: () -> Unit,
+    onViewMore: () -> Unit,
 ) {
+    // While disconnected, fall back to the last reading the cluster sent so
+    // the odometer and fuel range don't drop to a misleading zero.
+    val shownOdo = if (telemetry.odometerKm > 0) telemetry.odometerKm else lastReading.odometerKm
+    val shownFuel = if (telemetry.connected) telemetry.fuelBars else lastReading.fuelBars
+    val shownDte = if (telemetry.connected) telemetry.distanceToEmptyKm else lastReading.distanceToEmptyKm
     Screen {
         Spacer(Modifier.height(18.dp))
 
@@ -140,7 +148,7 @@ fun PremiumHomeScreen(
                         Spacer(Modifier.height(6.dp))
                         Row(verticalAlignment = Alignment.Bottom) {
                             Text(
-                                if (telemetry.connected) "${telemetry.speedKmh}" else "—",
+                                if (telemetry.connected) "${telemetry.speedKmh}" else "â€”",
                                 style = NumberStyle, fontSize = 64.sp, fontWeight = FontWeight.Bold,
                                 color = MaterialTheme.colorScheme.onSurface, maxLines = 1,
                             )
@@ -177,13 +185,13 @@ fun PremiumHomeScreen(
                     ) {
                         Icon(Icons.Rounded.Bluetooth, contentDescription = null, Modifier.size(18.dp))
                         Spacer(Modifier.width(8.dp))
-                        Text(if (scanning) "Scanning…" else "Find my cluster", fontWeight = FontWeight.SemiBold)
+                        Text(if (scanning) "Scanningâ€¦" else "Find my cluster", fontWeight = FontWeight.SemiBold)
                     }
                 } else {
                     Row(Modifier.fillMaxWidth()) {
                         Caption("LINK ACTIVE", color = JupiterColors.Accent)
                         Spacer(Modifier.weight(1f))
-                        Text(telemetry.address.ifBlank { "—" }, style = MaterialTheme.typography.labelSmall,
+                        Text(telemetry.address.ifBlank { "â€”" }, style = MaterialTheme.typography.labelSmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant)
                     }
                 }
@@ -191,10 +199,10 @@ fun PremiumHomeScreen(
         }
         Spacer(Modifier.height(14.dp))
 
-        // Nearby devices — the only way to pick and connect to the cluster.
+        // Nearby devices â€” the only way to pick and connect to the cluster.
         SectionHeading(
             "Nearby devices",
-            trailing = if (scanning) "SCANNING…" else "${devices.size} FOUND",
+            trailing = if (scanning) "SCANNINGâ€¦" else "${devices.size} FOUND",
         )
         Spacer(Modifier.height(10.dp))
         PremiumCard {
@@ -202,14 +210,14 @@ fun PremiumHomeScreen(
                 if (devices.isEmpty()) {
                     Column(Modifier.padding(10.dp)) {
                         Text(
-                            if (scanning) "Looking for Bluetooth devices…"
+                            if (scanning) "Looking for Bluetooth devicesâ€¦"
                             else "No devices yet. Tap scan, then switch the ignition ON and hold MODE for 5s.",
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
                     }
                 } else {
-                    devices.forEach { d ->
+                    devices.take(3).forEach { d ->
                         Surface(
                             onClick = { ClusterRepository.connect(d.address) },
                             shape = RoundedCornerShape(14.dp),
@@ -229,7 +237,7 @@ fun PremiumHomeScreen(
                                 Spacer(Modifier.width(12.dp))
                                 Column(Modifier.weight(1f)) {
                                     Text(
-                                        "${if (d.isCluster) "★ " else ""}${d.name}",
+                                        "${if (d.isCluster) "â˜… " else ""}${d.name}",
                                         style = MaterialTheme.typography.bodyMedium,
                                         color = MaterialTheme.colorScheme.onSurface,
                                     )
@@ -248,14 +256,20 @@ fun PremiumHomeScreen(
                         }
                     }
                 }
+                if (devices.size > 3) {
+                    Spacer(Modifier.height(4.dp))
+                    TextButton(onClick = onViewMore, modifier = Modifier.fillMaxWidth()) {
+                        Text("View more (${devices.size - 3})", color = JupiterColors.Accent)
+                    }
+                }
                 Spacer(Modifier.height(8.dp))
                 Button(
-                    onClick = { ClusterRepository.scan() },
+                    onClick = onScan,
                     modifier = Modifier.fillMaxWidth(),
                     shape = RoundedCornerShape(999.dp),
                     colors = ButtonDefaults.buttonColors(
                         containerColor = JupiterColors.High, contentColor = JupiterColors.Accent),
-                ) { Text(if (scanning) "Scanning…" else "Scan for devices") }
+                ) { Text(if (scanning) "Scanningâ€¦" else "Scan for devices") }
             }
         }
         Spacer(Modifier.height(14.dp))
@@ -265,7 +279,7 @@ fun PremiumHomeScreen(
         Row(horizontalArrangement = Arrangement.spacedBy(12.dp),
             modifier = Modifier.enterAnimated(delayMs = 60)) {
             PremiumStat(Modifier.weight(1f), Icons.Rounded.History,
-                "%.1f".format(telemetry.odometerKm), "km", "Odometer")
+                "%.1f".format(shownOdo), "km", "Odometer")
             PremiumStat(Modifier.weight(1f), Icons.Rounded.Speed,
                 "${telemetry.topSpeed()}", "km/h", "Top speed")
         }
@@ -281,18 +295,18 @@ fun PremiumHomeScreen(
                     Spacer(Modifier.width(10.dp))
                     Caption("FUEL LEVEL")
                     Spacer(Modifier.weight(1f))
-                    Text("${telemetry.fuelBars} / 6 bars", style = NumberStyle,
+                    Text("${shownFuel} / 6 bars", style = NumberStyle,
                         color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
                 Spacer(Modifier.height(8.dp))
                 Box(Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
-                    FuelRing(bars = telemetry.fuelBars)
+                    FuelRing(bars = shownFuel)
                 }
                 Spacer(Modifier.height(12.dp))
                 Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                    BigReadout("${telemetry.distanceToEmptyKm}", "km",
+                    BigReadout("${shownDte}", "km",
                         "Range left", modifier = Modifier.weight(1f), accent = true)
-                    BigReadout("${telemetry.engineTempC}", "°C", "Engine temp",
+                    BigReadout("${telemetry.engineTempC}", "Â°C", "Engine temp",
                         modifier = Modifier.weight(1f))
                 }
             }
@@ -404,8 +418,8 @@ fun PremiumNavigateScreen(
                 }
                 Spacer(Modifier.height(16.dp))
                 Row(horizontalArrangement = Arrangement.spacedBy(24.dp)) {
-                    NavInfo(if (instruction != null) "${instruction.distanceMeters}" else "—", "m", "Distance")
-                    NavInfo(if (instruction != null && instruction.etaMinutes > 0) "${instruction.etaMinutes}" else "—",
+                    NavInfo(if (instruction != null) "${instruction.distanceMeters}" else "â€”", "m", "Distance")
+                    NavInfo(if (instruction != null && instruction.etaMinutes > 0) "${instruction.etaMinutes}" else "â€”",
                         "min", "Est. time")
                     if (!instruction?.provider.isNullOrBlank()) {
                         NavInfo(instruction.provider, "", "Provider")
@@ -503,7 +517,10 @@ private fun RouteCanvas(active: Boolean) {
 // ------------------------------------------------------------------ RIDES
 
 @Composable
-fun PremiumRidesScreen(telemetry: Telemetry) {
+fun PremiumRidesScreen(
+    telemetry: Telemetry,
+    rides: List<com.jupiterconnect.session.Ride>,
+) {
     Screen {
         Spacer(Modifier.height(18.dp))
         Caption("YOUR RIDES")
@@ -512,30 +529,63 @@ fun PremiumRidesScreen(telemetry: Telemetry) {
             fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onSurface)
         Spacer(Modifier.height(18.dp))
 
+        val totalKm = rides.sumOf { it.distanceKm }
         PremiumCard(modifier = Modifier.enterAnimated(delayMs = 0)) {
             Column(Modifier.padding(20.dp)) {
-                Caption("THIS WEEK")
+                Caption("RECORDED RIDES")
                 Spacer(Modifier.height(8.dp))
-                Text("%.1f".format(telemetry.odometerKm), style = NumberStyle,
+                Text("%.1f".format(totalKm), style = NumberStyle,
                     fontSize = 48.sp, fontWeight = FontWeight.Bold, color = JupiterColors.Accent)
-                Text("km on the odometer · live from the cluster",
+                Text("km across ${rides.size} ride${if (rides.size == 1) "" else "s"} Â· saved on this phone",
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
         }
         Spacer(Modifier.height(18.dp))
-        SectionHeading("This session")
+
+        SectionHeading("Saved rides", trailing = "NEWEST FIRST")
         Spacer(Modifier.height(10.dp))
-        Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-            PremiumStat(Modifier.weight(1f), Icons.Rounded.Speed,
-                "${telemetry.frameCount}", "frames", "Frames seen")
-            PremiumStat(Modifier.weight(1f), Icons.Rounded.BatteryFull,
-                "%.1f".format(telemetry.batteryVoltage), "V", "Battery")
+        if (rides.isEmpty()) {
+            PremiumCard {
+                Text("No rides yet. Connect to the cluster, ride, then disconnect â€” the trip is saved automatically.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(16.dp))
+            }
+        } else {
+            rides.forEach { r ->
+                PremiumCard(modifier = Modifier.padding(bottom = 10.dp)) {
+                    Column(Modifier.padding(16.dp)) {
+                        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                            Text(r.dateLabel, style = MaterialTheme.typography.titleMedium,
+                                color = MaterialTheme.colorScheme.onSurface,
+                                modifier = Modifier.weight(1f))
+                            Text("%.1f km".format(r.distanceKm), style = NumberStyle,
+                                color = JupiterColors.Accent, fontSize = 18.sp)
+                        }
+                        Spacer(Modifier.height(12.dp))
+                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            RideMetric(Modifier.weight(1f), "AVG", "%.0f".format(r.avgSpeedKmh), "km/h")
+                            RideMetric(Modifier.weight(1f), "TOP", "${r.topSpeedKmh}", "km/h")
+                            RideMetric(Modifier.weight(1f), "TIME", "${r.durationMin}", "min")
+                        }
+                    }
+                }
+            }
         }
-        Spacer(Modifier.height(14.dp))
-        SmallAction(Modifier.fillMaxWidth(), Icons.Rounded.History, "Live odometer",
-            "%.1f km".format(telemetry.odometerKm), onClick = {})
         Spacer(Modifier.height(28.dp))
+    }
+}
+
+@Composable
+private fun RideMetric(modifier: Modifier, label: String, value: String, unit: String) {
+    Column(modifier, horizontalAlignment = Alignment.CenterHorizontally) {
+        Caption(label)
+        Spacer(Modifier.height(4.dp))
+        Text(value, style = NumberStyle, fontSize = 20.sp,
+            fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onSurface)
+        Text(unit, style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant)
     }
 }
 
@@ -683,3 +733,104 @@ private fun InfoRow(key: String, value: String) {
         Text(value, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurface)
     }
 }
+
+// ------------------------------------------------------------------ DEVICES
+
+@Composable
+fun PremiumDevicesScreen(
+    devices: List<ScannedDevice>,
+    scanning: Boolean,
+    rememberedAddress: String?,
+    onScan: () -> Unit,
+    onConnect: (String) -> Unit,
+    onForget: () -> Unit,
+) {
+    Screen {
+        Spacer(Modifier.height(18.dp))
+        Caption("BLUETOOTH")
+        Spacer(Modifier.height(4.dp))
+        Text("Devices", style = MaterialTheme.typography.headlineLarge,
+            fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onSurface)
+        Spacer(Modifier.height(18.dp))
+
+        if (rememberedAddress != null) {
+            PremiumCard {
+                Column(Modifier.padding(16.dp)) {
+                    Caption("LAST CONNECTED", color = JupiterColors.Accent)
+                    Spacer(Modifier.height(8.dp))
+                    Text(rememberedAddress, style = MaterialTheme.typography.titleMedium,
+                        color = MaterialTheme.colorScheme.onSurface)
+                    Spacer(Modifier.height(12.dp))
+                    Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                        Button(
+                            onClick = { onConnect(rememberedAddress) },
+                            modifier = Modifier.weight(1f),
+                            shape = RoundedCornerShape(999.dp),
+                            colors = ButtonDefaults.buttonColors(
+                                containerColor = JupiterColors.Accent,
+                                contentColor = JupiterColors.OnPrimary),
+                        ) { Text("Reconnect") }
+                        OutlinedButton(
+                            onClick = onForget,
+                            modifier = Modifier.weight(1f),
+                            shape = RoundedCornerShape(999.dp),
+                        ) { Text("Forget") }
+                    }
+                }
+            }
+            Spacer(Modifier.height(14.dp))
+        }
+
+        SectionHeading("Nearby", trailing = if (scanning) "SCANNINGâ€¦" else "${devices.size} FOUND")
+        Spacer(Modifier.height(10.dp))
+        PremiumCard {
+            Column(Modifier.padding(8.dp)) {
+                if (devices.isEmpty()) {
+                    Text("No devices yet. Tap scan below.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.padding(10.dp))
+                } else {
+                    devices.forEach { d ->
+                        Surface(
+                            onClick = { onConnect(d.address) },
+                            shape = RoundedCornerShape(14.dp),
+                            color = Color.Transparent,
+                        ) {
+                            Row(Modifier.fillMaxWidth().padding(12.dp),
+                                verticalAlignment = Alignment.CenterVertically) {
+                                Icon(
+                                    Icons.Rounded.BluetoothConnected,
+                                    contentDescription = null,
+                                    tint = if (d.isCluster) JupiterColors.Accent
+                                    else MaterialTheme.colorScheme.onSurfaceVariant,
+                                    modifier = Modifier.size(20.dp),
+                                )
+                                Spacer(Modifier.width(12.dp))
+                                Column(Modifier.weight(1f)) {
+                                    Text("${if (d.isCluster) "â˜… " else ""}${d.name}",
+                                        style = MaterialTheme.typography.bodyMedium,
+                                        color = MaterialTheme.colorScheme.onSurface)
+                                    Text(d.address, style = MaterialTheme.typography.labelSmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                }
+                                Text("${d.rssi} dBm", style = MaterialTheme.typography.labelSmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            }
+                        }
+                    }
+                }
+                Spacer(Modifier.height(8.dp))
+                Button(
+                    onClick = onScan,
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(999.dp),
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = JupiterColors.High, contentColor = JupiterColors.Accent),
+                ) { Text(if (scanning) "Scanningâ€¦" else "Scan for devices") }
+            }
+        }
+        Spacer(Modifier.height(28.dp))
+    }
+}
+

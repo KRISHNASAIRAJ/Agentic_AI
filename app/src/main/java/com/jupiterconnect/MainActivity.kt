@@ -46,9 +46,11 @@ import androidx.core.content.ContextCompat
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
+import com.jupiterconnect.session.RideStore
 import com.jupiterconnect.transport.ClusterRepository
 import com.jupiterconnect.transport.ClusterService
 import com.jupiterconnect.ui.PermissionStatus
+import com.jupiterconnect.ui.PremiumDevicesScreen
 import com.jupiterconnect.ui.PremiumFindScreen
 import com.jupiterconnect.ui.PremiumHomeScreen
 import com.jupiterconnect.ui.PremiumNavigateScreen
@@ -75,6 +77,8 @@ fun JupiterApp() {
     val devices by ClusterRepository.devices.collectAsState()
     val scanning by ClusterRepository.scanning.collectAsState()
     val navInstruction by ClusterRepository.navInstruction.collectAsState()
+    val lastReading by RideStore.lastReading.collectAsState()
+    val rides by RideStore.rides.collectAsState()
     var mirroring by remember { mutableStateOf(ClusterRepository.mirroring.value) }
 
     // Notification-listener access is a Settings toggle, not a runtime
@@ -120,12 +124,35 @@ fun JupiterApp() {
         )
     }
 
+    // Remember the last connected cluster so reconnecting is one tap (or auto).
+    val devicePrefs = remember {
+        context.getSharedPreferences("jupiter_device", android.content.Context.MODE_PRIVATE)
+    }
+    var rememberedAddress by remember {
+        mutableStateOf(devicePrefs.getString("address", null))
+    }
+    fun connectAndRemember(address: String) {
+        devicePrefs.edit().putString("address", address).apply()
+        rememberedAddress = address
+        ClusterRepository.connect(address)
+    }
+    fun forgetDevice() {
+        devicePrefs.edit().remove("address").apply()
+        rememberedAddress = null
+    }
+
     var permStatus by remember { mutableStateOf(currentStatus()) }
 
     fun startServiceIfReady() {
         permStatus = currentStatus()
         if (permStatus.bleReady) {
             ContextCompat.startForegroundService(context, Intent(context, ClusterService::class.java))
+            // Once BLE is ready, attach to the remembered cluster if we have one.
+            rememberedAddress?.let { addr ->
+                android.os.Handler(android.os.Looper.getMainLooper()).post {
+                    ClusterRepository.connect(addr)
+                }
+            }
         }
     }
 
@@ -173,6 +200,7 @@ fun JupiterApp() {
         Tab("Ride", Icons.Rounded.Navigation),
         Tab("Rides", Icons.Rounded.History),
         Tab("Find", Icons.Rounded.Place),
+        Tab("Devices", Icons.Rounded.BluetoothConnected),
         Tab("Settings", Icons.Rounded.Settings),
     )
     var selected by remember { mutableIntStateOf(0) }
@@ -235,8 +263,10 @@ fun JupiterApp() {
                     devices = devices,
                     scanning = scanning,
                     permissions = permStatus,
+                    lastReading = lastReading,
                     onGrantPermissions = { launcher.launch(permissions) },
                     onScan = { scanForDevices() },
+                    onViewMore = { selected = 4 },
                 )
                 1 -> PremiumNavigateScreen(
                     instruction = navInstruction,
@@ -247,9 +277,17 @@ fun JupiterApp() {
                         ClusterRepository.mirroring.value = it
                     },
                 )
-                2 -> PremiumRidesScreen(telemetry)
+                2 -> PremiumRidesScreen(telemetry, rides)
                 3 -> PremiumFindScreen(telemetry)
-                4 -> PremiumSettingsScreen(
+                4 -> PremiumDevicesScreen(
+                    devices = devices,
+                    scanning = scanning,
+                    rememberedAddress = rememberedAddress,
+                    onScan = { scanForDevices() },
+                    onConnect = { address -> connectAndRemember(address) },
+                    onForget = { forgetDevice() },
+                )
+                5 -> PremiumSettingsScreen(
                     notificationAccess = notificationAccess,
                     permissions = permStatus,
                     onGrantPermissions = { launcher.launch(permissions) },

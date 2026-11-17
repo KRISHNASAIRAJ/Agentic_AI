@@ -35,7 +35,7 @@ data class ParsedNav(
 
 /** Parse Google Maps / MapMyIndia notification extras without a maps SDK. */
 object NavParsing {
-    private val DISTANCE = Regex("""(\d+(?:\.\d+)?)\s*(km|m|mi|ft)\b""", RegexOption.IGNORE_CASE)
+    private val DISTANCE = Regex("""(\d+(?:[.,]\d+)?)\s*(km|mi|ft|m)(?![A-Za-z])""", RegexOption.IGNORE_CASE)
     private val ETA = Regex("""(\d+)\s*(?:min|mins|minutes|hr|hrs|hour|hours)\b""", RegexOption.IGNORE_CASE)
 
     /** Arrival clock anywhere in a string: `1:39 pm`, `Arrive 1:39 pm`, `ETA 4:16 AM`. */
@@ -49,7 +49,7 @@ object NavParsing {
         val all = listOf(title, text, bigText, subText).joinToString(" ")
 
         val distance = DISTANCE.find(all)?.let { m ->
-            val value = m.groupValues[1].toDouble()
+            val value = m.groupValues[1].replace('/', '.').replace(',', '.').toDoubleOrNull() ?: -1.0
             when (m.groupValues[2].lowercase()) {
                 "km" -> (value * 1000).toInt()
                 "mi" -> (value * 1609).toInt()
