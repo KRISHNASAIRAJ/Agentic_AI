@@ -35,7 +35,15 @@ android {
     }
 
     buildTypes {
-        debug { isMinifyEnabled = false }
+        // Sign debug with the same project key as release so an installed
+        // Jupiter Connect can be upgraded in place. Without this, debug builds
+        // use the shared Android Debug key and `adb install -r` (or a tapped
+        // update) fails with INSTALL_FAILED_UPDATE_INCOMPATIBLE.
+        debug {
+            isMinifyEnabled = false
+            signingConfig = signingConfigs.findByName("release")
+                ?: signingConfigs.getByName("debug")
+        }
         release {
             isMinifyEnabled = false
             signingConfig = signingConfigs.findByName("release")
