@@ -142,6 +142,7 @@ class ClusterService : Service() {
     private var disconnectedAtMs = 0L
     private var clearNotification: Runnable? = null
     private var speedAlertActive = false
+    private var lastNotificationKey = ""
     @SuppressLint("MissingPermission") private var scanCallback: ScanCallback? = null
 
     private val adapter: BluetoothAdapter?
@@ -459,6 +460,7 @@ class ClusterService : Service() {
                     gatt = g
                     ClusterRepository.telemetry.value = ClusterRepository.telemetry.value.copy(
                         connected = true, address = g.device.address, error = null)
+                    updateNotification()
                     if (!g.requestMtu(Gatt.REQUESTED_MTU)) startDiscovery(g)
                     main.postDelayed({ startDiscovery(g) }, 2500L)
                     disconnectedAtMs = 0L
@@ -492,6 +494,7 @@ class ClusterService : Service() {
                         connected = false,
                         error = if (status != 0) "Link lost (status $status)" else null,
                     )
+                    updateNotification()
                     writeChar = null
                     discoveryStarted = false
                     keepaliveJob?.cancel()
@@ -720,13 +723,32 @@ class ClusterService : Service() {
             Intent(this, com.jupiterconnect.MainActivity::class.java),
             android.app.PendingIntent.FLAG_IMMUTABLE or android.app.PendingIntent.FLAG_UPDATE_CURRENT,
         )
+        val t = ClusterRepository.telemetry.value
+        val (title, text) = if (t.connected) {
+            "Jupiter Connect" to if (t.address.isNotBlank())
+                "Connected · ${t.address}" else "Connected to cluster"
+        } else {
+            "Jupiter Connect" to "Disconnected · waiting for cluster"
+        }
         return NotificationCompat.Builder(this, "cluster")
             .setSmallIcon(R.drawable.ic_stat_link)
-            .setContentTitle("Jupiter Connect")
-            .setContentText("Cluster link active")
+            .setContentTitle(title)
+            .setContentText(text)
             .setContentIntent(pending)
-            .setOngoing(true)
+            .setOngoing(t.connected)
             .build()
+    }
+
+    /** Re-post the notification so its title/text follow the link state. */
+    private fun updateNotification() {
+        val t = ClusterRepository.telemetry.value
+        val key = "${t.connected}|${t.address}"
+        // Only post when the state actually changes - never spam the shade.
+        if (key == lastNotificationKey) return
+        lastNotificationKey = key
+        runCatching {
+            getSystemService(NotificationManager::class.java)?.notify(1, buildNotification())
+        }
     }
 
     override fun onDestroy() {
