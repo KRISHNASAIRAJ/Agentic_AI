@@ -6,6 +6,8 @@ import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.statusBars
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ColumnScope
@@ -18,6 +20,7 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.windowInsetsTopHeight
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -80,10 +83,10 @@ import com.jupiterconnect.ui.theme.JupiterColors
 import kotlinx.coroutines.launch
 import java.util.Calendar
 
-private val TAB_LABELS = listOf("Home", "Ride", "Rides", "Find", "Devices")
+private val TAB_LABELS = listOf("Home", "Ride", "Rides", "Find", "More")
 private val TAB_ICONS = listOf(
     Icons.Rounded.Home, Icons.Rounded.Navigation, Icons.Rounded.History,
-    Icons.Rounded.Place, Icons.Rounded.BluetoothConnected,
+    Icons.Rounded.Place, Icons.Rounded.Settings,
 )
 
 /** Shared shell: 48px settings circle, centred title, 58px red BT circle, pill nav. */
@@ -98,30 +101,22 @@ fun JupiterShell(
 ) {
     Box(Modifier.fillMaxSize().background(JupiterColors.Surface)) {
         Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState())) {
+            // Keep the header out of the status/notification bar.
+            Spacer(Modifier.windowInsetsTopHeight(WindowInsets.statusBars))
             Row(
                 Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 12.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                Box(
-                    Modifier.size(48.dp).clip(CircleShape).background(JupiterColors.Low)
-                        .clickable { onSettings() },
-                    contentAlignment = Alignment.Center,
-                ) {
-                    Icon(Icons.Rounded.Settings, "Settings",
-                        modifier = Modifier.size(22.dp), tint = JupiterColors.Accent)
-                }
+                // Left spacer keeps the title centred; settings now lives in
+                // the "More" tab instead of a header button.
+                Spacer(Modifier.size(48.dp))
                 Column(Modifier.weight(1f), horizontalAlignment = Alignment.CenterHorizontally) {
                     Label(kicker)
                     Text(title, fontSize = 32.sp, fontWeight = FontWeight.Medium,
                         color = JupiterColors.OnSurface, textAlign = TextAlign.Center)
                 }
-                Box(
-                    Modifier.size(58.dp).clip(CircleShape).background(JupiterColors.Red),
-                    contentAlignment = Alignment.Center,
-                ) {
-                    Icon(Icons.Rounded.Bluetooth, "Bluetooth",
-                        modifier = Modifier.size(26.dp), tint = Color.White)
-                }
+                // Balance the settings circle so the title stays centred.
+                Spacer(Modifier.size(48.dp))
             }
             Column(Modifier.padding(horizontal = 16.dp), content = content)
             Spacer(Modifier.height(110.dp))
@@ -195,6 +190,60 @@ private fun InfoRow(label: String, value: String) {
         Text(label, Modifier.weight(1f), fontSize = 12.sp,
             color = JupiterColors.OnSurfaceVariant)
         Text(value, fontSize = 12.sp, color = JupiterColors.OnSurface)
+    }
+}
+
+/** Cold-start warm-up with an animated-feeling red ring and phase badge. */
+@Composable
+private fun ColdStartCardV2() {
+    val state by ClusterRepository.warmup.collectAsState()
+    val ready = state.phase == WarmupPhase.READY
+    val glow = if (ready) JupiterColors.Red else JupiterColors.Accent
+    RedCard(bar = true) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Box(Modifier.size(92.dp), contentAlignment = Alignment.Center) {
+                Canvas(Modifier.size(92.dp)) {
+                    drawCircle(
+                        brush = androidx.compose.ui.graphics.Brush.radialGradient(
+                            listOf(glow.copy(alpha = 0.35f), Color.Transparent)),
+                        radius = size.minDimension * 0.5f,
+                    )
+                    val stroke = 7.dp.toPx()
+                    val inset = stroke / 2 + 3.dp.toPx()
+                    val arc = Size(size.width - inset * 2, size.height - inset * 2)
+                    val top = Offset(inset, inset)
+                    drawArc(JupiterColors.High, -90f, 360f, false, top, arc,
+                        style = Stroke(stroke, cap = StrokeCap.Round))
+                    drawArc(glow, -90f, 360f * state.progress / 100f, false, top, arc,
+                        style = Stroke(stroke, cap = StrokeCap.Round))
+                }
+                Text("${state.progress}%", fontSize = 20.sp, fontWeight = FontWeight.Medium,
+                    color = JupiterColors.OnSurface)
+            }
+            Spacer(Modifier.width(16.dp))
+            Column(Modifier.weight(1f)) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Box(
+                        Modifier.clip(RoundedCornerShape(999.dp))
+                            .background(JupiterColors.RedTint)
+                            .padding(horizontal = 10.dp, vertical = 4.dp),
+                    ) {
+                        Text(state.phase.name, fontSize = 10.sp,
+                            color = JupiterColors.Accent, letterSpacing = 1.sp)
+                    }
+                    Spacer(Modifier.width(8.dp))
+                    Text(if (state.cold) "COLD START" else "WARM START",
+                        fontSize = 10.sp, color = JupiterColors.OnSurfaceVariant,
+                        letterSpacing = 1.sp)
+                }
+                Spacer(Modifier.height(8.dp))
+                Text(state.message, fontSize = 15.sp, color = JupiterColors.OnSurface)
+                Spacer(Modifier.height(4.dp))
+                Text("target ${state.targetC}°C · start ${state.startTemp}°C · " +
+                    "ambient ${state.ambientC}°C", fontSize = 11.sp,
+                    color = JupiterColors.OnSurfaceVariant)
+            }
+        }
     }
 }
 
@@ -314,16 +363,33 @@ fun HomeScreenV2(
                             "${telemetry.speedKmh}" else "--"
                         BigValue(speed, "km/h", 36)
                         Spacer(Modifier.weight(1f))
-                        val history = ClusterRepository.speedHistory.collectAsState().value
+                        // Current ride grows a fresh graph; when disconnected
+                        // we show the most recent saved ride until a new one starts.
+                        val liveSpeeds = RideStore.liveSpeeds.collectAsState().value
+                        val liveThrottles = RideStore.liveThrottles.collectAsState().value
+                        val recent = RideStore.rides.collectAsState().value.firstOrNull()
+                        val graph = if (liveSpeeds.isNotEmpty()) liveSpeeds
+                            else recent?.speedSamples.orEmpty()
+                        val throttles = if (liveThrottles.isNotEmpty()) liveThrottles
+                            else recent?.throttleSamples.orEmpty()
                         Canvas(Modifier.fillMaxWidth().height(38.dp)) {
-                            if (history.size > 1) {
-                                val max = (history.maxOrNull() ?: 1).coerceAtLeast(1)
-                                val step = size.width / (history.size - 1)
-                                for (i in 0 until history.size - 1) {
+                            if (graph.size > 1) {
+                                val max = (graph.maxOrNull() ?: 1).coerceAtLeast(1)
+                                val step = size.width / (graph.size - 1)
+                                for (i in 0 until graph.size - 1) {
                                     drawLine(JupiterColors.Red,
-                                        Offset(i * step, size.height - history[i].toFloat() / max * size.height),
-                                        Offset((i + 1) * step, size.height - history[i + 1].toFloat() / max * size.height),
+                                        Offset(i * step, size.height - graph[i].toFloat() / max * size.height),
+                                        Offset((i + 1) * step, size.height - graph[i + 1].toFloat() / max * size.height),
                                         strokeWidth = 3.dp.toPx(), cap = StrokeCap.Round)
+                                }
+                            }
+                            if (throttles.size > 1) {
+                                val step = size.width / (throttles.size - 1)
+                                for (i in 0 until throttles.size - 1) {
+                                    drawLine(JupiterColors.Accent.copy(alpha = 0.5f),
+                                        Offset(i * step, size.height - throttles[i].toFloat() / 100f * size.height),
+                                        Offset((i + 1) * step, size.height - throttles[i + 1].toFloat() / 100f * size.height),
+                                        strokeWidth = 2.dp.toPx(), cap = StrokeCap.Round)
                                 }
                             }
                         }
@@ -351,8 +417,11 @@ fun HomeScreenV2(
         RedCard(bar = true) {
             Label("CLUSTER LINK")
             Spacer(Modifier.height(8.dp))
-            Text(if (telemetry.connected) "Connected to ${telemetry.address}" else "Waiting for cluster",
+            Text(if (telemetry.connected) "Connected" else "Disconnected",
                 fontSize = 18.sp, color = JupiterColors.OnSurface)
+            if (telemetry.connected && telemetry.address.isNotBlank()) {
+                Text(telemetry.address, fontSize = 12.sp, color = JupiterColors.OnSurfaceVariant)
+            }
             val err = telemetry.error
             if (!err.isNullOrBlank()) {
                 Spacer(Modifier.height(4.dp))
@@ -397,6 +466,8 @@ fun HomeScreenV2(
                 BigValue(if (econ > 0) "$econ" else "--", "km/L", 36)
             }
         }
+        Spacer(Modifier.height(10.dp))
+        ColdStartCardV2()
         Spacer(Modifier.height(18.dp))
         Label("VEHICLE DETAILS")
         Spacer(Modifier.height(10.dp))
@@ -589,8 +660,32 @@ fun RidesScreenV2(
                 if (expanded) {
                     Spacer(Modifier.height(10.dp))
                     Text("Idle ${r.idleMin} min · ISS ${r.issStops} stops · " +
-                        "Fuel ${r.fuelBarsUsed} bars", fontSize = 12.sp,
+                        "Fuel ${r.fuelBarsUsed} bars · Max ${r.topSpeedKmh} km/h", fontSize = 12.sp,
                         color = JupiterColors.OnSurfaceVariant)
+                    Spacer(Modifier.height(10.dp))
+                    val samples = r.speedSamples
+                    val thr = r.throttleSamples
+                    if (samples.size > 1) {
+                        Canvas(Modifier.fillMaxWidth().height(60.dp)) {
+                            val max = (samples.maxOrNull() ?: 1).coerceAtLeast(1)
+                            val step = size.width / (samples.size - 1)
+                            for (i in 0 until samples.size - 1) {
+                                drawLine(JupiterColors.Red,
+                                    Offset(i * step, size.height - samples[i].toFloat() / max * size.height),
+                                    Offset((i + 1) * step, size.height - samples[i + 1].toFloat() / max * size.height),
+                                    strokeWidth = 2.dp.toPx(), cap = StrokeCap.Round)
+                            }
+                            if (thr.size > 1) {
+                                val tStep = size.width / (thr.size - 1)
+                                for (i in 0 until thr.size - 1) {
+                                    drawLine(JupiterColors.Accent.copy(alpha = 0.5f),
+                                        Offset(i * tStep, size.height - thr[i].toFloat() / 100f * size.height),
+                                        Offset((i + 1) * tStep, size.height - thr[i + 1].toFloat() / 100f * size.height),
+                                        strokeWidth = 1.5.dp.toPx(), cap = StrokeCap.Round)
+                                }
+                            }
+                        }
+                    }
                 }
             }
         }
@@ -664,151 +759,155 @@ fun FindScreenV2(
 
 // ---------------------------------------------------------------- DEVICES
 
+// ------------------------------------------------------------------- MORE
+
 @Composable
-fun DevicesScreenV2(
+private fun DevicesContent(
     devices: List<ScannedDevice>,
     rememberedAddress: String?,
     onScan: () -> Unit,
     onConnect: (String) -> Unit,
     onForget: () -> Unit,
-    activeTab: Int?,
-    onTab: (Int) -> Unit,
-    onSettings: () -> Unit,
 ) {
-    JupiterShell("Devices", "BLUETOOTH", activeTab, onTab, onSettings) {
-        Spacer(Modifier.height(4.dp))
-        RedCard(bar = true) {
-            Label("LAST CONNECTED")
-            Spacer(Modifier.height(8.dp))
-            Text(rememberedAddress ?: "No device remembered", fontSize = 18.sp,
-                fontWeight = FontWeight.Medium, color = JupiterColors.OnSurface)
-            Spacer(Modifier.height(14.dp))
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                PrimaryButton("Reconnect", {
-                    if (rememberedAddress != null) onConnect(rememberedAddress)
-                }, Modifier.weight(1f))
-                SecondaryButton("Forget", onForget, Modifier.weight(1f))
-            }
+    RedCard(bar = true) {
+        Label("LAST CONNECTED")
+        Spacer(Modifier.height(8.dp))
+        Text(rememberedAddress ?: "No device remembered", fontSize = 18.sp,
+            fontWeight = FontWeight.Medium, color = JupiterColors.OnSurface)
+        Spacer(Modifier.height(14.dp))
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            PrimaryButton("Reconnect", {
+                if (rememberedAddress != null) onConnect(rememberedAddress)
+            }, Modifier.weight(1f))
+            SecondaryButton("Forget", onForget, Modifier.weight(1f))
         }
-        Spacer(Modifier.height(18.dp))
-        Row(Modifier.fillMaxWidth(), Arrangement.SpaceBetween) {
-            Label("NEARBY")
-            Text("${devices.size} FOUND", fontSize = 11.sp, color = JupiterColors.Accent,
-                letterSpacing = 2.sp)
+    }
+    Spacer(Modifier.height(18.dp))
+    Row(Modifier.fillMaxWidth(), Arrangement.SpaceBetween) {
+        Label("NEARBY")
+        Text("${devices.size} FOUND", fontSize = 11.sp, color = JupiterColors.Accent,
+            letterSpacing = 2.sp)
+    }
+    Spacer(Modifier.height(10.dp))
+    RedCard {
+        if (devices.isEmpty()) {
+            Text("No devices found. Tap Scan.", fontSize = 13.sp,
+                color = JupiterColors.OnSurfaceVariant)
         }
-        Spacer(Modifier.height(10.dp))
-        RedCard {
-            if (devices.isEmpty()) {
-                Text("No devices found. Tap Scan.", fontSize = 13.sp,
-                    color = JupiterColors.OnSurfaceVariant)
-            }
-            devices.take(8).forEachIndexed { i, d ->
-                if (i > 0) Spacer(Modifier.height(10.dp))
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    IconCircle(
-                        if (d.name.contains("JBL", true)) Icons.Rounded.Headphones
-                        else if (d.isCluster) Icons.Rounded.TwoWheeler
-                        else Icons.Rounded.Bluetooth,
-                        "Device",
-                    )
-                    Spacer(Modifier.width(12.dp))
-                    Column(Modifier.weight(1f)) {
-                        Text(d.name, fontSize = 14.sp, color = JupiterColors.OnSurface)
-                        Text(d.address, fontSize = 11.sp, color = JupiterColors.OnSurfaceVariant)
-                    }
-                    Text("${d.rssi} dBm", fontSize = 11.sp, color = JupiterColors.OnSurfaceVariant)
+        devices.take(8).forEachIndexed { i, d ->
+            if (i > 0) Spacer(Modifier.height(10.dp))
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                IconCircle(
+                    if (d.name.contains("JBL", true)) Icons.Rounded.Headphones
+                    else if (d.isCluster) Icons.Rounded.TwoWheeler
+                    else Icons.Rounded.Bluetooth,
+                    "Device",
+                )
+                Spacer(Modifier.width(12.dp))
+                Column(Modifier.weight(1f)) {
+                    Text(d.name, fontSize = 14.sp, color = JupiterColors.OnSurface)
+                    Text(d.address, fontSize = 11.sp, color = JupiterColors.OnSurfaceVariant)
                 }
+                Text("${d.rssi} dBm", fontSize = 11.sp, color = JupiterColors.OnSurfaceVariant)
             }
         }
+    }
+    Spacer(Modifier.height(10.dp))
+    PrimaryButton("Scan for devices", onScan, Modifier.fillMaxWidth())
+}
+
+@Composable
+private fun SettingsContent(
+    notificationAccess: Boolean,
+    bleReady: Boolean,
+    email: String?,
+    onNotificationAccess: () -> Unit,
+    onSignOut: () -> Unit,
+) {
+    RedCard {
+        Label("PERMISSIONS")
+        Spacer(Modifier.height(12.dp))
+        listOf(
+            "Bluetooth connect and scan" to bleReady,
+            "Location" to true,
+            "Notifications" to true,
+            "Notification access" to notificationAccess,
+        ).forEach { (name, ok) ->
+            Row(Modifier.padding(vertical = 6.dp), verticalAlignment = Alignment.CenterVertically) {
+                IconCircle(Icons.Rounded.Bluetooth, name)
+                Spacer(Modifier.width(12.dp))
+                Text(name, Modifier.weight(1f), fontSize = 14.sp,
+                    color = JupiterColors.OnSurface)
+                if (ok) Icon(Icons.Rounded.Check, "Granted",
+                    modifier = Modifier.size(20.dp), tint = JupiterColors.Accent)
+            }
+        }
+        Spacer(Modifier.height(8.dp))
+        Text("Notification access", fontSize = 12.sp, color = JupiterColors.Accent,
+            modifier = Modifier.clickable { onNotificationAccess() })
+    }
+    Spacer(Modifier.height(10.dp))
+    RedCard {
+        Label("CLUSTER")
         Spacer(Modifier.height(10.dp))
-        PrimaryButton("Scan for devices", onScan, Modifier.fillMaxWidth())
+        listOf("Model" to "Jupiter 125", "Protocol" to "SmartXonnect BLE",
+            "Link" to if (notificationAccess) "Ready" else "Needs access").forEach { (k, v) ->
+            Row(Modifier.padding(vertical = 4.dp)) {
+                Text(k, Modifier.weight(1f), fontSize = 13.sp, color = JupiterColors.OnSurfaceVariant)
+                Text(v, fontSize = 13.sp,
+                    color = if (k == "Link") JupiterColors.Accent else JupiterColors.OnSurface)
+            }
+        }
+    }
+    Spacer(Modifier.height(10.dp))
+    RedCard(bar = true) {
+        Label("CLOUD SYNC")
+        Spacer(Modifier.height(8.dp))
+        Text(email ?: "Not signed in", fontSize = 15.sp, color = JupiterColors.OnSurface)
+        Spacer(Modifier.height(12.dp))
+        SecondaryButton("Sign out", onSignOut, Modifier.fillMaxWidth())
+    }
+    Spacer(Modifier.height(10.dp))
+    RedCard {
+        Label("VOICE")
+        Spacer(Modifier.height(8.dp))
+        val voice by ClusterRepository.voiceDebug.collectAsState()
+        Text(voice, fontSize = 11.sp, color = JupiterColors.OnSurfaceVariant)
+        Spacer(Modifier.height(10.dp))
+        SecondaryButton("Test voice trigger",
+            { ClusterRepository.service?.simulateVoiceTrigger() },
+            Modifier.fillMaxWidth())
+    }
+    Spacer(Modifier.height(10.dp))
+    RedCard {
+        Label("ENGINE FRAME")
+        Spacer(Modifier.height(8.dp))
+        val engine by ClusterRepository.engineDebug.collectAsState()
+        Text(engine, fontSize = 10.sp, color = JupiterColors.OnSurfaceVariant)
     }
 }
 
-// --------------------------------------------------------------- SETTINGS
-
+/** Devices at the top, all settings below, in one scrollable "More" tab. */
 @Composable
-fun SettingsScreenV2(
+fun MoreScreenV2(
+    devices: List<ScannedDevice>,
+    rememberedAddress: String?,
+    onScan: () -> Unit,
+    onConnect: (String) -> Unit,
+    onForget: () -> Unit,
     notificationAccess: Boolean,
     bleReady: Boolean,
     email: String?,
     onNotificationAccess: () -> Unit,
     onSignOut: () -> Unit,
     onTab: (Int) -> Unit,
-    onSettings: () -> Unit,
 ) {
-    val warmup by ClusterRepository.warmup.collectAsState()
-    JupiterShell("Settings", "PREFERENCES", null, onTab, onSettings) {
+    JupiterShell("More", "DEVICES & SETTINGS", 4, onTab, {}) {
         Spacer(Modifier.height(4.dp))
-        RedCard {
-            Label("PERMISSIONS")
-            Spacer(Modifier.height(12.dp))
-            listOf(
-                "Bluetooth connect and scan" to bleReady,
-                "Location" to true,
-                "Notifications" to true,
-                "Notification access" to notificationAccess,
-            ).forEach { (name, ok) ->
-                Row(Modifier.padding(vertical = 6.dp), verticalAlignment = Alignment.CenterVertically) {
-                    IconCircle(Icons.Rounded.Bluetooth, name)
-                    Spacer(Modifier.width(12.dp))
-                    Text(name, Modifier.weight(1f), fontSize = 14.sp,
-                        color = JupiterColors.OnSurface)
-                    if (ok) Icon(Icons.Rounded.Check, "Granted",
-                        modifier = Modifier.size(20.dp), tint = JupiterColors.Accent)
-                }
-            }
-            Spacer(Modifier.height(8.dp))
-            Text("Notification access", fontSize = 12.sp, color = JupiterColors.Accent,
-                modifier = Modifier.clickable { onNotificationAccess() })
-        }
+        DevicesContent(devices, rememberedAddress, onScan, onConnect, onForget)
+        Spacer(Modifier.height(22.dp))
+        Label("SETTINGS")
         Spacer(Modifier.height(10.dp))
-        RedCard {
-            Label("CLUSTER")
-            Spacer(Modifier.height(10.dp))
-            listOf("Model" to "Jupiter 125", "Protocol" to "SmartXonnect BLE",
-                "Link" to if (notificationAccess) "Ready" else "Needs access").forEach { (k, v) ->
-                Row(Modifier.padding(vertical = 4.dp)) {
-                    Text(k, Modifier.weight(1f), fontSize = 13.sp, color = JupiterColors.OnSurfaceVariant)
-                    Text(v, fontSize = 13.sp,
-                        color = if (k == "Link") JupiterColors.Accent else JupiterColors.OnSurface)
-                }
-            }
-        }
-        Spacer(Modifier.height(10.dp))
-        RedCard(bar = true) {
-            Label("CLOUD SYNC")
-            Spacer(Modifier.height(8.dp))
-            Text(email ?: "Not signed in", fontSize = 15.sp, color = JupiterColors.OnSurface)
-            Spacer(Modifier.height(12.dp))
-            SecondaryButton("Sign out", onSignOut, Modifier.fillMaxWidth())
-        }
-        Spacer(Modifier.height(10.dp))
-        RedCard {
-            Label("VOICE")
-            Spacer(Modifier.height(8.dp))
-            val voice by ClusterRepository.voiceDebug.collectAsState()
-            Text(voice, fontSize = 11.sp, color = JupiterColors.OnSurfaceVariant)
-            Spacer(Modifier.height(10.dp))
-            SecondaryButton("Test voice trigger",
-                { ClusterRepository.service?.simulateVoiceTrigger() },
-                Modifier.fillMaxWidth())
-        }
-        Spacer(Modifier.height(10.dp))
-        RedCard {
-            Label("ENGINE FRAME")
-            Spacer(Modifier.height(8.dp))
-            val engine by ClusterRepository.engineDebug.collectAsState()
-            Text(engine, fontSize = 10.sp, color = JupiterColors.OnSurfaceVariant)
-        }
-        Spacer(Modifier.height(10.dp))
-        RedCard {
-            Label("COLD START")
-            Spacer(Modifier.height(8.dp))
-            Text(warmup.message, fontSize = 15.sp, color = JupiterColors.OnSurface)
-            Text("${warmup.phase} · target ${warmup.targetC} °C · " +
-                "start ${warmup.startTemp} °C · ambient ${warmup.ambientC} °C",
-                fontSize = 12.sp, color = JupiterColors.OnSurfaceVariant)
-        }
+        SettingsContent(notificationAccess, bleReady, email, onNotificationAccess, onSignOut)
     }
 }

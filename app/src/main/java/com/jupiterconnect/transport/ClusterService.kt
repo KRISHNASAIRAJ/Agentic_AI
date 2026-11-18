@@ -122,6 +122,7 @@ class ClusterService : Service() {
     private var navJob: Job? = null
     private var syncJob: Job? = null
     private var disconnectedAtMs = 0L
+    private var clearNotification: Runnable? = null
     @SuppressLint("MissingPermission") private var scanCallback: ScanCallback? = null
 
     private val adapter: BluetoothAdapter?
@@ -398,6 +399,8 @@ class ClusterService : Service() {
                     if (!g.requestMtu(Gatt.REQUESTED_MTU)) startDiscovery(g)
                     main.postDelayed({ startDiscovery(g) }, 2500L)
                     disconnectedAtMs = 0L
+                    clearNotification?.let { main.removeCallbacks(it) }
+                    clearNotification = null
                     startRideSync()
                 }
 
@@ -408,6 +411,15 @@ class ClusterService : Service() {
                     RideStore.onDisconnected()
                     // Keep syncing for two minutes after the link drops.
                     disconnectedAtMs = System.currentTimeMillis()
+                    // Clear the foreground notification only after a long
+                    // disconnect, so a brief drop does not lose the link UI.
+                    clearNotification?.let { main.removeCallbacks(it) }
+                    clearNotification = Runnable {
+                        runCatching {
+                            getSystemService(NotificationManager::class.java)?.cancel(1)
+                        }
+                        clearNotification = null
+                    }.also { main.postDelayed(it, 5 * 60_000L) }
                     startRideSync()
                     ClusterRepository.telemetry.value = ClusterRepository.telemetry.value.copy(
                         connected = false,
@@ -649,6 +661,7 @@ class ClusterService : Service() {
     }
 
     override fun onDestroy() {
+        clearNotification?.let { main.removeCallbacks(it) }
         disconnectNow()
         ClusterRepository.service = null
         scope.cancel()

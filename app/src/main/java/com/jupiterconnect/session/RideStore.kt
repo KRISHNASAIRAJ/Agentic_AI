@@ -27,6 +27,9 @@ data class Ride(
     val fuelBarsStart: Int = 0,
     val fuelBarsEnd: Int = 0,
     val maxRpm: Int = 0,
+    /** Speed (km/h) and throttle (%) sampled every 2 s during this ride. */
+    val speedSamples: List<Int> = emptyList(),
+    val throttleSamples: List<Int> = emptyList(),
 ) {
     val dateLabel: String
         get() {
@@ -106,6 +109,7 @@ object RideStore {
     private const val KEY_RIDES = "rides"
     private const val KEY_SYNCED = "synced_rides"
     private const val KEY_WARMUP_LAST = "warmup_last_run"
+    private const val KEY_SAMPLES = "rs_"
     private const val KEY_PARK_LAT = "park_lat"
     private const val KEY_PARK_LNG = "park_lng"
     private const val KEY_PARK_MS = "park_ms"
@@ -133,6 +137,12 @@ object RideStore {
     private val _liveTripKm = MutableStateFlow(0.0)
     val liveTripKm: StateFlow<Double> = _liveTripKm.asStateFlow()
 
+    /** Graph samples for the ride in progress; cleared when a new ride starts. */
+    private val _liveSpeeds = MutableStateFlow<List<Int>>(emptyList())
+    val liveSpeeds: StateFlow<List<Int>> = _liveSpeeds.asStateFlow()
+    private val _liveThrottles = MutableStateFlow<List<Int>>(emptyList())
+    val liveThrottles: StateFlow<List<Int>> = _liveThrottles.asStateFlow()
+
     private var rideStartMs = 0L
     private var rideStartOdo: Double? = null
     private var rideLastOdo: Double? = null
@@ -148,6 +158,9 @@ object RideStore {
     private var fuelStart = -1
     private var fuelEnd = -1
     private var maxRpm = 0
+    private val rideSpeeds = mutableListOf<Int>()
+    private val rideThrottles = mutableListOf<Int>()
+    private var lastSampleAtMs = 0L
 
     fun init(context: Context) {
         if (prefs != null) return
@@ -162,7 +175,14 @@ object RideStore {
             engineTempC = p.getInt(KEY_LAST_TEMP, 0),
             hasData = p.getBoolean(KEY_LAST_HAS, false),
         )
-        _rides.value = parseRides(p.getString(KEY_RIDES, "").orEmpty())
+        _rides.value = parseRides(p.getString(KEY_RIDES, "").orEmpty()).map { r ->
+            val raw = p.getString(KEY_SAMPLES + r.startedAt, "").orEmpty()
+            val parts = raw.split("|")
+            if (parts.size == 2) r.copy(
+                speedSamples = parts[0].parseSamples(),
+                throttleSamples = parts[1].parseSamples(),
+            ) else r
+        }
         syncedIds.clear()
         p.getString(KEY_SYNCED, "").orEmpty()
             .split(',')
@@ -185,6 +205,11 @@ object RideStore {
         rideLastOdo = null
         _liveTopSpeed.value = 0
         _liveTripKm.value = 0.0
+        rideSpeeds.clear()
+        rideThrottles.clear()
+        lastSampleAtMs = 0L
+        _liveSpeeds.value = emptyList()
+        _liveThrottles.value = emptyList()
         bandMs.fill(0)
         idleMs = 0L
         lastPrimaryAtMs = 0L
@@ -249,6 +274,14 @@ object RideStore {
             }
             if (primary) {
                 val now = System.currentTimeMillis()
+                // One sample every 2 s for the per-ride throttle/speed graph.
+                if (now - lastSampleAtMs >= 2_000L) {
+                    rideSpeeds += t.speedKmh
+                    rideThrottles += t.throttlePosition
+                    lastSampleAtMs = now
+                    _liveSpeeds.value = rideSpeeds.toList()
+                    _liveThrottles.value = rideThrottles.toList()
+                }
                 if (lastPrimaryAtMs > 0) {
                     val dt = (now - lastPrimaryAtMs).coerceIn(0L, 2_000L)
                     val idx = when {
@@ -290,10 +323,18 @@ object RideStore {
             fuelBarsStart = fuelStart.coerceAtLeast(0),
             fuelBarsEnd = fuelEnd.coerceAtLeast(0),
             maxRpm = maxRpm,
+            speedSamples = rideSpeeds.toList(),
+            throttleSamples = rideThrottles.toList(),
         )
         val updated = listOf(ride) + _rides.value
         _rides.value = updated
-        prefs?.edit()?.putString(KEY_RIDES, serialiseRides(updated))?.apply()
+        prefs?.edit()
+            ?.putString(KEY_RIDES, serialiseRides(updated))
+            ?.putString(
+                KEY_SAMPLES + ride.startedAt,
+                ride.speedSamples.joinToString("_") + "|" + ride.throttleSamples.joinToString("_"),
+            )
+            ?.apply()
     }
 
     /** Last engine-run timestamp, persisted so warm-up survives restarts. */
@@ -320,6 +361,9 @@ object RideStore {
             ?.putLong(KEY_PARK_MS, atMs)
             ?.apply()
     }
+
+    private fun String.parseSamples(): List<Int> =
+        if (isBlank()) emptyList() else split("_").mapNotNull { it.toIntOrNull() }
 
     private fun serialiseRides(list: List<Ride>): String = list.take(50).joinToString(";") { r ->
         listOf(

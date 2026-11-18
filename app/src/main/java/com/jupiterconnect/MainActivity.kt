@@ -49,13 +49,13 @@ import androidx.lifecycle.compose.LocalLifecycleOwner
 import com.jupiterconnect.session.RideStore
 import com.jupiterconnect.transport.ClusterRepository
 import com.jupiterconnect.transport.ClusterService
-import com.jupiterconnect.ui.DevicesScreenV2
 import com.jupiterconnect.ui.FindScreenV2
+import com.jupiterconnect.ui.MoreScreenV2
 import com.jupiterconnect.ui.HomeScreenV2
 import com.jupiterconnect.ui.PermissionStatus
 import com.jupiterconnect.ui.RideScreenV2
 import com.jupiterconnect.ui.RidesScreenV2
-import com.jupiterconnect.ui.SettingsScreenV2
+
 import com.jupiterconnect.ui.PremiumDevicesScreen
 import com.jupiterconnect.ui.PremiumFindScreen
 import com.jupiterconnect.ui.PremiumHomeScreen
@@ -212,7 +212,7 @@ fun JupiterApp() {
                 onFindCluster = { selected = 3 },
                 activeTab = 0,
                 onTab = selectTab,
-                onSettings = { selected = 5 },
+                onSettings = { selected = 4 },
             )
             1 -> RideScreenV2(
                 telemetry = telemetry,
@@ -224,32 +224,27 @@ fun JupiterApp() {
                 },
                 activeTab = 1,
                 onTab = selectTab,
-                onSettings = { selected = 5 },
+                onSettings = { selected = 4 },
             )
             2 -> RidesScreenV2(
                 rides = rides,
                 activeTab = 2,
                 onTab = selectTab,
-                onSettings = { selected = 5 },
+                onSettings = { selected = 4 },
             )
             3 -> FindScreenV2(
                 activeTab = 3,
                 onTab = selectTab,
-                onSettings = { selected = 5 },
+                onSettings = { selected = 4 },
                 onFindCluster = { selected = 4 },
                 rememberedAddress = rememberedAddress,
             )
-            4 -> DevicesScreenV2(
+            4 -> MoreScreenV2(
                 devices = devices,
                 rememberedAddress = rememberedAddress,
                 onScan = { scanForDevices() },
                 onConnect = { address -> connectAndRemember(address) },
                 onForget = { forgetDevice() },
-                activeTab = 4,
-                onTab = selectTab,
-                onSettings = { selected = 5 },
-            )
-            5 -> SettingsScreenV2(
                 notificationAccess = notificationAccess,
                 bleReady = permStatus.bluetooth,
                 email = com.jupiterconnect.sync.SupabaseClient.currentEmail(),
@@ -258,7 +253,6 @@ fun JupiterApp() {
                 },
                 onSignOut = { com.jupiterconnect.sync.SupabaseClient.signOut() },
                 onTab = selectTab,
-                onSettings = { selected = 5 },
             )
         }
     }
