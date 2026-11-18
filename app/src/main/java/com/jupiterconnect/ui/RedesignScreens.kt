@@ -782,7 +782,7 @@ fun RidesScreenV2(
     val fills by com.jupiterconnect.session.FuelLogStore.fills.collectAsState()
     val fuelMonths = remember(fills) { com.jupiterconnect.session.FuelLogStore.monthly() }
     var expandedId by remember { mutableStateOf<Long?>(null) }
-    var expandedFuelMonth by remember { mutableStateOf<Int?>(null) }
+    var selectedBar by remember { mutableStateOf<Int?>(null) }
     JupiterShell("Rides", "SAVED ON THIS PHONE", activeTab, onTab, onSettings) {
         Spacer(Modifier.height(4.dp))
         Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
@@ -825,26 +825,28 @@ fun RidesScreenV2(
                     label to km
                 }
             }
-            Text(if (fills.isEmpty()) "From recorded rides" else "From odometer · fuel log",
-                fontSize = 11.sp, color = JupiterColors.OnSurfaceVariant)
-            Spacer(Modifier.height(6.dp))
             val maxKm = months.maxOf { it.second }.coerceAtLeast(0.1)
             Row(Modifier.fillMaxWidth().height(90.dp), Arrangement.SpaceEvenly,
                 verticalAlignment = Alignment.Bottom) {
-                months.forEach { (label, km) ->
-                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                months.forEachIndexed { i, (label, km) ->
+                    val selected = selectedBar == i
+                    Column(horizontalAlignment = Alignment.CenterHorizontally,
+                        modifier = Modifier.clickable {
+                            selectedBar = if (selected) null else i
+                        }) {
                         Box(Modifier.width(18.dp)
                             .height((maxOf(2.0, km / maxKm * 80.0)).dp)
                             .clip(RoundedCornerShape(4.dp))
                             .background(if (km > 0) JupiterColors.Red else JupiterColors.High))
                         Spacer(Modifier.height(4.dp))
-                        Text(label, fontSize = 10.sp, color = JupiterColors.OnSurfaceVariant)
+                        Text(if (selected) "%.0f km".format(km) else label,
+                            fontSize = 9.sp,
+                            color = if (selected) JupiterColors.Accent
+                            else JupiterColors.OnSurfaceVariant,
+                            maxLines = 1, softWrap = false)
                     }
                 }
             }
-        }
-        FuelLogSection(fills, fuelMonths, expandedFuelMonth) {
-            expandedFuelMonth = it
         }
         rides.forEach { r ->
             Spacer(Modifier.height(10.dp))
@@ -907,67 +909,6 @@ fun RidesScreenV2(
                             color = JupiterColors.OnSurfaceVariant)
                     }
                 }
-            }
-        }
-    }
-}
-
-/** Real monthly distance from the bundled Meridian fuel/odometer export. */
-@Composable
-private fun FuelLogSection(
-    fills: List<com.jupiterconnect.session.FuelFill>,
-    months: List<com.jupiterconnect.session.FuelMonth>,
-    expandedMonth: Int?,
-    onExpand: (Int?) -> Unit,
-) {
-    if (fills.isEmpty()) return
-    val store = com.jupiterconnect.session.FuelLogStore
-    Spacer(Modifier.height(18.dp))
-    Label("FUEL LOG · FROM ODOMETER")
-    Spacer(Modifier.height(10.dp))
-    RedCard(bar = true) {
-        Label("ALL TIME")
-        Spacer(Modifier.height(8.dp))
-        BigValue("%.0f".format(store.totalKm), "km", 30)
-        Spacer(Modifier.height(4.dp))
-        Text("%.2f L · ₹%.0f · %d fills · %.1f km/L".format(
-            store.totalLiters, store.totalPaise / 100.0, fills.size, store.averageMileage),
-            fontSize = 12.sp, color = JupiterColors.OnSurfaceVariant)
-        Text("25 May – 17 Nov 2026 · Meridian fuel export",
-            fontSize = 11.sp, color = JupiterColors.OnSurfaceVariant)
-    }
-    val fmt = java.text.DateFormatSymbols().shortMonths
-    months.sortedByDescending { it.key }.forEach { m ->
-        Spacer(Modifier.height(10.dp))
-        val expanded = expandedMonth == m.key
-        RedCard(modifier = Modifier.clickable { onExpand(if (expanded) null else m.key) }) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Column(Modifier.weight(1f)) {
-                    Label("${fmt[m.key % 100]} ${m.key / 100}")
-                    Spacer(Modifier.height(4.dp))
-                    Text("${m.fills} fills · %.2f L".format(m.liters),
-                        fontSize = 12.sp, color = JupiterColors.OnSurfaceVariant)
-                }
-                Text("%.0f km".format(m.km), fontSize = 18.sp,
-                    fontWeight = FontWeight.Medium, color = JupiterColors.Accent)
-            }
-            if (expanded) {
-                Spacer(Modifier.height(10.dp))
-                fills.filter { com.jupiterconnect.session.fuelMonthKey(it.dateIst) == m.key }
-                    .forEach { f ->
-                        Row(Modifier.fillMaxWidth().padding(vertical = 3.dp)) {
-                            Text(f.dateIst.substring(8) + " " + fmt[(f.dateIst.substring(5, 7).toIntOrNull() ?: 1) - 1],
-                                Modifier.weight(1f), fontSize = 11.sp,
-                                color = JupiterColors.OnSurfaceVariant)
-                            Text("%.0f km".format(f.distanceKm), Modifier.width(56.dp),
-                                fontSize = 11.sp, color = JupiterColors.OnSurface)
-                            Text("%.2f L".format(f.liters), Modifier.width(50.dp),
-                                fontSize = 11.sp, color = JupiterColors.OnSurface)
-                            Text(if (f.mileageKmpl > 0) "%.1f".format(f.mileageKmpl) else "--",
-                                Modifier.width(36.dp), fontSize = 11.sp,
-                                color = JupiterColors.Accent)
-                        }
-                    }
             }
         }
     }
