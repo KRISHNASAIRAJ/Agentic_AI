@@ -105,6 +105,8 @@ object ClusterRepository {
         speedHistory.value = next
     }
     var service: ClusterService? = null
+    /** True while the app UI is on screen; decides screen vs service voice input. */
+    @Volatile var uiResumed = false
 
     fun scan() = service?.startScan()
     fun connect(address: String) = service?.connectTo(address)
@@ -961,6 +963,7 @@ class ClusterService : Service() {
     override fun onDestroy() {
         clearNotification?.let { main.removeCallbacks(it) }
         disconnectNow()
+        voiceBridge.destroy()
         ClusterRepository.service = null
         scope.cancel()
         super.onDestroy()

@@ -254,7 +254,11 @@ fun JupiterApp() {
     }
     DisposableEffect(lifecycleOwner) {
         val observer = LifecycleEventObserver { _, event ->
-            if (event == Lifecycle.Event.ON_RESUME) startServiceIfReady()
+            if (event == Lifecycle.Event.ON_RESUME) {
+                ClusterRepository.uiResumed = true
+                startServiceIfReady()
+            }
+            if (event == Lifecycle.Event.ON_PAUSE) ClusterRepository.uiResumed = false
         }
         lifecycleOwner.lifecycle.addObserver(observer)
         onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }

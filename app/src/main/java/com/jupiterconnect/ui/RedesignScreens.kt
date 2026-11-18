@@ -3,6 +3,7 @@ package com.jupiterconnect.ui
 import android.content.Intent
 import android.net.Uri
 import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.Image
 import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.infiniteRepeatable
@@ -81,11 +82,14 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.jupiterconnect.R
 import com.jupiterconnect.nav.NavInstruction
 import com.jupiterconnect.protocol.ScannedDevice
 import com.jupiterconnect.protocol.Telemetry
@@ -492,11 +496,15 @@ fun HomeScreenV2(
                             "${telemetry.speedKmh}" else "--"
                         BigValue(speed, "km/h", 36)
                         Spacer(Modifier.weight(1f))
-                        // Static mini preview. Samples are persisted by
-                        // RideStore, so the sparkline survives a disconnect;
-                        // the full chart lives in LiveGraphScreen.
-                        LiveSparkline(Modifier.fillMaxWidth().height(38.dp),
-                            telemetry.connected)
+                        // Decorative graph artwork only — NOT the saved ride's
+                        // exact plot. Real Speed/Throttle charts live in the
+                        // full-screen LiveGraphScreen and in the Rides cards.
+                        Image(
+                            painterResource(R.drawable.ic_speed_graph),
+                            contentDescription = "Speed graph",
+                            modifier = Modifier.fillMaxWidth().height(56.dp),
+                            contentScale = ContentScale.FillBounds,
+                        )
                     }
                 }
                 Box(Modifier.height(161.dp).clip(RoundedCornerShape(34.dp)).background(JupiterColors.Low)) {
@@ -588,40 +596,6 @@ fun HomeScreenV2(
         Spacer(Modifier.height(10.dp))
         CarbonCard()
         Spacer(Modifier.height(10.dp))
-    }
-}
-
-/** Small always-on graph preview shown inside the Home LIVE SPEED card. */
-@Composable
-private fun LiveSparkline(modifier: Modifier, connected: Boolean) {
-    val liveSpeeds by RideStore.liveSpeeds.collectAsState()
-    val liveThrottles by RideStore.liveThrottles.collectAsState()
-    val rides by RideStore.rides.collectAsState()
-    val recent = rides.firstOrNull()
-    val speeds = if (liveSpeeds.isNotEmpty()) liveSpeeds
-        else if (!connected) recent?.speedSamples.orEmpty() else emptyList()
-    val throttles = if (liveThrottles.isNotEmpty()) liveThrottles
-        else if (!connected) recent?.throttleSamples.orEmpty() else emptyList()
-    Canvas(modifier) {
-        if (speeds.size > 1) {
-            val max = (speeds.maxOrNull() ?: 1).coerceAtLeast(1)
-            val step = size.width / (speeds.size - 1)
-            for (i in 0 until speeds.size - 1) {
-                drawLine(JupiterColors.Red,
-                    Offset(i * step, size.height - speeds[i].toFloat() / max * size.height),
-                    Offset((i + 1) * step, size.height - speeds[i + 1].toFloat() / max * size.height),
-                    strokeWidth = 3.dp.toPx(), cap = StrokeCap.Round)
-            }
-        }
-        if (throttles.size > 1) {
-            val step = size.width / (throttles.size - 1)
-            for (i in 0 until throttles.size - 1) {
-                drawLine(JupiterColors.Accent.copy(alpha = 0.5f),
-                    Offset(i * step, size.height - throttles[i].toFloat() / 100f * size.height),
-                    Offset((i + 1) * step, size.height - throttles[i + 1].toFloat() / 100f * size.height),
-                    strokeWidth = 2.dp.toPx(), cap = StrokeCap.Round)
-            }
-        }
     }
 }
 
