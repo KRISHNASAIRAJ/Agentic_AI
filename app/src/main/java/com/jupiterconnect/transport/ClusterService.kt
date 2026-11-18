@@ -107,10 +107,13 @@ object ClusterRepository {
     fun scan() = service?.startScan()
     fun connect(address: String) = service?.connectTo(address)
     fun disconnect() = service?.disconnectNow()
+    /** Caller/message mirroring is independent of turn-by-turn mirroring. */
+    val phoneMirroring = MutableStateFlow(true)
+
     /** Show a short reply on the cluster, overriding the nav text briefly. */
-    fun showText(text: String) {
+    fun showText(text: String, holdMs: Long = 10_000L) {
         replyText = text
-        replyUntilMs = System.currentTimeMillis() + 10_000L
+        replyUntilMs = System.currentTimeMillis() + holdMs
         service?.sendTextRow(text)
     }
 

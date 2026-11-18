@@ -91,6 +91,7 @@ fun JupiterApp() {
     val lastReading by RideStore.lastReading.collectAsState()
     val rides by RideStore.rides.collectAsState()
     var mirroring by remember { mutableStateOf(ClusterRepository.mirroring.value) }
+    var phoneMirroring by remember { mutableStateOf(loadPhoneMirroring(context)) }
 
     // Notification-listener access is a Settings toggle, not a runtime
     // permission. Read the real value and refresh it whenever the app resumes
@@ -117,6 +118,9 @@ fun JupiterApp() {
         add(Manifest.permission.ACCESS_FINE_LOCATION)
         add(Manifest.permission.ACCESS_COARSE_LOCATION)
         if (Build.VERSION.SDK_INT >= 33) add(Manifest.permission.POST_NOTIFICATIONS)
+        // Contact names for callers/message senders on the cluster; denial just
+        // falls back to showing the raw number.
+        add(Manifest.permission.READ_CONTACTS)
     }.toTypedArray()
 
     fun isGranted(p: String) =
@@ -132,6 +136,7 @@ fun JupiterApp() {
                 isGranted(Manifest.permission.ACCESS_COARSE_LOCATION),
             notifications = if (Build.VERSION.SDK_INT >= 33)
                 isGranted(Manifest.permission.POST_NOTIFICATIONS) else true,
+            contacts = isGranted(Manifest.permission.READ_CONTACTS),
         )
     }
 
@@ -311,6 +316,14 @@ fun JupiterApp() {
                 onForget = { forgetDevice() },
                 notificationAccess = notificationAccess,
                 bleReady = permStatus.bluetooth,
+                contactsGranted = permStatus.contacts,
+                phoneMirroring = phoneMirroring,
+                onPhoneMirroring = { enabled ->
+                    phoneMirroring = enabled
+                    ClusterRepository.phoneMirroring.value = enabled
+                    devicePrefs.edit().putBoolean("phone_mirroring", enabled).apply()
+                    if (enabled) launcher.launch(permissions)
+                },
                 email = com.jupiterconnect.sync.SupabaseClient.currentEmail(),
                 onNotificationAccess = {
                     context.startActivity(Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS))
@@ -320,6 +333,14 @@ fun JupiterApp() {
             )
         }
     }
+}
+
+/** Persisted across restarts and mirrored into the notification listener. */
+private fun loadPhoneMirroring(context: android.content.Context): Boolean {
+    val enabled = context.getSharedPreferences("jupiter_device", android.content.Context.MODE_PRIVATE)
+        .getBoolean("phone_mirroring", true)
+    ClusterRepository.phoneMirroring.value = enabled
+    return enabled
 }
 
 private fun hasNotificationAccess(context: android.content.Context): Boolean =

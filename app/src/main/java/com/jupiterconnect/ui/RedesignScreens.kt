@@ -47,6 +47,7 @@ import androidx.compose.material.icons.rounded.LocationOn
 import androidx.compose.material.icons.rounded.Navigation
 import androidx.compose.material.icons.rounded.Notifications
 import androidx.compose.material.icons.rounded.NotificationsActive
+import androidx.compose.material.icons.rounded.Person
 import androidx.compose.material.icons.rounded.Place
 import androidx.compose.material.icons.rounded.Settings
 import androidx.compose.material.icons.rounded.Speed
@@ -186,18 +187,20 @@ private fun IconCircle(icon: ImageVector, label: String) = Box(
     contentAlignment = Alignment.Center,
 ) { Icon(icon, label, modifier = Modifier.size(21.dp), tint = JupiterColors.Accent) }
 
-/** Icon circle with a short label and live value beneath it. */
+/** Compact horizontal stat row so long live readings cannot overlap neighbours. */
 @Composable
-private fun IconStat(icon: ImageVector, label: String, value: String) = Column(
-    Modifier.width(42.dp),
-    horizontalAlignment = Alignment.CenterHorizontally,
-) {
-    IconCircle(icon, label)
-    Spacer(Modifier.height(3.dp))
-    Text(label, fontSize = 9.sp, color = JupiterColors.OnSurfaceVariant,
-        maxLines = 1, softWrap = false)
-    Text(value, fontSize = 11.sp, fontWeight = FontWeight.Medium,
-        color = JupiterColors.Accent, maxLines = 1, softWrap = false)
+private fun IconStatRow(icon: ImageVector, label: String, value: String) {
+    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+        Box(Modifier.size(32.dp).clip(CircleShape).background(JupiterColors.RedTint),
+            contentAlignment = Alignment.Center) {
+            Icon(icon, label, modifier = Modifier.size(17.dp), tint = JupiterColors.Accent)
+        }
+        Spacer(Modifier.width(10.dp))
+        Text(label, Modifier.weight(1f), fontSize = 10.sp,
+            color = JupiterColors.OnSurfaceVariant, maxLines = 1, softWrap = false)
+        Text(value, fontSize = 13.sp, fontWeight = FontWeight.Medium,
+            color = JupiterColors.Accent, maxLines = 1, softWrap = false)
+    }
 }
 
 @Composable
@@ -392,8 +395,8 @@ fun HomeScreenV2(
                     Box(Modifier.size(120.dp).align(Alignment.CenterHorizontally),
                         contentAlignment = Alignment.Center) {
                         Canvas(Modifier.size(120.dp)) {
-                            val stroke = 12.dp.toPx()
-                            val inset = stroke / 2 + 4.dp.toPx()
+                            val stroke = 9.dp.toPx()
+                            val inset = stroke / 2 + 3.dp.toPx()
                             val arc = Size(size.width - inset * 2, size.height - inset * 2)
                             val top = Offset(inset, inset)
                             drawArc(JupiterColors.High, 135f, 270f, false, top, arc,
@@ -402,9 +405,10 @@ fun HomeScreenV2(
                                 style = Stroke(stroke, cap = StrokeCap.Round))
                         }
                         Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                            Text("$pct%", fontSize = 28.sp, fontWeight = FontWeight.Medium,
+                            Text("$pct%", fontSize = 26.sp, fontWeight = FontWeight.Medium,
                                 color = JupiterColors.OnSurface)
-                            Text("Capacity 5.1 L", fontSize = 12.sp,
+                            Spacer(Modifier.height(4.dp))
+                            Text("Capacity 5.1 L", fontSize = 11.sp,
                                 color = JupiterColors.OnSurfaceVariant)
                         }
                     }
@@ -432,10 +436,11 @@ fun HomeScreenV2(
                     val batteryV = if (telemetry.batteryVoltage > 0)
                         "%.1f".format(telemetry.batteryVoltage) else "--"
                     val rpmV = if (telemetry.rpm > 0) "${telemetry.rpm}" else "--"
-                    Row(Modifier.fillMaxWidth(), Arrangement.SpaceBetween) {
-                        IconStat(Icons.Rounded.WaterDrop, "TEMP", engineTempV)
-                        IconStat(Icons.Rounded.BatteryChargingFull, "BATT", batteryV)
-                        IconStat(Icons.Rounded.Speed, "RPM", rpmV)
+                    Column(Modifier.fillMaxWidth(),
+                        verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                        IconStatRow(Icons.Rounded.WaterDrop, "TEMP", engineTempV)
+                        IconStatRow(Icons.Rounded.BatteryChargingFull, "BATT", batteryV)
+                        IconStatRow(Icons.Rounded.Speed, "RPM", rpmV)
                     }
                 }
             }
@@ -1069,6 +1074,9 @@ private fun DevicesContent(
 private fun SettingsContent(
     notificationAccess: Boolean,
     bleReady: Boolean,
+    contactsGranted: Boolean,
+    phoneMirroring: Boolean,
+    onPhoneMirroring: (Boolean) -> Unit,
     email: String?,
     onNotificationAccess: () -> Unit,
     onSignOut: () -> Unit,
@@ -1081,6 +1089,7 @@ private fun SettingsContent(
             Triple(Icons.Rounded.LocationOn, "Location", true),
             Triple(Icons.Rounded.Notifications, "Notifications", true),
             Triple(Icons.Rounded.NotificationsActive, "Notification access", notificationAccess),
+            Triple(Icons.Rounded.Person, "Contacts (caller names)", contactsGranted),
         ).forEach { (icon, name, ok) ->
             Row(Modifier.padding(vertical = 6.dp), verticalAlignment = Alignment.CenterVertically) {
                 IconCircle(icon, name)
@@ -1106,6 +1115,32 @@ private fun SettingsContent(
                 Text(v, fontSize = 13.sp,
                     color = if (k == "Link") JupiterColors.Accent else JupiterColors.OnSurface)
             }
+        }
+    }
+    Spacer(Modifier.height(10.dp))
+    RedCard(bar = true) {
+        Label("CALL & MESSAGE ON CLUSTER")
+        Spacer(Modifier.height(8.dp))
+        Text("Caller name (or number) and sender + message show on the " +
+            "cluster for 5 s, then navigation returns. Needs notification access.",
+            fontSize = 12.sp, color = JupiterColors.OnSurfaceVariant)
+        Spacer(Modifier.height(10.dp))
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Column(Modifier.weight(1f)) {
+                Text("Mirror calls & messages", fontSize = 14.sp,
+                    color = JupiterColors.OnSurface)
+                Text(if (contactsGranted) "Contact names available"
+                    else "Numbers only - enable Contacts",
+                    fontSize = 11.sp, color = JupiterColors.OnSurfaceVariant)
+            }
+            Switch(
+                checked = phoneMirroring, onCheckedChange = onPhoneMirroring,
+                colors = SwitchDefaults.colors(
+                    checkedThumbColor = Color.White,
+                    checkedTrackColor = JupiterColors.Red,
+                    uncheckedTrackColor = JupiterColors.High,
+                ),
+            )
         }
     }
     Spacer(Modifier.height(10.dp))
@@ -1185,6 +1220,9 @@ fun MoreScreenV2(
     onForget: () -> Unit,
     notificationAccess: Boolean,
     bleReady: Boolean,
+    contactsGranted: Boolean,
+    phoneMirroring: Boolean,
+    onPhoneMirroring: (Boolean) -> Unit,
     email: String?,
     onNotificationAccess: () -> Unit,
     onSignOut: () -> Unit,
@@ -1197,6 +1235,7 @@ fun MoreScreenV2(
         Spacer(Modifier.height(22.dp))
         Label("SETTINGS")
         Spacer(Modifier.height(10.dp))
-        SettingsContent(notificationAccess, bleReady, email, onNotificationAccess, onSignOut)
+        SettingsContent(notificationAccess, bleReady, contactsGranted,
+            phoneMirroring, onPhoneMirroring, email, onNotificationAccess, onSignOut)
     }
 }

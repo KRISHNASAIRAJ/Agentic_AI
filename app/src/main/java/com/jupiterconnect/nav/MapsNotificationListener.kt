@@ -1,9 +1,15 @@
 package com.jupiterconnect.nav
 
 import android.app.Notification
+import android.app.Person
+import android.content.pm.PackageManager
+import android.net.Uri
+import android.os.Build
 import android.os.Bundle
+import android.provider.ContactsContract.PhoneLookup
 import android.service.notification.NotificationListenerService
 import android.service.notification.StatusBarNotification
+import androidx.core.content.ContextCompat
 import com.jupiterconnect.transport.ClusterRepository
 
 /**
@@ -19,6 +25,9 @@ class MapsNotificationListener : NotificationListenerService() {
 
     override fun onNotificationPosted(sbn: StatusBarNotification?) {
         val n = sbn ?: return
+        // Calls and messages mirror to the cluster independently of navigation;
+        // the maps-only whitelist below still governs the navigation text row.
+        handlePhoneEvent(n)
         val extras = n.notification?.extras ?: return
         val title = extras.getCharSequence(Notification.EXTRA_TITLE)?.toString()?.trim().orEmpty()
         val text = extras.getCharSequence(Notification.EXTRA_TEXT)?.toString()?.trim().orEmpty()
@@ -200,6 +209,72 @@ class MapsNotificationListener : NotificationListenerService() {
         }.also { handler.postDelayed(it, CLEAR_GRACE_MS) }
     }
 
+    /**
+     * Mirror incoming calls and chat messages to the cluster, the same way
+     * TVS Connect does. Nothing is sent unless the scooter is linked and the
+     * owner enabled this in Settings. The cluster text row is shared with
+     * navigation, so [ClusterRepository.showText] temporarily owns it.
+     */
+    private fun handlePhoneEvent(n: StatusBarNotification) {
+        if (!ClusterRepository.phoneMirroring.value) return
+        if (n.packageName == packageName) return // never echo our own notification
+        if (!ClusterRepository.telemetry.value.connected) return
+        val notification = n.notification ?: return
+        val extras = notification.extras ?: return
+        val category = notification.category
+        val isCall = category == Notification.CATEGORY_CALL || n.packageName in DIALER_PACKAGES
+        @Suppress("DEPRECATION")
+        val messages = runCatching { extras.getParcelableArray(Notification.EXTRA_MESSAGES) }.getOrNull()
+        val isMessage = messages != null || category == Notification.CATEGORY_MESSAGE
+        if (!isCall && !isMessage) return
+
+        @Suppress("DEPRECATION")
+        val people = runCatching { extras.getParcelableArray(Notification.EXTRA_PEOPLE) }.getOrNull()
+        val person = people?.filterIsInstance<Person>()?.firstOrNull()
+        // Person.getUri()/getName() landed in API 28; minSdk is 26.
+        val personInfo = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+            person?.uri?.toString() ?: person?.name?.toString()
+        } else null
+        val text = if (isCall) {
+            val raw = personInfo
+                ?: extras.getCharSequence(Notification.EXTRA_TITLE)?.toString()
+                ?: extras.getCharSequence(Notification.EXTRA_TEXT)?.toString().orEmpty()
+            PhoneEventFormat.call(resolveContactName(raw) ?: raw)
+        } else {
+            val latest = messages?.filterIsInstance<Notification.MessagingStyle.Message>()?.lastOrNull()
+            val rawSender = personInfo
+                ?: latest?.sender?.toString()
+                ?: extras.getCharSequence(Notification.EXTRA_TITLE)?.toString().orEmpty()
+            val sender = resolveContactName(rawSender) ?: rawSender
+            val body = latest?.text?.toString()
+                ?: extras.getCharSequence(Notification.EXTRA_TEXT)?.toString().orEmpty()
+            PhoneEventFormat.message(sender, body)
+        }
+        if (text.isBlank()) return
+        // Dialers repost the same call notification repeatedly. Only show a
+        // given key+text once so the 5 s override ends and navigation resumes
+        // on schedule instead of being extended by every repost.
+        if (n.key == lastPhoneKey && text == lastPhoneText) return
+        lastPhoneKey = n.key
+        lastPhoneText = text
+        ClusterRepository.showText(text, PHONE_HOLD_MS)
+    }
+
+    /** Saved contact name for a number/contact URI, or null (show the raw value). */
+    private fun resolveContactName(value: String): String? {
+        if (value.isBlank()) return null
+        if (ContextCompat.checkSelfPermission(this, android.Manifest.permission.READ_CONTACTS) !=
+            PackageManager.PERMISSION_GRANTED) return null
+        val uri = if (value.startsWith("content:")) Uri.parse(value)
+        else PhoneLookup.CONTENT_FILTER_URI.buildUpon().appendEncodedPath(value).build()
+        return runCatching {
+            contentResolver.query(uri, arrayOf(PhoneLookup.DISPLAY_NAME), null, null, null)?.use { c ->
+                if (c.moveToFirst()) c.getString(c.getColumnIndexOrThrow(PhoneLookup.DISPLAY_NAME))
+                else null
+            }
+        }.getOrNull()
+    }
+
     /** Every readable string from a notification's extras, chip text first. */
     private fun collectExtraTexts(extras: Bundle): Array<String> {
         val values = mutableListOf<String>()
@@ -216,6 +291,9 @@ class MapsNotificationListener : NotificationListenerService() {
 
     private val handler = android.os.Handler(android.os.Looper.getMainLooper())
     private var pendingClear: Runnable? = null
+    // One display per notification/text so a repost cannot extend the 5 s hold.
+    private var lastPhoneKey: String? = null
+    private var lastPhoneText = ""
     // Last distance Maps actually published; reused when a notification omits it.
     private var lastKnownDistance: Int = -1
     private var lastDistanceAtMs: Long = 0L
@@ -237,6 +315,13 @@ class MapsNotificationListener : NotificationListenerService() {
     companion object {
         private const val CLEAR_GRACE_MS = 4000L
         private const val VALUE_HOLD_MS = 60_000L
+        private const val PHONE_HOLD_MS = 5_000L
+        private val DIALER_PACKAGES = setOf(
+            "com.google.android.dialer", "com.android.dialer", "com.android.phone",
+            "com.samsung.android.dialer", "com.samsung.android.incallui",
+            "com.miui.dialer", "com.oneplus.dialer", "com.oppo.dialer",
+            "com.vivo.dialer", "com.qualcomm.timeservice",
+        )
         private val MANEUVER_WORDS = listOf(
             "turn", "head", "continue", "keep", "merge", "fork",
             "roundabout", "exit", "u-turn", "arrive", "destination", "onto",

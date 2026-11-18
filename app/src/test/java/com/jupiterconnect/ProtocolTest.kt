@@ -236,6 +236,23 @@ class ProtocolTest {
     }
 
     @Test
+    fun call_shows_contact_name_or_plain_number() {
+        assertEquals("CALL Mom", com.jupiterconnect.nav.PhoneEventFormat.call("Mom"))
+        assertEquals("C 919876543210",
+            com.jupiterconnect.nav.PhoneEventFormat.call("+91 98765 43210"))
+    }
+
+    @Test
+    fun message_shows_sender_and_text_within_seventeen_chars() {
+        assertEquals("Mom: On my way",
+            com.jupiterconnect.nav.PhoneEventFormat.message("Mom", "On my way"))
+        val long = com.jupiterconnect.nav.PhoneEventFormat.message(
+            "Rahul", "Download the attachment please")
+        assertEquals(17, long.length)
+        assertTrue(long.startsWith("Rahul: "))
+    }
+
+    @Test
     fun cold_start_tracker_moves_through_phases() {
         var now = 1_000_000L
         val tracker = ColdStartTracker { now }
