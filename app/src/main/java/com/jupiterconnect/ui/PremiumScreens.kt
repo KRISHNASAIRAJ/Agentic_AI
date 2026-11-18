@@ -59,6 +59,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
@@ -79,6 +80,7 @@ import com.jupiterconnect.protocol.Telemetry
 import com.jupiterconnect.session.Ride
 import com.jupiterconnect.session.RideStore
 import com.jupiterconnect.session.SPEED_BAND_LABELS
+import com.jupiterconnect.session.WarmupPhase
 import com.jupiterconnect.transport.ClusterRepository
 import com.jupiterconnect.ui.theme.JupiterColors
 import com.jupiterconnect.ui.theme.NumberStyle
@@ -111,9 +113,14 @@ fun PremiumHomeScreen(
     val offline = !telemetry.connected
     // Never show a fake 0 for range/economy when the cluster is offline. A
     // cached value is shown greyed; with no cached value, show "--".
+    val offlineAssumedFull = !telemetry.connected && lastReading.hasData &&
+        lastReading.fuelBars >= 6 && lastReading.distanceToEmptyKm <= 0
+    val rangeAssumed = (telemetry.connected && telemetry.fuelBars >= 6 &&
+        telemetry.distanceToEmptyKm <= 0) || offlineAssumedFull
     val rangeText = when {
-        telemetry.connected -> "$shownDte"
-        lastReading.hasData && shownDte > 0 -> "$shownDte"
+        telemetry.connected && telemetry.distanceToEmptyKm > 0 -> "${telemetry.distanceToEmptyKm}"
+        !telemetry.connected && lastReading.hasData && lastReading.distanceToEmptyKm > 0 -> "$shownDte"
+        rangeAssumed -> "240"
         else -> "--"
     }
     val econText = when {
@@ -266,7 +273,9 @@ fun PremiumHomeScreen(
                 Spacer(Modifier.height(12.dp))
                 Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                     BigReadout(rangeText, "km", "Range",
-                        modifier = Modifier.weight(1f), accent = !offline, muted = offline)
+                        modifier = Modifier.weight(1f),
+                        accent = !offline && !rangeAssumed,
+                        muted = offline || rangeAssumed)
                     BigReadout("${telemetry.engineTempC}", "°C", "Coolant",
                         modifier = Modifier.weight(1f))
                 }
@@ -280,6 +289,10 @@ fun PremiumHomeScreen(
                 }
             }
         }
+        Spacer(Modifier.height(14.dp))
+
+        ColdStartCard()
+
         Spacer(Modifier.height(14.dp))
 
         SectionHeading("Vehicle details", trailing = if (telemetry.connected) "LIVE" else null)
@@ -666,6 +679,64 @@ fun PremiumRidesScreen(
     }
 }
 
+/** Cold-start warm-up guide. No cluster text row - the nav channel owns it. */
+@Composable
+private fun ColdStartCard() {
+    val state by ClusterRepository.warmup.collectAsState()
+    SectionHeading(
+        "Cold start",
+        trailing = state.phase.name + if (state.cold) " · COLD" else " · WARM",
+    )
+    Spacer(Modifier.height(10.dp))
+    val trackColor = MaterialTheme.colorScheme.outline.copy(alpha = 0.25f)
+    val ringColor = if (state.phase == WarmupPhase.READY) JupiterColors.Accent
+    else JupiterColors.Amber
+    PremiumCard {
+        Column(Modifier.padding(16.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Box(Modifier.size(84.dp), contentAlignment = Alignment.Center) {
+                    Canvas(Modifier.size(84.dp)) {
+                        val stroke = 8.dp.toPx()
+                        val inset = stroke / 2 + 2.dp.toPx()
+                        val arc = Size(size.width - inset * 2, size.height - inset * 2)
+                        val topLeft = Offset(inset, inset)
+                        drawArc(
+                            color = trackColor,
+                            startAngle = -90f, sweepAngle = 360f, useCenter = false,
+                            topLeft = topLeft, size = arc,
+                            style = Stroke(width = stroke, cap = StrokeCap.Round),
+                        )
+                        drawArc(
+                            color = ringColor,
+                            startAngle = -90f,
+                            sweepAngle = 360f * (state.progress / 100f),
+                            useCenter = false, topLeft = topLeft, size = arc,
+                            style = Stroke(width = stroke, cap = StrokeCap.Round),
+                        )
+                    }
+                    Text("${state.progress}%", style = NumberStyle, fontSize = 17.sp,
+                        color = MaterialTheme.colorScheme.onSurface)
+                }
+                Spacer(Modifier.width(16.dp))
+                Column(Modifier.weight(1f)) {
+                    Text(state.message, style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurface)
+                    Spacer(Modifier.height(4.dp))
+                    Text("Target ${state.targetC} °C · slope %.2f °C/min".format(state.slopeCPerMin),
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+            }
+            Spacer(Modifier.height(8.dp))
+            Text(
+                "start ${state.startTemp} °C · ambient ${state.ambientC} °C",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+    }
+}
+
 /** Weekly / monthly distance history, drawn from the saved rides. */
 @Composable
 private fun RideHistoryChart(rides: List<Ride>) {
@@ -962,6 +1033,23 @@ fun PremiumSettingsScreen(
         }
         Spacer(Modifier.height(14.dp))
 
+        Spacer(Modifier.height(14.dp))
+
+        SectionHeading("Voice", trailing = "DEBUG")
+        Spacer(Modifier.height(10.dp))
+        PremiumCard {
+            Column(Modifier.padding(16.dp)) {
+                val voice by ClusterRepository.voiceDebug.collectAsState()
+                Text(voice, fontFamily = FontFamily.Monospace, fontSize = 11.sp,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Spacer(Modifier.height(10.dp))
+                OutlinedButton(
+                    onClick = { ClusterRepository.service?.simulateVoiceTrigger() },
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(999.dp),
+                ) { Text("Test voice trigger") }
+            }
+        }
         Spacer(Modifier.height(14.dp))
 
         // Cloud sync uses the same Supabase Auth users as Meridian.

@@ -105,6 +105,7 @@ object RideStore {
     private const val KEY_LAST_HAS = "last_has"
     private const val KEY_RIDES = "rides"
     private const val KEY_SYNCED = "synced_rides"
+    private const val KEY_WARMUP_LAST = "warmup_last_run"
     private const val KEY_PARK_LAT = "park_lat"
     private const val KEY_PARK_LNG = "park_lng"
     private const val KEY_PARK_MS = "park_ms"
@@ -294,6 +295,11 @@ object RideStore {
         _rides.value = updated
         prefs?.edit()?.putString(KEY_RIDES, serialiseRides(updated))?.apply()
     }
+
+    /** Last engine-run timestamp, persisted so warm-up survives restarts. */
+    var warmupLastRunMs: Long
+        get() = prefs?.getLong(KEY_WARMUP_LAST, 0L) ?: 0L
+        set(value) { prefs?.edit()?.putLong(KEY_WARMUP_LAST, value)?.apply() }
 
     /** Rides not yet confirmed by Supabase, newest first. */
     fun unsyncedRides(): List<Ride> = _rides.value.filter { it.startedAt !in syncedIds }

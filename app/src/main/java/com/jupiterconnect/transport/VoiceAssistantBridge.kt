@@ -23,14 +23,26 @@ import com.jupiterconnect.voice.VoiceCommandActivity
 class VoiceAssistantBridge(private val context: Context) {
 
     private var armed = true
+    private var launches = 0
+    private val seenValues = mutableSetOf<Int>()
 
     /** Call for every decoded telemetry frame. */
     fun onFrame(t: Telemetry) {
         val raw = t.issMode and 0xFF
+        // Record every distinct value once. Pressing the bike's voice button
+        // then leaves a trace in the Settings card even if we never match it.
+        if (seenValues.add(raw)) {
+            val note = "VOICE byte6 seen: 0x%02X (%d)".format(raw, raw)
+            FrameLog.note(note)
+            ClusterRepository.voiceDebug.value = "$note | bit7=${raw and 0x80 != 0}"
+        }
         if (raw and 0x80 != 0) {
             if (armed) {
                 armed = false
-                FrameLog.note("VOICE trigger ISS=$raw")
+                launches++
+                ClusterRepository.voiceDebug.value =
+                    "VOICE trigger #$launches ISS=0x%02X".format(raw)
+                FrameLog.note("VOICE trigger #$launches ISS=$raw")
                 launch()
             }
         } else {
@@ -39,15 +51,23 @@ class VoiceAssistantBridge(private val context: Context) {
         }
     }
 
+    /** Test hook: behaves exactly like a cluster trigger. */
+    fun simulate() {
+        launches++
+        val note = "VOICE manual test #$launches"
+        FrameLog.note(note)
+        ClusterRepository.voiceDebug.value = note
+        launch()
+    }
+
     fun reset() {
         armed = true
     }
 
     private fun launch() {
-        // A foreground service may be blocked from starting an activity
-        // directly on newer Android versions. A PendingIntent sent from the
-        // service is the supported path; if that is blocked too, a heads-up
-        // notification gives the user a one-tap way in.
+        // A foreground service can usually start an activity directly, but
+        // OEMs block it in some states. Try direct first, then a PendingIntent,
+        // then a heads-up notification the user can tap.
         val intent = Intent(context, VoiceCommandActivity::class.java).apply {
             addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP)
         }
@@ -55,8 +75,8 @@ class VoiceAssistantBridge(private val context: Context) {
             context, 71, intent,
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
         )
-        val started = runCatching { pending.send() }.isSuccess ||
-            runCatching { context.startActivity(intent) }.isSuccess
+        val started = runCatching { context.startActivity(intent) }.isSuccess ||
+            runCatching { pending.send() }.isSuccess
         if (!started) {
             FrameLog.note("VOICE direct launch blocked - posting notification")
             postTapNotification(pending)

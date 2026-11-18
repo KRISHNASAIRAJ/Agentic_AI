@@ -2,7 +2,9 @@ package com.jupiterconnect
 
 import com.jupiterconnect.nav.NavInstruction
 import com.jupiterconnect.nav.NavParsing
+import com.jupiterconnect.session.ColdStartTracker
 import com.jupiterconnect.session.Ride
+import com.jupiterconnect.session.WarmupPhase
 import com.jupiterconnect.protocol.buildKeepalive
 import com.jupiterconnect.protocol.buildNavControl
 import com.jupiterconnect.protocol.buildNavText
@@ -10,6 +12,7 @@ import com.jupiterconnect.protocol.decodeFrame
 import com.jupiterconnect.protocol.sanitize
 import com.jupiterconnect.protocol.Telemetry
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -182,5 +185,37 @@ class ProtocolTest {
         assertEquals(6.0, ride.economyKmPerL, 0.01)
         assertEquals(10, ride.bandPct(0))
         assertEquals(40, ride.bandPct(3))
+    }
+
+    @Test
+    fun cold_start_tracker_moves_through_phases() {
+        var now = 1_000_000L
+        val tracker = ColdStartTracker { now }
+        val base = com.jupiterconnect.protocol.Telemetry(
+            rpm = 1200, speedKmh = 0, intakeTempC = 25, engineTempC = 26,
+        )
+        val start = tracker.update(base)
+        assertTrue(start.cold)
+        assertEquals(WarmupPhase.STARTING, start.phase)
+
+        now += 31_000L
+        assertEquals(WarmupPhase.WARMING, tracker.update(base.copy(engineTempC = 32)).phase)
+
+        now += 70_000L
+        val ready = tracker.update(base.copy(engineTempC = 60))
+        assertEquals(WarmupPhase.READY, ready.phase)
+        assertEquals(60, ready.targetC)
+    }
+
+    @Test
+    fun warm_start_skips_to_ready() {
+        var now = 1_000_000L
+        val tracker = ColdStartTracker { now }
+        val warm = com.jupiterconnect.protocol.Telemetry(
+            rpm = 1200, speedKmh = 0, intakeTempC = 25, engineTempC = 55,
+        )
+        val state = tracker.update(warm)
+        assertFalse(state.cold)
+        assertEquals(WarmupPhase.READY, state.phase)
     }
 }

@@ -34,6 +34,9 @@ import com.jupiterconnect.debug.FrameLog
 import com.jupiterconnect.protocol.Gatt
 import com.jupiterconnect.protocol.ScannedDevice
 import com.jupiterconnect.protocol.Telemetry
+import com.jupiterconnect.session.ColdStartTracker
+import com.jupiterconnect.session.WarmupPhase
+import com.jupiterconnect.session.WarmupState
 import com.jupiterconnect.sync.SupabaseClient
 import com.jupiterconnect.nav.NavInstruction
 import com.jupiterconnect.protocol.buildKeepalive
@@ -63,6 +66,10 @@ object ClusterRepository {
     val navInstruction = MutableStateFlow<NavInstruction?>(null)
     // Diagnostic snapshot of the last Maps notification and how it was parsed.
     val navDebug = MutableStateFlow("")
+    // Last ISS/voice byte seen from the cluster, for trigger debugging.
+    val voiceDebug = MutableStateFlow("No 0x11 service frame seen yet")
+    // Cold-start warm-up state, updated from telemetry frames.
+    val warmup = MutableStateFlow(WarmupState())
     // Recent live speeds for the speedometer graph (oldest first).
     val speedHistory = MutableStateFlow<List<Int>>(emptyList())
     val mirroring = MutableStateFlow(true)
@@ -81,7 +88,7 @@ object ClusterRepository {
     /** Show a short reply on the cluster, overriding the nav text briefly. */
     fun showText(text: String) {
         replyText = text
-        replyUntilMs = System.currentTimeMillis() + 6000L
+        replyUntilMs = System.currentTimeMillis() + 10_000L
         service?.sendTextRow(text)
     }
 
@@ -101,6 +108,7 @@ class ClusterService : Service() {
     // applicationContext is null in a field initializer (before attachBaseContext),
     // so create the bridge in onCreate once the Service has a real Context.
     private lateinit var voiceBridge: VoiceAssistantBridge
+    private val coldStartTracker = ColdStartTracker()
     private val writeLock = Mutex()
     private val main = Handler(Looper.getMainLooper())
 
@@ -122,6 +130,7 @@ class ClusterService : Service() {
         voiceBridge = VoiceAssistantBridge(this)
         RideStore.init(applicationContext)
         SupabaseClient.init(applicationContext)
+        coldStartTracker.setLastRunMs(RideStore.warmupLastRunMs)
         createChannel()
         ClusterRepository.service = this
         startForeground(1, buildNotification())
@@ -275,6 +284,35 @@ class ClusterService : Service() {
         gatt = device.connectGatt(this, false, gattCallback, BluetoothDevice.TRANSPORT_LE)
     }
 
+    /** Fan out one decoded frame to rides, voice, speed graph and warm-up. */
+    private fun onTelemetryFrame(t: Telemetry, primary: Boolean) {
+        RideStore.onFrame(t, primary)
+        voiceBridge.onFrame(t)
+        ClusterRepository.recordSpeed(t.speedKmh)
+        val previous = ClusterRepository.warmup.value.phase
+        val state = coldStartTracker.update(t)
+        ClusterRepository.warmup.value = state
+        RideStore.warmupLastRunMs = coldStartTracker.getLastRunMs()
+        if (previous != WarmupPhase.READY && state.phase == WarmupPhase.READY) {
+            notifyWarmupReady()
+        }
+    }
+
+    private fun notifyWarmupReady() {
+        val s = ClusterRepository.warmup.value
+        FrameLog.note(
+            "WARMUP ready target=${s.targetC}C start=${s.startTemp}C " +
+                "ambient=${s.ambientC}C slope=${String.format("%.2f", s.slopeCPerMin)}",
+        )
+        val vibrator = getSystemService(android.os.Vibrator::class.java)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            vibrator?.vibrate(android.os.VibrationEffect.createOneShot(120, 120))
+        } else {
+            @Suppress("DEPRECATION")
+            vibrator?.vibrate(120L)
+        }
+    }
+
     /** Save the last known GPS fix as the parking spot when the link drops. */
     @SuppressLint("MissingPermission")
     private fun saveParkedLocation() {
@@ -295,7 +333,19 @@ class ClusterService : Service() {
 
     /** Write a short text reply to the cluster's navigation text row (0x5B 0x4F). */
     fun sendTextRow(text: String) {
-        scope.launch { write(buildNavText(text)) }
+        scope.launch {
+            // The cluster can drop a single write; repeat briefly so the reply
+            // actually lands instead of only appearing inside the app.
+            repeat(3) {
+                write(buildNavText(text))
+                delay(250L)
+            }
+        }
+    }
+
+    /** Manual trigger so the voice flow can be tested without the bike. */
+    fun simulateVoiceTrigger() {
+        voiceBridge.simulate()
     }
 
     fun disconnectNow() {
@@ -421,9 +471,7 @@ class ClusterService : Service() {
             FrameLog.record("RX", value)
             decodeFrame(value, ClusterRepository.telemetry.value)?.let {
                 ClusterRepository.telemetry.value = it
-                RideStore.onFrame(it, primary = (value[1].toInt() and 0xFF) == 0x10)
-                voiceBridge.onFrame(it)
-                ClusterRepository.recordSpeed(it.speedKmh)
+                onTelemetryFrame(it, primary = (value[1].toInt() and 0xFF) == 0x10)
             }
         }
 
@@ -434,9 +482,7 @@ class ClusterService : Service() {
             FrameLog.record("RX", v)
             decodeFrame(v, ClusterRepository.telemetry.value)?.let {
                 ClusterRepository.telemetry.value = it
-                RideStore.onFrame(it, primary = (v[1].toInt() and 0xFF) == 0x10)
-                voiceBridge.onFrame(it)
-                ClusterRepository.recordSpeed(it.speedKmh)
+                onTelemetryFrame(it, primary = (v[1].toInt() and 0xFF) == 0x10)
             }
         }
     }
