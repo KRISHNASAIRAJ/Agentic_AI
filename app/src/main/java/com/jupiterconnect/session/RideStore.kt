@@ -30,6 +30,8 @@ data class Ride(
     /** Speed (km/h) and throttle (%) sampled every 2 s during this ride. */
     val speedSamples: List<Int> = emptyList(),
     val throttleSamples: List<Int> = emptyList(),
+    /** Maps' ETA at ride start, kept for the personal arrival-time correction. */
+    val mapsEtaMinutes: Int = -1,
 ) {
     val dateLabel: String
         get() {
@@ -217,6 +219,8 @@ object RideStore {
     private var rideStartOdo: Double? = null
     private var rideLastOdo: Double? = null
     private var active = false
+    /** Maps' ETA when this ride connected; set by the transport service. */
+    var pendingMapsEtaMinutes: Int = -1
 
     // Ride report accumulators. Only the primary 0x10 frame advances the clock
     // so time is not counted once per frame type.
@@ -461,7 +465,9 @@ object RideStore {
             maxRpm = maxRpm,
             speedSamples = rideSpeeds.toList(),
             throttleSamples = rideThrottles.toList(),
+            mapsEtaMinutes = pendingMapsEtaMinutes,
         )
+        pendingMapsEtaMinutes = -1
         // A ride finalised from saved/imported data can carry a higher top than
         // this session saw live; keep the all-time best in step with the Rides tab.
         if (ride.topSpeedKmh > _allTimeTopSpeed.value) {
@@ -521,6 +527,7 @@ object RideStore {
             r.bandMs[0], r.bandMs[1], r.bandMs[2], r.bandMs[3],
             r.idleMs, r.issStops.toLong(),
             r.fuelBarsStart.toLong(), r.fuelBarsEnd.toLong(), r.maxRpm.toLong(),
+            r.mapsEtaMinutes.toLong(),
         ).joinToString(",")
     }
 
@@ -530,7 +537,7 @@ object RideStore {
             val f = part.split(",")
             runCatching {
                 when {
-                    f.size >= 15 -> Ride(
+                    f.size >= 16 -> Ride(
                         startedAt = f[0].toLong(),
                         endedAt = f[1].toLong(),
                         distanceKm = f[2].toLong() / 100.0,
@@ -540,6 +547,22 @@ object RideStore {
                         bandMs = longArrayOf(
                             f[6].toLong(), f[7].toLong(), f[8].toLong(), f[9].toLong(),
                         ),
+                        idleMs = f[10].toLong(),
+                        issStops = f[11].toInt(),
+                        fuelBarsStart = f[12].toInt(),
+                        fuelBarsEnd = f[13].toInt(),
+                        maxRpm = f[14].toInt(),
+                        mapsEtaMinutes = f[15].toInt(),
+                    )
+                    f.size == 15 -> Ride(
+                        startedAt = f[0].toLong(),
+                        endedAt = f[1].toLong(),
+                        distanceKm = f[2].toLong() / 100.0,
+                        avgSpeedKmh = f[3].toLong() / 10.0,
+                        topSpeedKmh = f[4].toInt(),
+                        durationMin = f[5].toLong(),
+                        bandMs = longArrayOf(
+                            f[6].toLong(), f[7].toLong(), f[8].toLong(), f[9].toLong()),
                         idleMs = f[10].toLong(),
                         issStops = f[11].toInt(),
                         fuelBarsStart = f[12].toInt(),

@@ -94,6 +94,7 @@ import com.jupiterconnect.nav.NavInstruction
 import com.jupiterconnect.protocol.ScannedDevice
 import com.jupiterconnect.protocol.Telemetry
 import com.jupiterconnect.session.Ride
+import com.jupiterconnect.session.RideAnalytics
 import com.jupiterconnect.session.RideStore
 import com.jupiterconnect.session.WarmupPhase
 import com.jupiterconnect.transport.ClusterRepository
@@ -579,10 +580,6 @@ fun HomeScreenV2(
                 val rangeKm = if (fuel > 0 && fillMileage > 0)
                     fuel * (5.1 / 6.0) * fillMileage else 0.0
                 BigValue(if (rangeKm > 0) "%.0f".format(rangeKm) else "--", "km", 36)
-                Text("from %d fills · %.1f km/L".format(
-                    fills.size, fillMileage),
-                    fontSize = 9.sp, color = JupiterColors.OnSurfaceVariant,
-                    maxLines = 1, softWrap = false)
             }
             RedCard(modifier = Modifier.weight(1f)) {
                 Label("AVG ECONOMY")
@@ -885,6 +882,7 @@ fun RidesScreenV2(
     activeTab: Int?,
     onTab: (Int) -> Unit,
     onSettings: () -> Unit,
+    onViewAll: () -> Unit,
 ) {
     val total = rides.sumOf { it.distanceKm }
     val top = rides.maxOfOrNull { it.topSpeedKmh } ?: 0
@@ -946,8 +944,11 @@ fun RidesScreenV2(
                 months.forEachIndexed { i, (label, km) ->
                     val isSelected = selectedBar == i
                     val barHeight = (maxOf(2.0, km / maxKm * 80.0)).dp
+                    // A fixed column width is essential: fillMaxWidth inside
+                    // an unbounded Row column made every month take the full
+                    // card width, so only the first bar was visible.
                     Column(horizontalAlignment = Alignment.CenterHorizontally,
-                        modifier = Modifier.clickable {
+                        modifier = Modifier.width(40.dp).clickable {
                             selectedBar = if (isSelected) null else i
                         }) {
                         Box(Modifier.fillMaxWidth().height(18.dp),
@@ -977,7 +978,9 @@ fun RidesScreenV2(
                 }
             }
         }
-        rides.forEach { r ->
+        // The Rides tab shows only the two newest rides; "View all" opens a
+        // dedicated screen with the rest.
+        rides.take(2).forEach { r ->
             Spacer(Modifier.height(10.dp))
             val expanded = expandedId == r.startedAt
             RedCard(modifier = Modifier.clickable {
@@ -1038,6 +1041,214 @@ fun RidesScreenV2(
                             color = JupiterColors.OnSurfaceVariant)
                     }
                 }
+            }
+        }
+        if (rides.size > 2) {
+            Spacer(Modifier.height(10.dp))
+            SecondaryButton("View all ${rides.size} rides", onViewAll, Modifier.fillMaxWidth())
+        }
+        Spacer(Modifier.height(18.dp))
+        AnalyticsCards(rides, fills)
+    }
+}
+
+/** One expandable ride card, shared by the Rides tab and the All rides screen. */
+@Composable
+private fun RideCard(r: Ride, expanded: Boolean, onToggle: () -> Unit) {
+    RedCard(modifier = Modifier.clickable { onToggle() }) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            IconCircle(Icons.Rounded.TwoWheeler, "Ride")
+            Spacer(Modifier.width(12.dp))
+            Column(Modifier.weight(1f)) {
+                Text(r.dateLabel, fontSize = 15.sp, color = JupiterColors.OnSurface)
+                Text(r.rideKind, fontSize = 12.sp, color = JupiterColors.OnSurfaceVariant)
+            }
+            Text("%.1f km".format(r.distanceKm), fontSize = 18.sp,
+                fontWeight = FontWeight.Medium, color = JupiterColors.Accent)
+        }
+        Spacer(Modifier.height(12.dp))
+        Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+            Text("AVG %.0f".format(r.avgSpeedKmh), fontSize = 12.sp,
+                color = JupiterColors.OnSurfaceVariant)
+            Text("TOP ${r.topSpeedKmh}", fontSize = 12.sp,
+                color = JupiterColors.OnSurfaceVariant)
+            Text("MIN ${r.durationMin}", fontSize = 12.sp,
+                color = JupiterColors.OnSurfaceVariant)
+        }
+        if (expanded) {
+            Spacer(Modifier.height(12.dp))
+            val eco = RideAnalytics.ecoScore(r)
+            Text("Idle ${r.idleMin} min · ISS ${r.issStops} stops · " +
+                "Fuel ${r.fuelBarsUsed} bars · Eco ${eco.score}/100", fontSize = 12.sp,
+                color = JupiterColors.OnSurfaceVariant)
+            Spacer(Modifier.height(12.dp))
+            val samples = r.speedSamples
+            val thr = r.throttleSamples
+            if (samples.size > 1) {
+                Label("SPEED")
+                Canvas(Modifier.fillMaxWidth().height(56.dp)) {
+                    val max = (samples.maxOrNull() ?: 1).coerceAtLeast(1)
+                    val step = size.width / (samples.size - 1)
+                    for (i in 0 until samples.size - 1) {
+                        drawLine(JupiterColors.Red,
+                            Offset(i * step, size.height - samples[i].toFloat() / max * size.height),
+                            Offset((i + 1) * step, size.height - samples[i + 1].toFloat() / max * size.height),
+                            strokeWidth = 2.dp.toPx(), cap = StrokeCap.Round)
+                    }
+                }
+                if (thr.size > 1) {
+                    Spacer(Modifier.height(8.dp))
+                    Label("THROTTLE")
+                    Canvas(Modifier.fillMaxWidth().height(56.dp)) {
+                        val step = size.width / (thr.size - 1).coerceAtLeast(1)
+                        for (i in 0 until thr.size - 1) {
+                            drawLine(JupiterColors.Accent,
+                                Offset(i * step, size.height - thr[i].toFloat() / 100f * size.height),
+                                Offset((i + 1) * step, size.height - thr[i + 1].toFloat() / 100f * size.height),
+                                strokeWidth = 2.dp.toPx(), cap = StrokeCap.Round)
+                        }
+                    }
+                }
+            } else {
+                Text("No graph data recorded for this ride", fontSize = 12.sp,
+                    color = JupiterColors.OnSurfaceVariant)
+            }
+        }
+    }
+}
+
+/** All the personal analytics live together here, with trend-only caveats. */
+@Composable
+private fun AnalyticsCards(rides: List<Ride>, fills: List<com.jupiterconnect.session.FuelFill>) {
+    val factor = RideAnalytics.etaFactor(rides)
+    val etaRides = rides.count { it.mapsEtaMinutes > 0 }
+    val trend = remember(fills) { RideAnalytics.mileageTrend(fills) }
+    val latest = rides.firstOrNull()
+    val eco = remember(rides) { latest?.let { RideAnalytics.ecoScore(it) } }
+    val lastReading by RideStore.lastReading.collectAsState()
+    val advice = remember(rides, lastReading.odometerKm) {
+        RideAnalytics.serviceAdvice(rides, lastReading.odometerKm)
+    }
+    val fused by ClusterRepository.fusedSpeed.collectAsState()
+    val errorKmh by ClusterRepository.speedErrorKmh.collectAsState()
+    val fusionSamples by ClusterRepository.speedFusionSamples.collectAsState()
+    val anomalies by ClusterRepository.anomalyNotes.collectAsState()
+
+    Label("PERSONAL ETA")
+    Spacer(Modifier.height(8.dp))
+    RedCard {
+        BigValue("%.2f".format(factor), "× Maps", 26)
+        Text("From $etaRides rides with a Maps ETA · applied to cluster arrival",
+            fontSize = 11.sp, color = JupiterColors.OnSurfaceVariant)
+        Text("Trend from a few rides · not a prediction", fontSize = 9.sp,
+            color = JupiterColors.OnSurfaceVariant)
+    }
+    Spacer(Modifier.height(10.dp))
+    Label("MILEAGE TREND")
+    Spacer(Modifier.height(8.dp))
+    RedCard {
+        if (trend == null) {
+            Text("Need 8+ filled km/L readings for a trend",
+                fontSize = 12.sp, color = JupiterColors.OnSurfaceVariant)
+        } else {
+            BigValue("%.1f".format(trend.ewma), "km/L", 26)
+            Text("Band %.1f–%.1f km/L · ${trend.samples} real fills (~6 months)".format(
+                trend.low, trend.high), fontSize = 11.sp,
+                color = JupiterColors.OnSurfaceVariant)
+            if (trend.drop) {
+                Spacer(Modifier.height(6.dp))
+                Text("Latest fill dropped below the band — check tyre pressure or air filter",
+                    fontSize = 11.sp, color = JupiterColors.Error)
+            }
+            Text("Trends and ranges, not predictions", fontSize = 9.sp,
+                color = JupiterColors.OnSurfaceVariant)
+        }
+    }
+    Spacer(Modifier.height(10.dp))
+    Label("ECO SCORE")
+    Spacer(Modifier.height(8.dp))
+    RedCard {
+        BigValue(if (eco != null) "${eco!!.score}" else "--", "/100", 26)
+        if (eco != null) {
+            Text("Hard launches ${eco!!.hardLaunches} · heavy throttle %.0f%% · idle %.0f%%".format(
+                eco!!.heavyThrottleShare * 100, eco!!.idleShare * 100),
+                fontSize = 11.sp, color = JupiterColors.OnSurfaceVariant)
+        }
+        Text("Latest ride · finer sampling on fast speed changes", fontSize = 9.sp,
+            color = JupiterColors.OnSurfaceVariant)
+    }
+    Spacer(Modifier.height(10.dp))
+    Label("SPEED FUSION")
+    Spacer(Modifier.height(8.dp))
+    RedCard {
+        BigValue("$fused", "km/h", 26)
+        Text("Cluster + GPS · speedometer error %+.1f km/h · $fusionSamples samples".format(errorKmh),
+            fontSize = 11.sp, color = JupiterColors.OnSurfaceVariant)
+        Text("Smoothed speed; distance still comes from the odometer", fontSize = 9.sp,
+            color = JupiterColors.OnSurfaceVariant)
+    }
+    Spacer(Modifier.height(10.dp))
+    Label("SERVICE TIMING")
+    Spacer(Modifier.height(8.dp))
+    RedCard {
+        BigValue("${advice.suggestedKm}", "km", 26)
+        Text("Odometer interval ${advice.odometerIntervalKm} km" +
+            if (advice.severe) " · moved earlier for severe use" else "",
+            fontSize = 11.sp, color = JupiterColors.OnSurfaceVariant)
+        if (advice.reasons.isNotEmpty()) {
+            Text(advice.reasons.joinToString(" · "), fontSize = 11.sp,
+                color = JupiterColors.Accent)
+        }
+        Text("Heuristic from short trips, cold starts and idling", fontSize = 9.sp,
+            color = JupiterColors.OnSurfaceVariant)
+    }
+    Spacer(Modifier.height(10.dp))
+    Label("CHECKS")
+    Spacer(Modifier.height(8.dp))
+    RedCard {
+        if (anomalies.isBlank()) {
+            Text("No battery or temperature flags", fontSize = 12.sp,
+                color = JupiterColors.OnSurfaceVariant)
+        } else {
+            Text(anomalies, fontSize = 12.sp, color = JupiterColors.Error)
+        }
+        Text("Live checks while riding · trends, not diagnoses", fontSize = 9.sp,
+            color = JupiterColors.OnSurfaceVariant)
+    }
+}
+
+/** Full list of saved rides, opened by the Rides tab's "View all" button. */
+@Composable
+fun AllRidesScreen(rides: List<Ride>, onBack: () -> Unit) {
+    var expandedId by remember { mutableStateOf<Long?>(null) }
+    Box(Modifier.fillMaxSize().background(JupiterColors.Surface)) {
+        Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState())) {
+            Spacer(Modifier.windowInsetsTopHeight(WindowInsets.statusBars))
+            Row(
+                Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 10.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                IconButton(onClick = onBack) {
+                    Icon(Icons.AutoMirrored.Rounded.ArrowBack, "Back",
+                        tint = JupiterColors.OnSurface)
+                }
+                Column(Modifier.weight(1f), horizontalAlignment = Alignment.CenterHorizontally) {
+                    Label("SAVED ON THIS PHONE")
+                    Text("All rides", fontSize = 26.sp, fontWeight = FontWeight.Medium,
+                        color = JupiterColors.OnSurface)
+                }
+                Spacer(Modifier.size(48.dp))
+            }
+            Column(Modifier.padding(horizontal = 16.dp)) {
+                Text("${rides.size} rides · ${"%.1f".format(rides.sumOf { it.distanceKm })} km",
+                    fontSize = 12.sp, color = JupiterColors.OnSurfaceVariant)
+                rides.forEach { r ->
+                    Spacer(Modifier.height(10.dp))
+                    RideCard(r, expandedId == r.startedAt) {
+                        expandedId = if (expandedId == r.startedAt) null else r.startedAt
+                    }
+                }
+                Spacer(Modifier.height(110.dp))
             }
         }
     }

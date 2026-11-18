@@ -114,6 +114,7 @@ object SupabaseClient {
             put("max_rpm", ride.maxRpm)
             put("speed_samples", speeds)
             put("throttle_samples", throttles)
+            put("maps_eta_min", ride.mapsEtaMinutes)
         }
         val response = request(
             "$URL_BASE/rest/v1/jc_rides", "POST", body,

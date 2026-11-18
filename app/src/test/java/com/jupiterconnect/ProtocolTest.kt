@@ -3,6 +3,9 @@ package com.jupiterconnect
 import com.jupiterconnect.nav.NavInstruction
 import com.jupiterconnect.nav.NavParsing
 import com.jupiterconnect.session.ColdStartTracker
+import com.jupiterconnect.session.FuelFill
+import com.jupiterconnect.session.RideAnalytics
+import com.jupiterconnect.session.SpeedFusion
 import com.jupiterconnect.session.Ride
 import com.jupiterconnect.session.WarmupPhase
 import com.jupiterconnect.protocol.buildCarbonFrame
@@ -333,5 +336,70 @@ class ProtocolTest {
         val state = tracker.update(warm)
         assertFalse(state.cold)
         assertEquals(WarmupPhase.READY, state.phase)
+    }
+
+    @Test
+    fun personal_eta_uses_median_and_needs_enough_rides() {
+        fun ride(minutes: Long) = Ride(
+            startedAt = 1_000L, endedAt = 1_000L + minutes * 60_000L,
+            distanceKm = 5.0, avgSpeedKmh = 20.0, topSpeedKmh = 50,
+            durationMin = minutes, mapsEtaMinutes = 10,
+        )
+        val rides = listOf(12L, 12L, 12L, 12L, 12L, 40L).map { ride(it) }
+        assertEquals(1.2, RideAnalytics.etaFactor(rides), 0.001)
+        assertEquals(12, RideAnalytics.adjustedEta(10, 1.2))
+        assertEquals(1.0, RideAnalytics.etaFactor(rides.take(3)), 0.001)
+    }
+
+    @Test
+    fun mileage_trend_flags_a_drop_below_the_band() {
+        fun fill(no: Int, kmpl: Double) = FuelFill(
+            no, "2026-06-01", 1000.0 + no, 50.0, 5.0, 10_000L, kmpl, "",
+        )
+        val normal = (1..12).map { fill(it, 50.0 + (it % 3).toDouble()) }
+        val trend = RideAnalytics.mileageTrend(normal)!!
+        assertFalse(trend.drop)
+        assertTrue(trend.high > trend.low)
+        assertTrue(RideAnalytics.mileageTrend(normal + fill(13, 30.0))!!.drop)
+    }
+
+    @Test
+    fun eco_score_penalises_hard_launches() {
+        val clean = Ride(
+            startedAt = 0L, endedAt = 1_800_000L, distanceKm = 10.0,
+            avgSpeedKmh = 30.0, topSpeedKmh = 50, durationMin = 30,
+            speedSamples = List(30) { 30 }, throttleSamples = List(30) { 30 },
+        )
+        val harsh = clean.copy(
+            speedSamples = List(30) { 15 }, throttleSamples = List(30) { 85 })
+        assertTrue(RideAnalytics.ecoScore(harsh).score < RideAnalytics.ecoScore(clean).score)
+        assertEquals(1, RideAnalytics.ecoScore(harsh).hardLaunches)
+    }
+
+    @Test
+    fun speed_fusion_learns_the_speedometer_bias() {
+        val fusion = SpeedFusion()
+        repeat(30) { fusion.update(60.0, 55.0, 3.0) }
+        val out = fusion.update(60.0, 55.0, 3.0)
+        assertTrue(out.errorKmh > 4.0 && out.errorKmh < 6.0)
+        assertTrue(out.kmh in 54..60)
+        val gpsless = SpeedFusion().update(40.0, null, null)
+        assertTrue(gpsless.kmh in 1..40)
+    }
+
+    @Test
+    fun severe_use_moves_the_service_reminder_earlier() {
+        val calm = RideAnalytics.serviceAdvice(emptyList(), 3_000.0)
+        assertEquals(5_000, calm.suggestedKm)
+        val severe = (1..10).map {
+            Ride(
+                startedAt = it * 1_000L, endedAt = it * 1_000L + 900_000L,
+                distanceKm = 1.0, avgSpeedKmh = 12.0, topSpeedKmh = 35,
+                durationMin = 15, idleMs = 10 * 60_000L,
+            )
+        }
+        val advice = RideAnalytics.serviceAdvice(severe, 3_000.0)
+        assertTrue(advice.severe)
+        assertTrue(advice.suggestedKm < 5_000)
     }
 }

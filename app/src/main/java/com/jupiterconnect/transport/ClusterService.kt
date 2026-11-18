@@ -40,6 +40,8 @@ import com.jupiterconnect.protocol.ScannedDevice
 import com.jupiterconnect.protocol.Telemetry
 import com.jupiterconnect.session.ColdStartTracker
 import com.jupiterconnect.session.FuelLogStore
+import com.jupiterconnect.session.RideAnalytics
+import com.jupiterconnect.session.SpeedFusion
 import com.jupiterconnect.session.WarmupPhase
 import com.jupiterconnect.session.WarmupState
 import com.jupiterconnect.sync.SupabaseClient
@@ -98,6 +100,12 @@ object ClusterRepository {
     val engineDebug = MutableStateFlow("No 0x18 frame seen yet")
     // Recent live speeds for the speedometer graph (oldest first).
     val speedHistory = MutableStateFlow<List<Int>>(emptyList())
+    // Cluster + GPS fusion: smoothed speed and learned speedometer error.
+    val fusedSpeed = MutableStateFlow(0)
+    val speedErrorKmh = MutableStateFlow(0.0)
+    val speedFusionSamples = MutableStateFlow(0)
+    // Live checks (battery trend, engine temp vs ambient).
+    val anomalyNotes = MutableStateFlow("")
     val mirroring = MutableStateFlow(true)
 
     private const val SPEED_HISTORY_SIZE = 48
@@ -166,6 +174,12 @@ class ClusterService : Service() {
     private var clearNotification: Runnable? = null
     private var speedAlertActive = false
     private var lastNotificationKey = ""
+    private val speedFusion = SpeedFusion()
+    private var gpsSpeedMps = -1f
+    private var gpsAccuracyM = -1f
+    private var gpsListener: LocationListener? = null
+    private val batteryHistory = ArrayDeque<Double>()
+    private var lastAnomalyKey = ""
     @SuppressLint("MissingPermission") private var scanCallback: ScanCallback? = null
 
     private val adapter: BluetoothAdapter?
@@ -406,6 +420,67 @@ class ClusterService : Service() {
         }
     }
 
+    /** GPS speed for the Kalman fusion with the cluster speedometer. */
+    @SuppressLint("MissingPermission")
+    private fun startGpsSpeed() {
+        if (gpsListener != null) return
+        val allowed =
+            ContextCompat.checkSelfPermission(this, android.Manifest.permission.ACCESS_FINE_LOCATION) ==
+                PackageManager.PERMISSION_GRANTED ||
+                ContextCompat.checkSelfPermission(this, android.Manifest.permission.ACCESS_COARSE_LOCATION) ==
+                PackageManager.PERMISSION_GRANTED
+        if (!allowed) return
+        val manager = getSystemService(Context.LOCATION_SERVICE) as? LocationManager ?: return
+        val listener = object : LocationListener {
+            override fun onLocationChanged(location: Location) {
+                gpsSpeedMps = if (location.hasSpeed()) location.speed else -1f
+                gpsAccuracyM = location.accuracy
+            }
+            override fun onStatusChanged(provider: String?, status: Int, extras: android.os.Bundle?) {}
+            override fun onProviderEnabled(provider: String) {}
+            override fun onProviderDisabled(provider: String) {}
+        }
+        gpsListener = listener
+        listOf(LocationManager.GPS_PROVIDER, LocationManager.NETWORK_PROVIDER).forEach { p ->
+            runCatching<Unit> {
+                manager.requestLocationUpdates(p, 1_000L, 0f, listener, Looper.getMainLooper())
+            }
+        }
+    }
+
+    private fun stopGpsSpeed() {
+        val manager = getSystemService(Context.LOCATION_SERVICE) as? LocationManager ?: return
+        gpsListener?.let { runCatching { manager.removeUpdates(it) } }
+        gpsListener = null
+        gpsSpeedMps = -1f
+        gpsAccuracyM = -1f
+    }
+
+    /** Live battery/temperature checks. Trends, not diagnoses. */
+    private fun checkAnomalies(t: Telemetry) {
+        if (t.rpm < RUNNING_RPM && t.speedKmh < 1) return
+        if (t.batteryVoltage > 0) {
+            batteryHistory.addLast(t.batteryVoltage)
+            while (batteryHistory.size > 30) batteryHistory.removeFirst()
+        }
+        val notes = mutableListOf<String>()
+        val v = t.batteryVoltage
+        if (v > 0 && v < 12.2) notes += "Battery low: %.1f V".format(v)
+        if (batteryHistory.size >= 10 && v > 0) {
+            val avg = batteryHistory.average()
+            if (v < avg - 0.4) notes += "Battery dropping: %.1f V vs %.1f V trend".format(v, avg)
+        }
+        if (t.engineTempC > 0 && t.intakeTempC > 0 && t.speedKmh > 10) {
+            val delta = t.engineTempC - t.intakeTempC
+            if (delta >= 40) notes += "Engine hot vs ambient: Δ$delta°C"
+        }
+        val key = notes.joinToString("|")
+        if (key != lastAnomalyKey) {
+            lastAnomalyKey = key
+            ClusterRepository.anomalyNotes.value = notes.joinToString("\n")
+        }
+    }
+
     /** Fan out one decoded frame to rides, voice, speed graph and warm-up. */
     private fun onTelemetryFrame(t: Telemetry, primary: Boolean, raw: ByteArray) {
         if ((raw[1].toInt() and 0xFF) == 0x18) {
@@ -421,9 +496,20 @@ class ClusterService : Service() {
             voiceBridge.onSwitchAction(raw[12].toInt() and 0x3F)
         }
         checkSpeedAlert(t)
-        RideStore.onFrame(t, primary)
+        val fused = speedFusion.update(
+            t.speedKmh.toDouble(),
+            if (gpsSpeedMps >= 0) gpsSpeedMps * 3.6 else null,
+            if (gpsAccuracyM >= 0) gpsAccuracyM.toDouble() else null,
+        )
+        ClusterRepository.fusedSpeed.value = fused.kmh
+        ClusterRepository.speedErrorKmh.value = fused.errorKmh
+        ClusterRepository.speedFusionSamples.value = fused.samples
+        // Rides use the fused, cleaner speed; distance still comes from the
+        // odometer, which the cluster broadcasts correctly.
+        RideStore.onFrame(t.copy(speedKmh = fused.kmh), primary)
         voiceBridge.onFrame(t)
-        ClusterRepository.recordSpeed(t.speedKmh)
+        ClusterRepository.recordSpeed(fused.kmh)
+        checkAnomalies(t)
         val previous = ClusterRepository.warmup.value.phase
         val state = coldStartTracker.update(t)
         ClusterRepository.warmup.value = state
@@ -608,6 +694,7 @@ class ClusterService : Service() {
         // Only a connected bike has a parking spot to save (onDestroy also
         // calls this, with no link at all).
         if (connectionEstablished || gatt != null) saveParkedLocation(force = true)
+        stopGpsSpeed()
         // A manual disconnect after a ride must still finalise that ride.
         RideStore.onDisconnected()
         keepaliveJob?.cancel()
@@ -651,6 +738,13 @@ class ClusterService : Service() {
                     voiceBridge.reset()
                     connectionEstablished = true
                     parkingEpoch++
+                    speedFusion.reset()
+                    batteryHistory.clear()
+                    lastAnomalyKey = ""
+                    ClusterRepository.anomalyNotes.value = ""
+                    startGpsSpeed()
+                    RideStore.pendingMapsEtaMinutes =
+                        ClusterRepository.navInstruction.value?.etaMinutes?.takeIf { it > 0 } ?: -1
                     RideStore.onConnected()
                     gatt = g
                     ClusterRepository.telemetry.value = ClusterRepository.telemetry.value.copy(
@@ -673,6 +767,7 @@ class ClusterService : Service() {
                         // Only a real connect -> disconnect cycle closes a ride
                         // or moves the parking spot. Status 147 means the
                         // connection never happened, so neither may change.
+                        stopGpsSpeed()
                         saveParkedLocation(force = true)
                         RideStore.onDisconnected()
                         // Show the accumulated carbon saving on the cluster.
@@ -890,6 +985,9 @@ class ClusterService : Service() {
         if (navJob?.isActive == true) return
         navJob = scope.launch {
             while (isActive) {
+                // Personal correction from real rides; neutral until 5 rides
+                // carry a Maps ETA, and always bounded.
+                val etaFactor = RideAnalytics.etaFactor(RideStore.rides.value)
                 // A voice reply owns the cluster text row even when no route is
                 // active, so answers appear on the bike and not only on the phone.
                 val reply = ClusterRepository.currentReplyText()
@@ -898,9 +996,12 @@ class ClusterService : Service() {
                     ClusterRepository.navInstruction.value?.let { step ->
                         val distance = step.distanceMeters.coerceAtLeast(0)
                         val remaining = step.remainingMeters.coerceAtLeast(0)
+                        val eta = if (step.etaMinutes > 0)
+                            RideAnalytics.adjustedEta(step.etaMinutes, etaFactor)
+                        else step.etaMinutes
                         write(buildNavControl(
                             distance,
-                            step.etaMinutes,
+                            eta,
                             remaining,
                             step.pictogram,
                         ))
@@ -998,6 +1099,7 @@ class ClusterService : Service() {
 
         private const val TAG = "JupiterBle"
         private const val SCAN_TIMEOUT_MS = 20_000L
+        private const val RUNNING_RPM = 500
         // HCI supervision timeout: an established link really dropped.
         private const val GATT_CONN_TIMEOUT = 8
         // Android 15+: a direct connect attempt timed out (never connected).

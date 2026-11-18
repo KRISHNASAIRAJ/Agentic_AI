@@ -6,7 +6,8 @@
 -- Ride graphs and any ride detail added after 0001.
 alter table public.jc_rides
   add column if not exists speed_samples integer[] not null default '{}',
-  add column if not exists throttle_samples integer[] not null default '{}';
+  add column if not exists throttle_samples integer[] not null default '{}',
+  add column if not exists maps_eta_min integer not null default -1;
 
 -- Petrol fills. The client id is stable (fill number + IST date) so retries
 -- merge instead of duplicating rows.
