@@ -77,22 +77,29 @@ class VoiceCommandProcessor(private val context: Context) {
                 if (i >= 0) spoken.substring(i + marker.length).trim().ifBlank { null } else null
             } ?: return "Tell me where to navigate"
 
-        // Prefer Mappls; fall back to whatever maps app handles geo: Uris.
+        // Launch a real route directly - no chooser. Try turn-by-turn URIs in
+        // both supported apps, then geo: fallbacks. A bare geo: without a
+        // package is what produced "choose an app" with no route started.
         val encoded = URLEncoder.encode(place, "UTF-8")
-        val mappls = Intent(Intent.ACTION_VIEW, Uri.parse("mappls://search?q=$encoded")).apply {
-            setPackage("com.mmi.maps")
-            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        val candidates = listOf(
+            Intent(Intent.ACTION_VIEW, Uri.parse("google.navigation:q=$encoded"))
+                .setPackage("com.google.android.apps.maps"),
+            Intent(Intent.ACTION_VIEW, Uri.parse("mappls://navigate?q=$encoded"))
+                .setPackage("com.mmi.maps"),
+            Intent(Intent.ACTION_VIEW, Uri.parse("mappls://search?q=$encoded"))
+                .setPackage("com.mmi.maps"),
+            Intent(Intent.ACTION_VIEW, Uri.parse("geo:0,0?q=$encoded"))
+                .setPackage("com.google.android.apps.maps"),
+            Intent(Intent.ACTION_VIEW, Uri.parse("geo:0,0?q=$encoded"))
+                .setPackage("com.mmi.maps"),
+        )
+        for (candidate in candidates) {
+            val ok = runCatching {
+                context.startActivity(candidate.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+            }.isSuccess
+            if (ok) return "Navigating to $place"
         }
-        val ok = runCatching { context.startActivity(mappls) }.isSuccess
-        if (!ok) {
-            runCatching {
-                context.startActivity(
-                    Intent(Intent.ACTION_VIEW, Uri.parse("geo:0,0?q=$encoded"))
-                        .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                )
-            }
-        }
-        return "Opening $place in maps"
+        return "No maps app could open $place"
     }
 
     private fun mediaKey(code: Int) {

@@ -4,6 +4,7 @@ import android.content.Intent
 import android.provider.Settings
 import androidx.compose.foundation.background
 import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -42,11 +43,17 @@ import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -68,10 +75,13 @@ import com.jupiterconnect.debug.FrameLog
 import com.jupiterconnect.nav.NavInstruction
 import com.jupiterconnect.protocol.ScannedDevice
 import com.jupiterconnect.protocol.Telemetry
+import com.jupiterconnect.session.Ride
 import com.jupiterconnect.session.RideStore
+import com.jupiterconnect.session.SPEED_BAND_LABELS
 import com.jupiterconnect.transport.ClusterRepository
 import com.jupiterconnect.ui.theme.JupiterColors
 import com.jupiterconnect.ui.theme.NumberStyle
+import kotlinx.coroutines.launch
 
 @Composable
 private fun Screen(content: @Composable ColumnScope.() -> Unit) {
@@ -97,6 +107,19 @@ fun PremiumHomeScreen(
     val shownOdo = if (telemetry.odometerKm > 0) telemetry.odometerKm else lastReading.odometerKm
     val shownFuel = if (telemetry.connected) telemetry.fuelBars else lastReading.fuelBars
     val shownDte = if (telemetry.connected) telemetry.distanceToEmptyKm else lastReading.distanceToEmptyKm
+    val offline = !telemetry.connected
+    // Never show a fake 0 for range/economy when the cluster is offline. A
+    // cached value is shown greyed; with no cached value, show "--".
+    val rangeText = when {
+        telemetry.connected -> "$shownDte"
+        lastReading.hasData && shownDte > 0 -> "$shownDte"
+        else -> "--"
+    }
+    val econText = when {
+        telemetry.connected && telemetry.averageFuelEconomy > 0 -> "${telemetry.averageFuelEconomy}"
+        !telemetry.connected && lastReading.averageFuelEconomy > 0 -> "${lastReading.averageFuelEconomy}"
+        else -> "--"
+    }
     // Peak speed this ride - never drops when the accelerator is eased.
     val liveTop = RideStore.liveTopSpeed.collectAsState().value
     val speedHistory = ClusterRepository.speedHistory.collectAsState().value
@@ -241,15 +264,16 @@ fun PremiumHomeScreen(
                 }
                 Spacer(Modifier.height(12.dp))
                 Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                    BigReadout("$shownDte", "km", "Range",
-                        modifier = Modifier.weight(1f), accent = true)
+                    BigReadout(rangeText, "km", "Range",
+                        modifier = Modifier.weight(1f), accent = !offline, muted = offline)
                     BigReadout("${telemetry.engineTempC}", "°C", "Coolant",
                         modifier = Modifier.weight(1f))
                 }
                 Spacer(Modifier.height(10.dp))
                 Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                    BigReadout("${telemetry.averageFuelEconomy}", "km/L", "Avg fuel econ",
-                        modifier = Modifier.weight(1f))
+                    BigReadout(econText, "km/L", "Avg fuel econ",
+                        modifier = Modifier.weight(1f), muted = !telemetry.connected ||
+                            telemetry.averageFuelEconomy <= 0)
                     BigReadout("%.1f".format(telemetry.batteryVoltage), "V", "Battery",
                         modifier = Modifier.weight(1f))
                 }
@@ -562,7 +586,7 @@ fun PremiumRidesScreen(
                 Spacer(Modifier.height(8.dp))
                 Text("%.1f".format(totalKm), style = NumberStyle,
                     fontSize = 48.sp, fontWeight = FontWeight.Bold, color = JupiterColors.Accent)
-                Text("km across ${rides.size} ride${if (rides.size == 1) "" else "s"} Â· saved on this phone",
+                Text("km across ${rides.size} ride${if (rides.size == 1) "" else "s"} · saved on this phone",
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
@@ -579,7 +603,9 @@ fun PremiumRidesScreen(
                     modifier = Modifier.padding(16.dp))
             }
         } else {
+            var expandedId by remember { mutableStateOf<Long?>(null) }
             rides.forEach { r ->
+                val expanded = expandedId == r.startedAt
                 PremiumCard(modifier = Modifier.padding(bottom = 10.dp)) {
                     Column(Modifier.padding(16.dp)) {
                         Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
@@ -594,6 +620,19 @@ fun PremiumRidesScreen(
                             RideMetric(Modifier.weight(1f), "AVG", "%.0f".format(r.avgSpeedKmh), "km/h")
                             RideMetric(Modifier.weight(1f), "TOP", "${r.topSpeedKmh}", "km/h")
                             RideMetric(Modifier.weight(1f), "TIME", "${r.durationMin}", "min")
+                        }
+                        Spacer(Modifier.height(8.dp))
+                        Text(
+                            if (expanded) "HIDE REPORT" else "VIEW REPORT",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = JupiterColors.Accent,
+                            modifier = Modifier.clickable {
+                                expandedId = if (expanded) null else r.startedAt
+                            },
+                        )
+                        if (expanded) {
+                            Spacer(Modifier.height(12.dp))
+                            RideReportDetail(r)
                         }
                     }
                 }
@@ -619,6 +658,62 @@ fun PremiumRidesScreen(
             }
         }
         Spacer(Modifier.height(28.dp))
+    }
+}
+
+/** Expandable per-ride breakdown: idle, ISS, fuel and time in each speed band. */
+@Composable
+private fun RideReportDetail(ride: Ride) {
+    Column {
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            RideMetric(Modifier.weight(1f), "IDLE", "${ride.idleMin}", "min")
+            RideMetric(Modifier.weight(1f), "ISS", "${ride.issStops}", "stops")
+            val econ = ride.economyKmPerL
+            RideMetric(
+                Modifier.weight(1f), "ECON",
+                if (econ > 0) "%.1f".format(econ) else "—", "km/L",
+            )
+        }
+        Spacer(Modifier.height(12.dp))
+        Caption("TIME IN SPEED BANDS")
+        Spacer(Modifier.height(8.dp))
+        ride.bandMs.indices.forEach { i ->
+            val pct = ride.bandPct(i)
+            Row(
+                Modifier.fillMaxWidth().padding(vertical = 3.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text(SPEED_BAND_LABELS[i], style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.width(44.dp))
+                Box(
+                    Modifier.weight(1f).height(8.dp)
+                        .clip(RoundedCornerShape(4.dp))
+                        .background(MaterialTheme.colorScheme.outline.copy(alpha = 0.2f)),
+                ) {
+                    if (pct > 0) {
+                        Box(
+                            Modifier.fillMaxWidth(pct / 100f).height(8.dp)
+                                .clip(RoundedCornerShape(4.dp))
+                                .background(JupiterColors.Accent),
+                        )
+                    }
+                }
+                Spacer(Modifier.width(8.dp))
+                Text("$pct%", style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.width(34.dp))
+            }
+        }
+        Spacer(Modifier.height(10.dp))
+        Text(
+            if (ride.fuelBarsUsed > 0)
+                "Fuel ${ride.fuelBarsStart} → ${ride.fuelBarsEnd} bars (%.1f L)".format(
+                    ride.fuelBarsUsed * (5.1 / 6.0))
+            else "Fuel: no net change recorded",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
     }
 }
 
@@ -729,6 +824,81 @@ fun PremiumSettingsScreen(
                 InfoRow("Protocol", "SmartXonnect BLE")
                 InfoRow("Navigation", "5A 4E / 5B 4F")
                 InfoRow("Link", if (notificationAccess) "Ready" else "Needs notification access")
+            }
+        }
+        Spacer(Modifier.height(14.dp))
+
+        Spacer(Modifier.height(14.dp))
+
+        // Cloud sync uses the same Supabase Auth users as Meridian.
+        SectionHeading("Cloud sync", trailing = "MERIDIAN DB")
+        Spacer(Modifier.height(10.dp))
+        PremiumCard {
+            Column(Modifier.padding(16.dp)) {
+                val scope = rememberCoroutineScope()
+                var signedIn by remember { mutableStateOf(com.jupiterconnect.sync.SupabaseClient.isSignedIn()) }
+                var email by remember { mutableStateOf("") }
+                var password by remember { mutableStateOf("") }
+                var message by remember { mutableStateOf("") }
+                if (signedIn) {
+                    InfoRow("Signed in as", com.jupiterconnect.sync.SupabaseClient.currentEmail() ?: "-")
+                    Text(
+                        "Rides sync to Supabase while the cluster is connected and for 2 minutes after it disconnects.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    Spacer(Modifier.height(10.dp))
+                    OutlinedButton(
+                        onClick = {
+                            com.jupiterconnect.sync.SupabaseClient.signOut()
+                            signedIn = false
+                            message = "Signed out"
+                        },
+                        modifier = Modifier.fillMaxWidth(),
+                        shape = RoundedCornerShape(999.dp),
+                    ) { Text("Sign out") }
+                } else {
+                    OutlinedTextField(
+                        value = email, onValueChange = { email = it },
+                        label = { Text("Email") }, singleLine = true,
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                    Spacer(Modifier.height(8.dp))
+                    OutlinedTextField(
+                        value = password, onValueChange = { password = it },
+                        label = { Text("Password") }, singleLine = true,
+                        visualTransformation = androidx.compose.ui.text.input.PasswordVisualTransformation(),
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                    Spacer(Modifier.height(10.dp))
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Button(
+                            onClick = {
+                                scope.launch {
+                                    message = com.jupiterconnect.sync.SupabaseClient.signIn(email, password)
+                                        ?: "Signed in".also { signedIn = true }
+                                }
+                            },
+                            modifier = Modifier.weight(1f),
+                            shape = RoundedCornerShape(999.dp),
+                        ) { Text("Sign in") }
+                        OutlinedButton(
+                            onClick = {
+                                scope.launch {
+                                    message = com.jupiterconnect.sync.SupabaseClient.signUp(email, password)
+                                        ?: "Account created".also { signedIn = com.jupiterconnect.sync.SupabaseClient.isSignedIn() }
+                                }
+                            },
+                            modifier = Modifier.weight(1f),
+                            shape = RoundedCornerShape(999.dp),
+                        ) { Text("Sign up") }
+                    }
+                }
+                if (message.isNotBlank()) {
+                    Spacer(Modifier.height(8.dp))
+                    Text(message, style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
             }
         }
         Spacer(Modifier.height(14.dp))

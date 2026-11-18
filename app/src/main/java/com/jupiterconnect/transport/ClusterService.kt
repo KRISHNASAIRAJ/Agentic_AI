@@ -34,6 +34,7 @@ import com.jupiterconnect.debug.FrameLog
 import com.jupiterconnect.protocol.Gatt
 import com.jupiterconnect.protocol.ScannedDevice
 import com.jupiterconnect.protocol.Telemetry
+import com.jupiterconnect.sync.SupabaseClient
 import com.jupiterconnect.nav.NavInstruction
 import com.jupiterconnect.protocol.buildKeepalive
 import com.jupiterconnect.protocol.buildNavControl
@@ -109,6 +110,8 @@ class ClusterService : Service() {
     @Volatile private var lastAddress: String? = null
     private var keepaliveJob: Job? = null
     private var navJob: Job? = null
+    private var syncJob: Job? = null
+    private var disconnectedAtMs = 0L
     @SuppressLint("MissingPermission") private var scanCallback: ScanCallback? = null
 
     private val adapter: BluetoothAdapter?
@@ -118,6 +121,7 @@ class ClusterService : Service() {
         super.onCreate()
         voiceBridge = VoiceAssistantBridge(this)
         RideStore.init(applicationContext)
+        SupabaseClient.init(applicationContext)
         createChannel()
         ClusterRepository.service = this
         startForeground(1, buildNotification())
@@ -289,9 +293,9 @@ class ClusterService : Service() {
         best?.let { RideStore.saveParkedLocation(it.latitude, it.longitude, it.time) }
     }
 
-    /** Write a short text reply to the cluster's message row (0x5B 0x4C). */
+    /** Write a short text reply to the cluster's navigation text row (0x5B 0x4F). */
     fun sendTextRow(text: String) {
-        scope.launch { write(buildNavText(text, 0x4C)) }
+        scope.launch { write(buildNavText(text)) }
     }
 
     fun disconnectNow() {
@@ -332,6 +336,8 @@ class ClusterService : Service() {
                         connected = true, address = g.device.address, error = null)
                     if (!g.requestMtu(Gatt.REQUESTED_MTU)) startDiscovery(g)
                     main.postDelayed({ startDiscovery(g) }, 2500L)
+                    disconnectedAtMs = 0L
+                    startRideSync()
                 }
 
                 BluetoothProfile.STATE_DISCONNECTED -> {
@@ -339,6 +345,9 @@ class ClusterService : Service() {
                     FrameLog.note("GATT disconnected status=$status")
                     saveParkedLocation()
                     RideStore.onDisconnected()
+                    // Keep syncing for two minutes after the link drops.
+                    disconnectedAtMs = System.currentTimeMillis()
+                    startRideSync()
                     ClusterRepository.telemetry.value = ClusterRepository.telemetry.value.copy(
                         connected = false,
                         error = if (status != 0) "Link lost (status $status)" else null,
@@ -412,7 +421,7 @@ class ClusterService : Service() {
             FrameLog.record("RX", value)
             decodeFrame(value, ClusterRepository.telemetry.value)?.let {
                 ClusterRepository.telemetry.value = it
-                RideStore.onFrame(it)
+                RideStore.onFrame(it, primary = (value[1].toInt() and 0xFF) == 0x10)
                 voiceBridge.onFrame(it)
                 ClusterRepository.recordSpeed(it.speedKmh)
             }
@@ -425,7 +434,7 @@ class ClusterService : Service() {
             FrameLog.record("RX", v)
             decodeFrame(v, ClusterRepository.telemetry.value)?.let {
                 ClusterRepository.telemetry.value = it
-                RideStore.onFrame(it)
+                RideStore.onFrame(it, primary = (v[1].toInt() and 0xFF) == 0x10)
                 voiceBridge.onFrame(it)
                 ClusterRepository.recordSpeed(it.speedKmh)
             }
@@ -482,6 +491,33 @@ class ClusterService : Service() {
     }
 
     /**
+     * Upload pending rides while the cluster is connected, then keep trying
+     * for two minutes after disconnect so a flaky link at the end of a ride
+     * does not lose the sync. The loop exits on its own once the grace expires.
+     */
+    private fun startRideSync() {
+        if (syncJob?.isActive == true) return
+        syncJob = scope.launch {
+            while (isActive) {
+                val token = SupabaseClient.currentToken()
+                if (!token.isNullOrBlank()) {
+                    RideStore.unsyncedRides().take(5).forEach { ride ->
+                        if (SupabaseClient.uploadRide(ride, token) == null) {
+                            RideStore.markSynced(ride.startedAt)
+                        }
+                    }
+                }
+                delay(30_000L)
+                val connected = ClusterRepository.telemetry.value.connected
+                val inGrace = disconnectedAtMs > 0 &&
+                    System.currentTimeMillis() - disconnectedAtMs <= 120_000L
+                if (!connected && !inGrace) break
+            }
+            syncJob = null
+        }
+    }
+
+    /**
      * navigation bridge: one instruction in, two cluster frames out.
      * The control frame is a liveness signal, so it is re-sent every 1.5 s
      * for as long as a route is active. The text row alternates nothing -
@@ -491,15 +527,13 @@ class ClusterService : Service() {
         if (navJob?.isActive == true) return
         navJob = scope.launch {
             while (isActive) {
+                // A voice reply owns the cluster text row even when no route is
+                // active, so answers appear on the bike and not only on the phone.
+                val reply = ClusterRepository.currentReplyText()
+                if (reply != null) write(buildNavText(reply))
                 if (ClusterRepository.mirroring.value) {
                     ClusterRepository.navInstruction.value?.let { step ->
-                        // The cluster treats this field as plain metres: 0xFFFF
-                        // rendered as "65.5km". There is no "unknown" sentinel.
-                        // When Maps publishes no distance, send 0 so the arrow
-                        // and ETA keep updating; the chip-text fallback in the
-                        // listener should normally supply the real distance.
                         val distance = step.distanceMeters.coerceAtLeast(0)
-                        // Remaining distance (the cluster's "km left" field).
                         val remaining = step.remainingMeters.coerceAtLeast(0)
                         write(buildNavControl(
                             distance,
@@ -507,10 +541,7 @@ class ClusterService : Service() {
                             remaining,
                             step.pictogram,
                         ))
-                        // While a voice reply is active, show it in this row so
-                        // the answer appears on the dash like the TVS demo.
-                        val text = ClusterRepository.currentReplyText() ?: step.displayLine
-                        write(buildNavText(text))
+                        if (reply == null) write(buildNavText(step.displayLine))
                     }
                 }
                 delay(1500)

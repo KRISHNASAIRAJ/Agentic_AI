@@ -2,6 +2,7 @@ package com.jupiterconnect
 
 import com.jupiterconnect.nav.NavInstruction
 import com.jupiterconnect.nav.NavParsing
+import com.jupiterconnect.session.Ride
 import com.jupiterconnect.protocol.buildKeepalive
 import com.jupiterconnect.protocol.buildNavControl
 import com.jupiterconnect.protocol.buildNavText
@@ -167,5 +168,19 @@ class ProtocolTest {
         // last real turn instead - that is what stops the cluster blinking.
         assertEquals("5 m", mapplsReal.maneuver)
         assertEquals(NavInstruction.STRAIGHT, mapplsReal.pictogram)
+    }
+
+    @Test
+    fun ride_report_math_uses_5_1_litre_tank() {
+        val ride = Ride(
+            startedAt = 0L, endedAt = 600_000L, distanceKm = 5.1,
+            avgSpeedKmh = 30.0, topSpeedKmh = 50, durationMin = 10L,
+            bandMs = longArrayOf(1_000L, 2_000L, 3_000L, 4_000L),
+            idleMs = 500L, fuelBarsStart = 6, fuelBarsEnd = 5,
+        )
+        assertEquals(1, ride.fuelBarsUsed)
+        assertEquals(6.0, ride.economyKmPerL, 0.01)
+        assertEquals(10, ride.bandPct(0))
+        assertEquals(40, ride.bandPct(3))
     }
 }

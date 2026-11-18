@@ -112,7 +112,13 @@ fun BigReadout(
     caption: String,
     modifier: Modifier = Modifier,
     accent: Boolean = false,
+    muted: Boolean = false,
 ) {
+    val valueColor = when {
+        muted -> MaterialTheme.colorScheme.onSurfaceVariant
+        accent -> JupiterColors.Accent
+        else -> MaterialTheme.colorScheme.onSurface
+    }
     Column(modifier, horizontalAlignment = Alignment.CenterHorizontally) {
         Row(verticalAlignment = Alignment.Bottom) {
             Text(
@@ -120,7 +126,7 @@ fun BigReadout(
                 style = NumberStyle,
                 fontSize = 34.sp,
                 fontWeight = FontWeight.Bold,
-                color = if (accent) JupiterColors.Accent else MaterialTheme.colorScheme.onSurface,
+                color = valueColor,
                 maxLines = 1,
             )
             Spacer(Modifier.width(4.dp))
@@ -161,14 +167,14 @@ fun SectionHeading(title: String, trailing: String? = null) {
 }
 
 /**
- * Animated 270° fuel gauge for the Jupiter 125's 5.2 L tank.
- * The cluster reports 0–6 bars; each bar is ~0.87 L. Turns amber below 20%.
+ * Animated 270° fuel gauge for the Jupiter 125's 5.1 L tank.
+ * The cluster reports 0–6 bars; each bar is ~0.85 L. Turns amber below 20%.
  */
 @Composable
 fun FuelRing(
     bars: Int,
     maxBars: Int = 6,
-    tankLitres: Float = 5.2f,
+    tankLitres: Float = 5.1f,
     modifier: Modifier = Modifier,
 ) {
     val fraction = bars.coerceIn(0, maxBars) / maxBars.toFloat()
@@ -208,7 +214,7 @@ fun FuelRing(
             )
             Text("%.1f L".format(litres), style = MaterialTheme.typography.labelSmall, color = ringColor)
             Spacer(Modifier.height(2.dp))
-            Text("OF ${tankLitres.toInt()} L", style = MaterialTheme.typography.labelSmall,
+            Text("OF %.1f L".format(tankLitres), style = MaterialTheme.typography.labelSmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant)
         }
     }

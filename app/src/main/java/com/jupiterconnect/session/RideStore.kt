@@ -7,6 +7,9 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 
+/** Speed bands used by the ride report: 0-30, 30-50, 50-70, 70+ km/h. */
+val SPEED_BAND_LABELS = arrayOf("0-30", "30-50", "50-70", "70+")
+
 /** A completed ride: connect → disconnect. */
 data class Ride(
     val startedAt: Long,
@@ -15,6 +18,15 @@ data class Ride(
     val avgSpeedKmh: Double,
     val topSpeedKmh: Int,
     val durationMin: Long,
+    /** Milliseconds spent in each speed band (0-30, 30-50, 50-70, 70+). */
+    val bandMs: LongArray = LongArray(4),
+    /** Milliseconds at (near) zero speed. */
+    val idleMs: Long = 0L,
+    /** ISS stop events reported by the cluster during this ride. */
+    val issStops: Int = 0,
+    val fuelBarsStart: Int = 0,
+    val fuelBarsEnd: Int = 0,
+    val maxRpm: Int = 0,
 ) {
     val dateLabel: String
         get() {
@@ -26,6 +38,25 @@ data class Ride(
                 c.get(java.util.Calendar.MINUTE),
             )
         }
+
+    /** Fuel bars used, clamped to zero so a refuel mid-ride cannot go negative. */
+    val fuelBarsUsed: Int get() = (fuelBarsStart - fuelBarsEnd).coerceAtLeast(0)
+
+    /** Rough economy from the 5.1 L tank across six bars. Only meaningful on long rides. */
+    val economyKmPerL: Double
+        get() {
+            val usedBars = fuelBarsUsed
+            return if (usedBars > 0 && distanceKm > 0.5)
+                distanceKm / (usedBars * (5.1 / 6.0))
+            else 0.0
+        }
+
+    val idleMin: Long get() = idleMs / 60_000L
+
+    fun bandPct(index: Int): Int {
+        val total = bandMs.sum()
+        return if (total <= 0) 0 else (bandMs[index] * 100 / total).toInt()
+    }
 }
 
 /** Where the scooter was last parked, captured when Bluetooth disconnects. */
@@ -52,6 +83,9 @@ data class LastReading(
     val odometerKm: Double = 0.0,
     val fuelBars: Int = 0,
     val distanceToEmptyKm: Int = 0,
+    val averageFuelEconomy: Int = 0,
+    val batteryVoltage: Double = 0.0,
+    val engineTempC: Int = 0,
     val hasData: Boolean = false,
 )
 
@@ -65,13 +99,18 @@ object RideStore {
     private const val KEY_LAST_ODO = "last_odo"
     private const val KEY_LAST_FUEL = "last_fuel"
     private const val KEY_LAST_DTE = "last_dte"
+    private const val KEY_LAST_ECON = "last_econ"
+    private const val KEY_LAST_BATTERY = "last_battery"
+    private const val KEY_LAST_TEMP = "last_temp"
     private const val KEY_LAST_HAS = "last_has"
     private const val KEY_RIDES = "rides"
+    private const val KEY_SYNCED = "synced_rides"
     private const val KEY_PARK_LAT = "park_lat"
     private const val KEY_PARK_LNG = "park_lng"
     private const val KEY_PARK_MS = "park_ms"
 
     private var prefs: SharedPreferences? = null
+    private val syncedIds = mutableSetOf<Long>()
 
     private val _lastReading = MutableStateFlow(LastReading())
     val lastReading: StateFlow<LastReading> = _lastReading.asStateFlow()
@@ -98,6 +137,17 @@ object RideStore {
     private var rideLastOdo: Double? = null
     private var active = false
 
+    // Ride report accumulators. Only the primary 0x10 frame advances the clock
+    // so time is not counted once per frame type.
+    private val bandMs = LongArray(4)
+    private var idleMs = 0L
+    private var lastPrimaryAtMs = 0L
+    private var startIssCount = -1
+    private var lastIssCount = 0
+    private var fuelStart = -1
+    private var fuelEnd = -1
+    private var maxRpm = 0
+
     fun init(context: Context) {
         if (prefs != null) return
         prefs = context.applicationContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
@@ -106,9 +156,17 @@ object RideStore {
             odometerKm = p.getFloat(KEY_LAST_ODO, 0f).toDouble(),
             fuelBars = p.getInt(KEY_LAST_FUEL, 0),
             distanceToEmptyKm = p.getInt(KEY_LAST_DTE, 0),
+            averageFuelEconomy = p.getInt(KEY_LAST_ECON, 0),
+            batteryVoltage = java.lang.Double.longBitsToDouble(p.getLong(KEY_LAST_BATTERY, 0L)),
+            engineTempC = p.getInt(KEY_LAST_TEMP, 0),
             hasData = p.getBoolean(KEY_LAST_HAS, false),
         )
         _rides.value = parseRides(p.getString(KEY_RIDES, "").orEmpty())
+        syncedIds.clear()
+        p.getString(KEY_SYNCED, "").orEmpty()
+            .split(',')
+            .mapNotNull { it.toLongOrNull() }
+            .forEach { syncedIds += it }
         val parkMs = p.getLong(KEY_PARK_MS, 0L)
         if (parkMs > 0) {
             _parkedLocation.value = ParkedLocation(
@@ -126,17 +184,35 @@ object RideStore {
         rideLastOdo = null
         _liveTopSpeed.value = 0
         _liveTripKm.value = 0.0
+        bandMs.fill(0)
+        idleMs = 0L
+        lastPrimaryAtMs = 0L
+        startIssCount = -1
+        lastIssCount = 0
+        fuelStart = -1
+        fuelEnd = -1
+        maxRpm = 0
         active = true
     }
 
-    /** Called for every decoded telemetry frame while connected. */
-    fun onFrame(t: Telemetry) {
+    /**
+     * Called for every decoded telemetry frame while connected. [primary] is
+     * true only for the 0x10 speedometer frame - the only frame that advances
+     * the ride clock, so multiple frame types cannot double-count time.
+     */
+    fun onFrame(t: Telemetry, primary: Boolean = true) {
         val p = prefs ?: return
         if (t.odometerKm > 0) {
             val reading = _lastReading.value.copy(
                 odometerKm = t.odometerKm,
                 fuelBars = t.fuelBars,
                 distanceToEmptyKm = t.distanceToEmptyKm,
+                averageFuelEconomy = if (t.averageFuelEconomy > 0) t.averageFuelEconomy
+                    else _lastReading.value.averageFuelEconomy,
+                batteryVoltage = if (t.batteryVoltage > 0) t.batteryVoltage
+                    else _lastReading.value.batteryVoltage,
+                engineTempC = if (t.engineTempC != 0) t.engineTempC
+                    else _lastReading.value.engineTempC,
                 hasData = true,
             )
             _lastReading.value = reading
@@ -144,11 +220,23 @@ object RideStore {
                 .putFloat(KEY_LAST_ODO, reading.odometerKm.toFloat())
                 .putInt(KEY_LAST_FUEL, reading.fuelBars)
                 .putInt(KEY_LAST_DTE, reading.distanceToEmptyKm)
+                .putInt(KEY_LAST_ECON, reading.averageFuelEconomy)
+                .putLong(KEY_LAST_BATTERY, java.lang.Double.doubleToRawLongBits(reading.batteryVoltage))
+                .putInt(KEY_LAST_TEMP, reading.engineTempC)
                 .putBoolean(KEY_LAST_HAS, true)
                 .apply()
         }
         // Peak speed never decreases when the accelerator is eased.
         if (t.speedKmh > _liveTopSpeed.value) _liveTopSpeed.value = t.speedKmh
+        if (t.rpm > maxRpm) maxRpm = t.rpm
+        if (t.issCount > 0) {
+            if (startIssCount < 0) startIssCount = t.issCount
+            lastIssCount = t.issCount
+        }
+        if (t.fuelBars in 1..6) {
+            if (fuelStart < 0) fuelStart = t.fuelBars
+            fuelEnd = t.fuelBars
+        }
         if (active) {
             if (t.odometerKm > 0) {
                 if (rideStartOdo == null) rideStartOdo = t.odometerKm
@@ -157,6 +245,21 @@ object RideStore {
                 if (start != null) {
                     _liveTripKm.value = (rideLastOdo!! - start).coerceAtLeast(0.0)
                 }
+            }
+            if (primary) {
+                val now = System.currentTimeMillis()
+                if (lastPrimaryAtMs > 0) {
+                    val dt = (now - lastPrimaryAtMs).coerceIn(0L, 2_000L)
+                    val idx = when {
+                        t.speedKmh < 30 -> 0
+                        t.speedKmh < 50 -> 1
+                        t.speedKmh < 70 -> 2
+                        else -> 3
+                    }
+                    bandMs[idx] += dt
+                    if (t.speedKmh <= 1) idleMs += dt
+                }
+                lastPrimaryAtMs = now
             }
         }
     }
@@ -172,6 +275,7 @@ object RideStore {
         val durationMs = (System.currentTimeMillis() - rideStartMs).coerceAtLeast(1000)
         val durationMin = durationMs / 60_000L
         val avg = distance / (durationMs / 3_600_000.0)
+        val issStops = if (startIssCount >= 0) (lastIssCount - startIssCount).coerceAtLeast(0) else 0
         val ride = Ride(
             startedAt = rideStartMs,
             endedAt = System.currentTimeMillis(),
@@ -179,10 +283,25 @@ object RideStore {
             avgSpeedKmh = avg,
             topSpeedKmh = _liveTopSpeed.value,
             durationMin = durationMin,
+            bandMs = bandMs.copyOf(),
+            idleMs = idleMs,
+            issStops = issStops,
+            fuelBarsStart = fuelStart.coerceAtLeast(0),
+            fuelBarsEnd = fuelEnd.coerceAtLeast(0),
+            maxRpm = maxRpm,
         )
         val updated = listOf(ride) + _rides.value
         _rides.value = updated
         prefs?.edit()?.putString(KEY_RIDES, serialiseRides(updated))?.apply()
+    }
+
+    /** Rides not yet confirmed by Supabase, newest first. */
+    fun unsyncedRides(): List<Ride> = _rides.value.filter { it.startedAt !in syncedIds }
+
+    /** Mark a ride as successfully uploaded so it is not retried forever. */
+    fun markSynced(id: Long) {
+        if (!syncedIds.add(id)) return
+        prefs?.edit()?.putString(KEY_SYNCED, syncedIds.joinToString(","))?.apply()
     }
 
     /** Called when Bluetooth disconnects: remember where the scooter is parked. */
@@ -201,6 +320,9 @@ object RideStore {
             r.startedAt, r.endedAt,
             (r.distanceKm * 100).toLong(), (r.avgSpeedKmh * 10).toLong(),
             r.topSpeedKmh.toLong(), r.durationMin,
+            r.bandMs[0], r.bandMs[1], r.bandMs[2], r.bandMs[3],
+            r.idleMs, r.issStops.toLong(),
+            r.fuelBarsStart.toLong(), r.fuelBarsEnd.toLong(), r.maxRpm.toLong(),
         ).joinToString(",")
     }
 
@@ -208,16 +330,34 @@ object RideStore {
         if (raw.isBlank()) return emptyList()
         return raw.split(";").mapNotNull { part ->
             val f = part.split(",")
-            if (f.size != 6) return@mapNotNull null
             runCatching {
-                Ride(
-                    startedAt = f[0].toLong(),
-                    endedAt = f[1].toLong(),
-                    distanceKm = f[2].toLong() / 100.0,
-                    avgSpeedKmh = f[3].toLong() / 10.0,
-                    topSpeedKmh = f[4].toInt(),
-                    durationMin = f[5].toLong(),
-                )
+                when {
+                    f.size >= 15 -> Ride(
+                        startedAt = f[0].toLong(),
+                        endedAt = f[1].toLong(),
+                        distanceKm = f[2].toLong() / 100.0,
+                        avgSpeedKmh = f[3].toLong() / 10.0,
+                        topSpeedKmh = f[4].toInt(),
+                        durationMin = f[5].toLong(),
+                        bandMs = longArrayOf(
+                            f[6].toLong(), f[7].toLong(), f[8].toLong(), f[9].toLong(),
+                        ),
+                        idleMs = f[10].toLong(),
+                        issStops = f[11].toInt(),
+                        fuelBarsStart = f[12].toInt(),
+                        fuelBarsEnd = f[13].toInt(),
+                        maxRpm = f[14].toInt(),
+                    )
+                    f.size == 6 -> Ride(
+                        startedAt = f[0].toLong(),
+                        endedAt = f[1].toLong(),
+                        distanceKm = f[2].toLong() / 100.0,
+                        avgSpeedKmh = f[3].toLong() / 10.0,
+                        topSpeedKmh = f[4].toInt(),
+                        durationMin = f[5].toLong(),
+                    )
+                    else -> return@mapNotNull null
+                }
             }.getOrNull()
         }
     }
