@@ -150,6 +150,42 @@ fun buildNavControl(distanceMeters: Int, etaMinutes: Int, remainingMeters: Int, 
     return b
 }
 
+/** Cluster backlight level 2..5 (5A F1), per RideLink PROTOCOL.md. */
+fun buildBrightnessFrame(level: Int): ByteArray {
+    val b = ByteArray(20)
+    b[0] = 0x5A
+    b[1] = 0xF1.toByte()
+    b[2] = level.coerceIn(2, 5).toByte()
+    b[19] = 0xFF.toByte()
+    return b
+}
+
+/** Traffic screen switch: 0x78 weather, 0x79 cricket, 0x80 football. */
+fun buildScreenSwitch(id: Int): ByteArray {
+    val b = ByteArray(20)
+    b[0] = 0x5B
+    b[1] = 0x4C
+    b[2] = 0
+    b[3] = id.toByte()
+    b[19] = 0xFF.toByte()
+    return b
+}
+
+/** Social unread counts shown on the cluster's social screen. */
+fun buildSocialCounts(whatsapp: Int, facebook: Int, instagram: Int): ByteArray {
+    val b = ByteArray(20)
+    b[0] = 0x5B
+    b[1] = 0x9C.toByte()
+    b[2] = whatsapp.coerceIn(0, 255).toByte()
+    b[3] = facebook.coerceIn(0, 255).toByte()
+    b[4] = instagram.coerceIn(0, 255).toByte()
+    b[19] = 0xFF.toByte()
+    return b
+}
+
+/** Current place name on the cluster (5B 5C). */
+fun buildLocationFrame(name: String): ByteArray = buildNavText(name, 0x5C)
+
 /**
  * Carbon-saving value on the cluster's 0x9C frame. Byte 6 carries kg CO2
  * (see RideLink PROTOCOL.md, `carbonEmission`).

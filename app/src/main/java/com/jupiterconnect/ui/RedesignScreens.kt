@@ -606,17 +606,17 @@ fun RideScreenV2(
             "RPM" to "${telemetry.rpm}",
             "RANGE" to "${telemetry.distanceToEmptyKm} km",
             "FUEL" to "${telemetry.fuelBars}/6",
-            "AVG ECON" to "${telemetry.averageFuelEconomy} km/L",
-            "ENGINE TEMP" to "${telemetry.engineTempC} °C",
+            "ECON" to "${telemetry.averageFuelEconomy} km/L",
+            "ENG TEMP" to "${telemetry.engineTempC} °C",
         )
         tiles.chunked(3).forEach { row ->
             Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                 row.forEach { (label, value) ->
-                    RedCard(modifier = Modifier.weight(1f)) {
+                    RedCard(modifier = Modifier.weight(1f).height(92.dp)) {
                         Label(label)
-                        Spacer(Modifier.height(6.dp))
-                        Text(value, fontSize = 20.sp, fontWeight = FontWeight.Medium,
-                            color = JupiterColors.OnSurface)
+                        Spacer(Modifier.height(8.dp))
+                        Text(value, fontSize = 19.sp, fontWeight = FontWeight.Medium,
+                            maxLines = 1, color = JupiterColors.OnSurface)
                     }
                 }
             }
@@ -669,8 +669,6 @@ fun RidesScreenV2(
             }
         }
         Spacer(Modifier.height(18.dp))
-        Label("NEWEST FIRST")
-        Spacer(Modifier.height(10.dp))
         if (rides.isEmpty()) {
             RedCard { Text("No rides saved yet.", color = JupiterColors.OnSurfaceVariant, fontSize = 13.sp) }
         }

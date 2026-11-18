@@ -40,8 +40,12 @@ import com.jupiterconnect.session.WarmupState
 import com.jupiterconnect.sync.SupabaseClient
 import com.jupiterconnect.nav.NavInstruction
 import com.jupiterconnect.protocol.buildKeepalive
+import com.jupiterconnect.protocol.buildBrightnessFrame
 import com.jupiterconnect.protocol.buildCarbonFrame
+import com.jupiterconnect.protocol.buildLocationFrame
 import com.jupiterconnect.protocol.buildNavControl
+import com.jupiterconnect.protocol.buildScreenSwitch
+import com.jupiterconnect.protocol.buildSocialCounts
 import com.jupiterconnect.protocol.buildNavText
 import com.jupiterconnect.protocol.decodeFrame
 import com.jupiterconnect.session.RideStore
@@ -71,6 +75,17 @@ object ClusterRepository {
     val voiceDebug = MutableStateFlow("No 0x11 service frame seen yet")
     // Cold-start warm-up state, updated from telemetry frames.
     val warmup = MutableStateFlow(WarmupState())
+    // Rider preferences driven by voice commands.
+    val brightness = MutableStateFlow(3)
+    val autoSms = MutableStateFlow(false)
+    val dnd = MutableStateFlow(false)
+    val highSpeedAlert = MutableStateFlow(false)
+
+    fun setBrightness(level: Int) {
+        val next = level.coerceIn(2, 5)
+        brightness.value = next
+        service?.sendBrightness(next)
+    }
     // Raw 0x18 engine frame + decoded values, for mapping verification.
     val engineDebug = MutableStateFlow("No 0x18 frame seen yet")
     // Recent live speeds for the speedometer graph (oldest first).
@@ -357,6 +372,22 @@ class ClusterService : Service() {
                 delay(250L)
             }
         }
+    }
+
+    fun sendBrightness(level: Int) {
+        scope.launch { write(buildBrightnessFrame(level)) }
+    }
+
+    fun showScreen(id: Int) {
+        scope.launch { write(buildScreenSwitch(id)) }
+    }
+
+    fun sendPlace(name: String) {
+        scope.launch { write(buildLocationFrame(name)) }
+    }
+
+    fun sendSocialCounts(wa: Int, fb: Int, ig: Int) {
+        scope.launch { write(buildSocialCounts(wa, fb, ig)) }
     }
 
     /** Manual trigger so the voice flow can be tested without the bike. */
