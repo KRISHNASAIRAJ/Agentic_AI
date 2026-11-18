@@ -143,6 +143,13 @@ object RideStore {
     private val _liveThrottles = MutableStateFlow<List<Int>>(emptyList())
     val liveThrottles: StateFlow<List<Int>> = _liveThrottles.asStateFlow()
 
+    /** Last bar blinking on the cluster (~1.2 L left). */
+    private val _lowFuel = MutableStateFlow(false)
+    val lowFuel: StateFlow<Boolean> = _lowFuel.asStateFlow()
+    /** Distance ridden since low fuel was first detected (Trip F equivalent). */
+    private val _tripFKm = MutableStateFlow(0.0)
+    val tripFKm: StateFlow<Double> = _tripFKm.asStateFlow()
+
     private var rideStartMs = 0L
     private var rideStartOdo: Double? = null
     private var rideLastOdo: Double? = null
@@ -161,6 +168,7 @@ object RideStore {
     private val rideSpeeds = mutableListOf<Int>()
     private val rideThrottles = mutableListOf<Int>()
     private var lastSampleAtMs = 0L
+    private var lowFuelStartOdo: Double? = null
 
     fun init(context: Context) {
         if (prefs != null) return
@@ -210,6 +218,9 @@ object RideStore {
         lastSampleAtMs = 0L
         _liveSpeeds.value = emptyList()
         _liveThrottles.value = emptyList()
+        lowFuelStartOdo = null
+        _lowFuel.value = false
+        _tripFKm.value = 0.0
         bandMs.fill(0)
         idleMs = 0L
         lastPrimaryAtMs = 0L
@@ -262,6 +273,20 @@ object RideStore {
         if (t.fuelBars in 1..6) {
             if (fuelStart < 0) fuelStart = t.fuelBars
             fuelEnd = t.fuelBars
+        }
+        // Owner's manual: 6 bars above ~5 L, 3 bars at ~3.2 L, and the last
+        // bar blinks at ~1.2 L with a "Low fuel" message and Trip F counting.
+        if (t.fuelBars in 0..1) {
+            if (lowFuelStartOdo == null && t.odometerKm > 0) lowFuelStartOdo = t.odometerKm
+            _lowFuel.value = true
+        } else if (t.fuelBars >= 2) {
+            _lowFuel.value = false
+            lowFuelStartOdo = null
+            _tripFKm.value = 0.0
+        }
+        val lowStart = lowFuelStartOdo
+        if (lowStart != null && t.odometerKm > lowStart) {
+            _tripFKm.value = t.odometerKm - lowStart
         }
         if (active) {
             if (t.odometerKm > 0) {

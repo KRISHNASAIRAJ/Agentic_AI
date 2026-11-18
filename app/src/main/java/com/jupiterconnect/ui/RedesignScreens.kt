@@ -3,6 +3,11 @@ package com.jupiterconnect.ui
 import android.content.Intent
 import android.net.Uri
 import androidx.compose.foundation.Canvas
+import androidx.compose.animation.core.RepeatMode
+import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.rememberInfiniteTransition
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -284,6 +289,10 @@ private fun VehicleDetailsRows(
     InfoRow("Trip (app)", "%.2f km".format(RideStore.liveTripKm.collectAsState().value))
     InfoRow("Top speed", "${RideStore.liveTopSpeed.collectAsState().value} km/h")
     InfoRow("Fuel", "${if (telemetry.connected) telemetry.fuelBars else lastReading.fuelBars} / 6 bars")
+    val lowFuel by RideStore.lowFuel.collectAsState()
+    if (lowFuel) {
+        InfoRow("Trip F", "%.2f km".format(RideStore.tripFKm.collectAsState().value))
+    }
     InfoRow("Intake temp", "${telemetry.intakeTempC} °C")
     InfoRow("Engine load", "${telemetry.engineLoad} %")
     InfoRow("Throttle", "${telemetry.throttlePosition} %")
@@ -365,6 +374,25 @@ fun HomeScreenV2(
                                 color = JupiterColors.OnSurface)
                             Text("Capacity 5.1 L", fontSize = 12.sp,
                                 color = JupiterColors.OnSurfaceVariant)
+                        }
+                    }
+                    val lowFuel by RideStore.lowFuel.collectAsState()
+                    if (lowFuel) {
+                        Spacer(Modifier.height(8.dp))
+                        val blink by rememberInfiniteTransition().animateFloat(
+                            initialValue = 1f, targetValue = 0.25f,
+                            animationSpec = infiniteRepeatable(
+                                tween(500), RepeatMode.Reverse,
+                            ),
+                        )
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Box(
+                                Modifier.size(8.dp).clip(CircleShape)
+                                    .background(JupiterColors.Error.copy(alpha = blink)),
+                            )
+                            Spacer(Modifier.width(6.dp))
+                            Text("LOW FUEL · ~1.2 L", fontSize = 11.sp,
+                                color = JupiterColors.Error)
                         }
                     }
                     Spacer(Modifier.weight(1f))
