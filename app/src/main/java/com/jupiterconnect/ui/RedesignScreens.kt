@@ -440,6 +440,43 @@ fun RidesScreenV2(
         if (rides.isEmpty()) {
             RedCard { Text("No rides saved yet.", color = JupiterColors.OnSurfaceVariant, fontSize = 13.sp) }
         }
+        Spacer(Modifier.height(18.dp))
+        Label("HISTORY · LAST 6 MONTHS")
+        Spacer(Modifier.height(10.dp))
+        RedCard {
+            val months = remember(rides) {
+                val fmt = java.text.DateFormatSymbols().shortMonths
+                val keys = mutableListOf<Pair<Int, String>>()
+                repeat(6) { i ->
+                    val c = Calendar.getInstance()
+                    c.set(Calendar.DAY_OF_MONTH, 1)
+                    c.add(Calendar.MONTH, -i)
+                    keys += (c.get(Calendar.YEAR) * 100 + c.get(Calendar.MONTH)) to fmt[c.get(Calendar.MONTH)]
+                }
+                keys.reverse()
+                keys.map { (key, label) ->
+                    val km = rides.filter { r ->
+                        val c = Calendar.getInstance().apply { timeInMillis = r.startedAt }
+                        c.get(Calendar.YEAR) * 100 + c.get(Calendar.MONTH) == key
+                    }.sumOf { it.distanceKm }
+                    label to km
+                }
+            }
+            val maxKm = months.maxOf { it.second }.coerceAtLeast(0.1)
+            Row(Modifier.fillMaxWidth().height(90.dp), Arrangement.SpaceEvenly,
+                verticalAlignment = Alignment.Bottom) {
+                months.forEach { (label, km) ->
+                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                        Box(Modifier.width(18.dp)
+                            .height((maxOf(2.0, km / maxKm * 80.0)).dp)
+                            .clip(RoundedCornerShape(4.dp))
+                            .background(if (km > 0) JupiterColors.Red else JupiterColors.High))
+                        Spacer(Modifier.height(4.dp))
+                        Text(label, fontSize = 10.sp, color = JupiterColors.OnSurfaceVariant)
+                    }
+                }
+            }
+        }
         rides.forEach { r ->
             Spacer(Modifier.height(10.dp))
             var expanded by remember { mutableStateOf(false) }
@@ -660,6 +697,17 @@ fun SettingsScreenV2(
             Text(email ?: "Not signed in", fontSize = 15.sp, color = JupiterColors.OnSurface)
             Spacer(Modifier.height(12.dp))
             SecondaryButton("Sign out", onSignOut, Modifier.fillMaxWidth())
+        }
+        Spacer(Modifier.height(10.dp))
+        RedCard {
+            Label("VOICE")
+            Spacer(Modifier.height(8.dp))
+            val voice by ClusterRepository.voiceDebug.collectAsState()
+            Text(voice, fontSize = 11.sp, color = JupiterColors.OnSurfaceVariant)
+            Spacer(Modifier.height(10.dp))
+            SecondaryButton("Test voice trigger",
+                { ClusterRepository.service?.simulateVoiceTrigger() },
+                Modifier.fillMaxWidth())
         }
         Spacer(Modifier.height(10.dp))
         RedCard {
