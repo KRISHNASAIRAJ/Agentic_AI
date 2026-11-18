@@ -198,6 +198,44 @@ class ProtocolTest {
     }
 
     @Test
+    fun iss_lifetime_counter_becomes_the_carbon_floor() {
+        // App stored 120s from stops it observed; the cluster now reports a
+        // lifetime total of 1000s that includes earlier ownership history.
+        val result = com.jupiterconnect.session.foldIssDuration(120L, -1L, 1000L)
+        assertEquals(1000L, result.seconds)
+        assertEquals(1000L, result.lastObserved)
+    }
+
+    @Test
+    fun iss_deltas_keep_counting_after_the_lifetime_floor_is_adopted() {
+        val first = com.jupiterconnect.session.foldIssDuration(0L, -1L, 1000L)
+        val second = com.jupiterconnect.session.foldIssDuration(
+            first.seconds, first.lastObserved, 1010L)
+        assertEquals(1010L, second.seconds)
+        assertEquals(1010L, second.lastObserved)
+    }
+
+    @Test
+    fun iss_per_ride_reset_cannot_lower_the_lifetime_total() {
+        // Cluster resets to a small per-ride value then climbs; the floor keeps
+        // the lifetime total and app-tracked deltas resume from the new baseline.
+        val floored = com.jupiterconnect.session.foldIssDuration(0L, -1L, 1000L)
+        val afterReset = com.jupiterconnect.session.foldIssDuration(
+            floored.seconds, floored.lastObserved, 5L)
+        assertEquals(1000L, afterReset.seconds)
+        val climbing = com.jupiterconnect.session.foldIssDuration(
+            afterReset.seconds, afterReset.lastObserved, 25L)
+        assertEquals(1020L, climbing.seconds)
+    }
+
+    @Test
+    fun iss_zero_reading_is_ignored() {
+        val result = com.jupiterconnect.session.foldIssDuration(500L, 400L, 0L)
+        assertEquals(500L, result.seconds)
+        assertEquals(400L, result.lastObserved)
+    }
+
+    @Test
     fun cold_start_tracker_moves_through_phases() {
         var now = 1_000_000L
         val tracker = ColdStartTracker { now }

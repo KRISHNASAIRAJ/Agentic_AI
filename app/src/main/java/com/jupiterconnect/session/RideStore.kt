@@ -89,6 +89,33 @@ data class LastReading(
     val hasData: Boolean = false,
 )
 
+/** Result of folding one cluster ISS-duration reading into the carbon total. */
+internal data class IssTotals(val seconds: Long, val lastObserved: Long)
+
+/**
+ * The cluster's ECONOMY frame carries `issDuration`, a lifetime cumulative
+ * idle-seconds counter. Adopting it as a floor makes carbon saved genuine
+ * "from day one" rather than only counting stops seen after install. The
+ * per-reading deltas stay as a fallback for clusters that reset the counter
+ * each ride, and the total never decreases, so such a reset cannot corrupt a
+ * lifetime total.
+ */
+internal fun foldIssDuration(
+    storedSeconds: Long,
+    lastObserved: Long,
+    observed: Long,
+): IssTotals {
+    if (observed <= 0) return IssTotals(storedSeconds, lastObserved)
+    var seconds = storedSeconds
+    if (lastObserved >= 0 && observed > lastObserved) {
+        seconds += observed - lastObserved
+    }
+    // The cluster's lifetime counter includes stops the app never observed;
+    // take it as a floor. max() also guards a per-ride reset from lowering it.
+    if (observed > seconds) seconds = observed
+    return IssTotals(seconds, observed)
+}
+
 /**
  * Persists the last cluster reading and records one ride per connect/disconnect
  * cycle. Plain SharedPreferences (no JSON library): a compact delimited format
@@ -299,13 +326,17 @@ object RideStore {
             if (startIssCount < 0) startIssCount = t.issCount
             lastIssCount = t.issCount
         }
-        // ISS duration is cumulative on the cluster; add only positive deltas.
+        // ISS duration is a lifetime cumulative counter on the cluster. Adopt
+        // it as a floor (true "from day one" carbon) while keeping app-tracked
+        // deltas as a fallback for clusters that reset it per ride.
         if (t.issDuration > 0) {
-            if (lastIssDuration >= 0 && t.issDuration > lastIssDuration) {
-                _issSavedSeconds.value += t.issDuration.toLong() - lastIssDuration
-                prefs?.edit()?.putLong(KEY_CARBON_SECONDS, _issSavedSeconds.value)?.apply()
+            val totals = foldIssDuration(
+                _issSavedSeconds.value, lastIssDuration, t.issDuration.toLong())
+            if (totals.seconds != _issSavedSeconds.value) {
+                _issSavedSeconds.value = totals.seconds
+                prefs?.edit()?.putLong(KEY_CARBON_SECONDS, totals.seconds)?.apply()
             }
-            lastIssDuration = t.issDuration.toLong()
+            lastIssDuration = totals.lastObserved
         }
         if (t.fuelBars in 1..6) {
             if (fuelStart < 0) fuelStart = t.fuelBars
