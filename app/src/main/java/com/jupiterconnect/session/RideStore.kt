@@ -250,7 +250,7 @@ object RideStore {
             hasData = p.getBoolean(KEY_LAST_HAS, false),
         )
         _issSavedSeconds.value = p.getLong(KEY_CARBON_SECONDS, 0L)
-        _allTimeTopSpeed.value = p.getInt(KEY_ALL_TIME_TOP, 0)
+        val storedTop = p.getInt(KEY_ALL_TIME_TOP, 0)
         // Keep the last ride's graph visible after a disconnect or a restart.
         // It is only cleared in onConnected(), when the next ride starts.
         _liveSpeeds.value = p.getString(KEY_LIVE_SPEEDS, "").orEmpty().parseSamples()
@@ -262,6 +262,14 @@ object RideStore {
                 speedSamples = parts[0].parseSamples(),
                 throttleSamples = parts[1].parseSamples(),
             ) else r
+        }
+        // Saved rides are authoritative for "Best": a cleared/older preference
+        // must not show 58 when a saved ride records 67 km/h. Seed the all-time
+        // best from the rides and persist it once.
+        val bestFromRides = _rides.value.maxOfOrNull { it.topSpeedKmh } ?: 0
+        _allTimeTopSpeed.value = maxOf(storedTop, bestFromRides)
+        if (bestFromRides > storedTop) {
+            p.edit().putInt(KEY_ALL_TIME_TOP, bestFromRides).apply()
         }
         syncedIds.clear()
         p.getString(KEY_SYNCED, "").orEmpty()
@@ -454,6 +462,12 @@ object RideStore {
             speedSamples = rideSpeeds.toList(),
             throttleSamples = rideThrottles.toList(),
         )
+        // A ride finalised from saved/imported data can carry a higher top than
+        // this session saw live; keep the all-time best in step with the Rides tab.
+        if (ride.topSpeedKmh > _allTimeTopSpeed.value) {
+            _allTimeTopSpeed.value = ride.topSpeedKmh
+            prefs?.edit()?.putInt(KEY_ALL_TIME_TOP, ride.topSpeedKmh)?.apply()
+        }
         val updated = listOf(ride) + _rides.value
         _rides.value = updated
         prefs?.edit()

@@ -53,7 +53,7 @@ import androidx.compose.material.icons.rounded.Place
 import androidx.compose.material.icons.rounded.Settings
 import androidx.compose.material.icons.rounded.Speed
 import androidx.compose.material.icons.rounded.TwoWheeler
-import androidx.compose.material.icons.rounded.WaterDrop
+import androidx.compose.material.icons.rounded.DeviceThermostat
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Icon
@@ -399,6 +399,7 @@ fun HomeScreenV2(
             "JULY", "AUGUST", "SEPTEMBER", "OCTOBER", "NOVEMBER", "DECEMBER")
         "${days[c.get(Calendar.DAY_OF_WEEK) - 1]}, ${c.get(Calendar.DAY_OF_MONTH)} ${months[c.get(Calendar.MONTH)]}"
     }
+    val fills by com.jupiterconnect.session.FuelLogStore.fills.collectAsState()
     JupiterShell("Jupiter 125", kicker, activeTab, onTab, onSettings) {
         Spacer(Modifier.height(4.dp))
         Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
@@ -452,11 +453,11 @@ fun HomeScreenV2(
                     Spacer(Modifier.weight(1f))
                     val engineTempV = if (telemetry.engineTempC != 0) "${telemetry.engineTempC}°" else "--"
                     val batteryV = if (telemetry.batteryVoltage > 0)
-                        "%.1f".format(telemetry.batteryVoltage) else "--"
+                        "%.1f V".format(telemetry.batteryVoltage) else "--"
                     val rpmV = if (telemetry.rpm > 0) "${telemetry.rpm}" else "--"
                     Column(Modifier.fillMaxWidth(),
                         verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                        IconStatRow(Icons.Rounded.WaterDrop, "TEMP", engineTempV)
+                        IconStatRow(Icons.Rounded.DeviceThermostat, "TEMP", engineTempV)
                         IconStatRow(Icons.Rounded.BatteryChargingFull, "BATT", batteryV)
                         IconStatRow(Icons.Rounded.Speed, "RPM", rpmV)
                     }
@@ -513,6 +514,12 @@ fun HomeScreenV2(
                         Text("This ride $rideTop km/h", fontSize = 11.sp,
                             color = JupiterColors.OnSurfaceVariant)
                         Spacer(Modifier.weight(1f))
+                        // The bar is a speed gauge, not an odometer gauge: label
+                        // it so it no longer looks like unexplained progress.
+                        Text("BEST / 95 KM/H", fontSize = 9.sp,
+                            color = JupiterColors.OnSurfaceVariant,
+                            maxLines = 1, softWrap = false)
+                        Spacer(Modifier.height(4.dp))
                         Box(Modifier.fillMaxWidth().height(5.dp).clip(RoundedCornerShape(3.dp))
                             .background(JupiterColors.High)) {
                             Box(Modifier.fillMaxWidth((bestTop / 95f).coerceIn(0f, 1f)).height(5.dp)
@@ -556,17 +563,18 @@ fun HomeScreenV2(
         Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
             RedCard(modifier = Modifier.weight(1f)) {
                 Label("RANGE")
-                val dte = if (telemetry.connected) telemetry.distanceToEmptyKm
-                    else lastReading.distanceToEmptyKm
-                val assumeFull = (telemetry.connected && telemetry.fuelBars >= 6 && dte <= 0) ||
-                    (!telemetry.connected && lastReading.hasData &&
-                        lastReading.fuelBars >= 6 && dte <= 0)
-                val range = when {
-                    dte > 0 -> "$dte"
-                    assumeFull -> "240"
-                    else -> "--"
-                }
-                BigValue(range, "km", 36)
+                val fuel = if (telemetry.connected) telemetry.fuelBars else lastReading.fuelBars
+                val fillMileage = com.jupiterconnect.session.FuelLogStore.averageMileage
+                // Range from the real Meridian fills (5,304 km / 106.63 L ≈
+                // 49.7 km/L), not the cluster's 46 km/L DTE or a hardcoded 240.
+                // Tank is 5.1 L across six fuel bars.
+                val rangeKm = if (fuel > 0 && fillMileage > 0)
+                    fuel * (5.1 / 6.0) * fillMileage else 0.0
+                BigValue(if (rangeKm > 0) "%.0f".format(rangeKm) else "--", "km", 36)
+                Text("from %d fills · %.1f km/L".format(
+                    fills.size, fillMileage),
+                    fontSize = 9.sp, color = JupiterColors.OnSurfaceVariant,
+                    maxLines = 1, softWrap = false)
             }
             RedCard(modifier = Modifier.weight(1f)) {
                 Label("AVG ECONOMY")
@@ -955,35 +963,42 @@ fun RidesScreenV2(
                 }
             }
             val maxKm = months.maxOf { it.second }.coerceAtLeast(0.1)
-            val selected = selectedBar?.let { months.getOrNull(it) }
-            // One fixed readout instead of a value under each bar: it cannot
-            // be clipped by tall bars or large system fonts (July/August).
-            Text(
-                selected?.let { "${it.first} · %.0f km".format(it.second) }
-                    ?: "Tap a bar to see km",
-                fontSize = 12.sp, color = JupiterColors.Accent,
-                modifier = Modifier.fillMaxWidth(), textAlign = TextAlign.Center,
-            )
-            Spacer(Modifier.height(8.dp))
-            Row(Modifier.fillMaxWidth().height(90.dp), Arrangement.SpaceEvenly,
+            // Three fixed-height zones per month: value, bar, label. Because
+            // every column is the same height, all bars share one baseline and
+            // every month keeps its label — including the tall Jul/Aug bars,
+            // which used to push their labels out of the fixed-height row.
+            Row(Modifier.fillMaxWidth(), Arrangement.SpaceEvenly,
                 verticalAlignment = Alignment.Bottom) {
                 months.forEachIndexed { i, (label, km) ->
                     val isSelected = selectedBar == i
+                    val barHeight = (maxOf(2.0, km / maxKm * 80.0)).dp
                     Column(horizontalAlignment = Alignment.CenterHorizontally,
                         modifier = Modifier.clickable {
                             selectedBar = if (isSelected) null else i
                         }) {
-                        Box(Modifier.width(18.dp)
-                            .height((maxOf(2.0, km / maxKm * 80.0)).dp)
-                            .clip(RoundedCornerShape(4.dp))
-                            .background(
-                                if (isSelected) JupiterColors.Accent
-                                else if (km > 0) JupiterColors.Red else JupiterColors.High))
+                        Box(Modifier.fillMaxWidth().height(18.dp),
+                            contentAlignment = Alignment.BottomCenter) {
+                            if (isSelected) Text("%.0f km".format(km), fontSize = 10.sp,
+                                color = JupiterColors.Accent, maxLines = 1, softWrap = false)
+                        }
+                        // Bottom-centred inside a full-height slot: the bar
+                        // grows upward from a common baseline.
+                        Box(Modifier.width(18.dp).height(80.dp),
+                            contentAlignment = Alignment.BottomCenter) {
+                            Box(Modifier.fillMaxWidth().height(barHeight)
+                                .clip(RoundedCornerShape(4.dp))
+                                .background(
+                                    if (isSelected) JupiterColors.Accent
+                                    else if (km > 0) JupiterColors.Red else JupiterColors.High))
+                        }
                         Spacer(Modifier.height(4.dp))
-                        Text(label, fontSize = 9.sp,
-                            color = if (isSelected) JupiterColors.Accent
-                            else JupiterColors.OnSurfaceVariant,
-                            maxLines = 1, softWrap = false)
+                        Box(Modifier.fillMaxWidth().height(14.dp),
+                            contentAlignment = Alignment.TopCenter) {
+                            Text(label, fontSize = 9.sp,
+                                color = if (isSelected) JupiterColors.Accent
+                                else JupiterColors.OnSurfaceVariant,
+                                maxLines = 1, softWrap = false)
+                        }
                     }
                 }
             }
@@ -1280,10 +1295,6 @@ private fun SettingsContent(
     RedCard(bar = true) {
         Label("CALL & MESSAGE ON CLUSTER")
         Spacer(Modifier.height(8.dp))
-        Text("Caller name (or number) and sender + message show on the " +
-            "cluster for 5 s, then navigation returns. Needs notification access.",
-            fontSize = 12.sp, color = JupiterColors.OnSurfaceVariant)
-        Spacer(Modifier.height(10.dp))
         Row(verticalAlignment = Alignment.CenterVertically) {
             Column(Modifier.weight(1f)) {
                 Text("Mirror calls & messages", fontSize = 14.sp,
@@ -1354,8 +1365,6 @@ private fun SettingsContent(
     RedCard {
         Label("VOICE")
         Spacer(Modifier.height(8.dp))
-        val voice by ClusterRepository.voiceDebug.collectAsState()
-        Text(voice, fontSize = 11.sp, color = JupiterColors.OnSurfaceVariant)
         Spacer(Modifier.height(10.dp))
         SecondaryButton("Test voice trigger",
             { ClusterRepository.service?.simulateVoiceTrigger() },
