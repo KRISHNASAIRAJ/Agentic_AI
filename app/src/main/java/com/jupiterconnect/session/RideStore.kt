@@ -56,6 +56,22 @@ data class Ride(
 
     val idleMin: Long get() = idleMs / 60_000L
 
+    /** Time-of-day label taken from the ride's actual start, not the clock now. */
+    val rideKind: String
+        get() {
+            val cal = java.util.Calendar.getInstance(
+                java.util.TimeZone.getTimeZone("Asia/Kolkata"))
+            cal.timeInMillis = startedAt
+            val hour = cal.get(java.util.Calendar.HOUR_OF_DAY)
+            return when {
+                distanceKm <= 0.3 -> "Short ride"
+                hour < 12 -> "Morning ride"
+                hour < 16 -> "Afternoon ride"
+                hour < 22 -> "Evening ride"
+                else -> "Night ride"
+            }
+        }
+
     fun bandPct(index: Int): Int {
         val total = bandMs.sum()
         return if (total <= 0) 0 else (bandMs[index] * 100 / total).toInt()
@@ -67,6 +83,8 @@ data class ParkedLocation(
     val lat: Double,
     val lng: Double,
     val atMs: Long,
+    /** True when saved from a cached fix rather than a fresh GPS reading. */
+    val approximate: Boolean = false,
 ) {
     val coordinates: String get() = "%.5f, %.5f".format(lat, lng)
     val timeLabel: String
@@ -138,6 +156,7 @@ object RideStore {
     private const val KEY_PARK_LAT = "park_lat"
     private const val KEY_PARK_LNG = "park_lng"
     private const val KEY_PARK_MS = "park_ms"
+    private const val KEY_PARK_APPROX = "park_approx"
     private const val KEY_LIVE_SPEEDS = "live_speeds"
     private const val KEY_LIVE_THROTTLES = "live_throttles"
     private const val KEY_ALL_TIME_TOP = "all_time_top"
@@ -255,6 +274,7 @@ object RideStore {
                 lat = java.lang.Double.longBitsToDouble(p.getLong(KEY_PARK_LAT, 0L)),
                 lng = java.lang.Double.longBitsToDouble(p.getLong(KEY_PARK_LNG, 0L)),
                 atMs = parkMs,
+                approximate = p.getBoolean(KEY_PARK_APPROX, false),
             )
         }
     }
@@ -460,13 +480,19 @@ object RideStore {
     }
 
     /** Called when Bluetooth disconnects: remember where the scooter is parked. */
-    fun saveParkedLocation(lat: Double, lng: Double, atMs: Long = System.currentTimeMillis()) {
-        val location = ParkedLocation(lat, lng, atMs)
+    fun saveParkedLocation(
+        lat: Double,
+        lng: Double,
+        atMs: Long = System.currentTimeMillis(),
+        approximate: Boolean = false,
+    ) {
+        val location = ParkedLocation(lat, lng, atMs, approximate)
         _parkedLocation.value = location
         prefs?.edit()
             ?.putLong(KEY_PARK_LAT, java.lang.Double.doubleToRawLongBits(lat))
             ?.putLong(KEY_PARK_LNG, java.lang.Double.doubleToRawLongBits(lng))
             ?.putLong(KEY_PARK_MS, atMs)
+            ?.putBoolean(KEY_PARK_APPROX, approximate)
             ?.apply()
     }
 

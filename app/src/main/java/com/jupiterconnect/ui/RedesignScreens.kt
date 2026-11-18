@@ -33,6 +33,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.AccessTime
+import androidx.compose.material.icons.automirrored.rounded.ArrowBack
 import androidx.compose.material.icons.rounded.BatteryChargingFull
 import androidx.compose.material.icons.rounded.CheckCircle
 import androidx.compose.material.icons.rounded.Eco
@@ -56,6 +57,7 @@ import androidx.compose.material.icons.rounded.WaterDrop
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Switch
@@ -246,17 +248,20 @@ private fun CarbonCard() {
 @Composable
 private fun ColdStartCardV2() {
     val state by ClusterRepository.warmup.collectAsState()
-    val ready = state.phase == WarmupPhase.READY
     val engineOff = state.message == "Engine off"
+    val noData = !state.hasEngineData
+    val ready = state.phase == WarmupPhase.READY && !noData && !engineOff
     val glow = if (ready) JupiterColors.Red else JupiterColors.Accent
     val phaseIcon = when {
         engineOff -> Icons.Rounded.AccessTime
+        noData -> Icons.Rounded.Speed
         state.phase == WarmupPhase.READY -> Icons.Rounded.CheckCircle
         state.phase == WarmupPhase.STARTING -> Icons.Rounded.AccessTime
         else -> Icons.Rounded.Speed
     }
     val phaseSymbol = when {
         engineOff -> "ENGINE OFF"
+        noData -> "NO DATA"
         state.phase == WarmupPhase.STARTING -> "IDLE 30s"
         state.phase == WarmupPhase.WARMING -> "RIDE GENTLY"
         else -> "READY"
@@ -300,14 +305,20 @@ private fun ColdStartCardV2() {
                 }
                 Spacer(Modifier.height(10.dp))
                 Text(
-                    if (engineOff) "Idle 30-60 s, then ride gently"
-                    else state.message,
+                    when {
+                        engineOff -> "Engine off"
+                        noData -> "No engine data"
+                        else -> state.message
+                    },
                     fontSize = 14.sp, color = JupiterColors.OnSurface,
                     maxLines = 2,
                 )
                 Spacer(Modifier.height(4.dp))
+                // Never print 0°C placeholders. With the engine off or before
+                // the cluster sends temperature bytes, only show the spec and
+                // the fact that no engine data is available.
                 Text(
-                    if (engineOff) "Air-cooled 124.8 cc · no engine data offline"
+                    if (engineOff || noData) "Air Cooled · No Engine Data"
                     else "target ${state.targetC}°C · start ${state.startTemp}°C · " +
                         "ambient ${state.ambientC}°C",
                     fontSize = 10.sp, color = JupiterColors.OnSurfaceVariant,
@@ -376,6 +387,7 @@ fun HomeScreenV2(
     telemetry: Telemetry,
     lastReading: com.jupiterconnect.session.LastReading,
     onFindCluster: () -> Unit,
+    onOpenLiveGraph: () -> Unit,
     activeTab: Int?,
     onTab: (Int) -> Unit,
     onSettings: () -> Unit,
@@ -387,8 +399,6 @@ fun HomeScreenV2(
             "JULY", "AUGUST", "SEPTEMBER", "OCTOBER", "NOVEMBER", "DECEMBER")
         "${days[c.get(Calendar.DAY_OF_WEEK) - 1]}, ${c.get(Calendar.DAY_OF_MONTH)} ${months[c.get(Calendar.MONTH)]}"
     }
-    // Tap the LIVE SPEED card to expand its graph inside the card.
-    var speedGraphExpanded by remember { mutableStateOf(false) }
     JupiterShell("Jupiter 125", kicker, activeTab, onTab, onSettings) {
         Spacer(Modifier.height(4.dp))
         Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
@@ -456,58 +466,36 @@ fun HomeScreenV2(
             Column(Modifier.weight(178f), verticalArrangement = Arrangement.spacedBy(10.dp)) {
                 Box(
                     Modifier
-                        .height(if (speedGraphExpanded) 262.dp else 161.dp)
+                        .height(161.dp)
                         .clip(RoundedCornerShape(34.dp))
                         .background(JupiterColors.Low)
-                        .clickable { speedGraphExpanded = !speedGraphExpanded },
+                        .clickable { onOpenLiveGraph() },
                 ) {
                     Column(Modifier.padding(18.dp).fillMaxSize()) {
-                        Label("LIVE SPEED")
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Label("LIVE SPEED")
+                            Spacer(Modifier.weight(1f))
+                            // Small graph marker: tap the whole card to open
+                            // the full-screen chart.
+                            Box(
+                                Modifier.size(22.dp).clip(CircleShape)
+                                    .background(JupiterColors.RedTint),
+                                contentAlignment = Alignment.Center,
+                            ) {
+                                Icon(Icons.Rounded.Speed, "Open graph",
+                                    modifier = Modifier.size(13.dp),
+                                    tint = JupiterColors.Accent)
+                            }
+                        }
                         val speed = if (telemetry.connected && telemetry.speedKmh > 0)
                             "${telemetry.speedKmh}" else "--"
                         BigValue(speed, "km/h", 36)
                         Spacer(Modifier.weight(1f))
-                        // The graph is persisted by RideStore, so it stays after
-                        // a disconnect and is cleared only when the next ride
-                        // connects/starts. Tapping the card expands it in place.
-                        val liveSpeeds = RideStore.liveSpeeds.collectAsState().value
-                        val liveThrottles = RideStore.liveThrottles.collectAsState().value
-                        val recent = RideStore.rides.collectAsState().value.firstOrNull()
-                        val graph = if (liveSpeeds.isNotEmpty()) liveSpeeds
-                            else if (!telemetry.connected) recent?.speedSamples.orEmpty()
-                            else emptyList()
-                        val throttles = if (liveThrottles.isNotEmpty()) liveThrottles
-                            else if (!telemetry.connected) recent?.throttleSamples.orEmpty()
-                            else emptyList()
-                        Canvas(
-                            Modifier.fillMaxWidth()
-                                .height(if (speedGraphExpanded) 150.dp else 38.dp),
-                        ) {
-                            if (graph.size > 1) {
-                                val max = (graph.maxOrNull() ?: 1).coerceAtLeast(1)
-                                val step = size.width / (graph.size - 1)
-                                for (i in 0 until graph.size - 1) {
-                                    drawLine(JupiterColors.Red,
-                                        Offset(i * step, size.height - graph[i].toFloat() / max * size.height),
-                                        Offset((i + 1) * step, size.height - graph[i + 1].toFloat() / max * size.height),
-                                        strokeWidth = 3.dp.toPx(), cap = StrokeCap.Round)
-                                }
-                            }
-                            if (throttles.size > 1) {
-                                val step = size.width / (throttles.size - 1)
-                                for (i in 0 until throttles.size - 1) {
-                                    drawLine(JupiterColors.Accent.copy(alpha = 0.5f),
-                                        Offset(i * step, size.height - throttles[i].toFloat() / 100f * size.height),
-                                        Offset((i + 1) * step, size.height - throttles[i + 1].toFloat() / 100f * size.height),
-                                        strokeWidth = 2.dp.toPx(), cap = StrokeCap.Round)
-                                }
-                            }
-                        }
-                        Spacer(Modifier.height(4.dp))
-                        Text(
-                            if (speedGraphExpanded) "TAP TO COLLAPSE" else "TAP TO EXPAND GRAPH",
-                            fontSize = 9.sp, color = JupiterColors.OnSurfaceVariant,
-                        )
+                        // Static mini preview. Samples are persisted by
+                        // RideStore, so the sparkline survives a disconnect;
+                        // the full chart lives in LiveGraphScreen.
+                        LiveSparkline(Modifier.fillMaxWidth().height(38.dp),
+                            telemetry.connected)
                     }
                 }
                 Box(Modifier.height(161.dp).clip(RoundedCornerShape(34.dp)).background(JupiterColors.Low)) {
@@ -592,6 +580,135 @@ fun HomeScreenV2(
         Spacer(Modifier.height(10.dp))
         CarbonCard()
         Spacer(Modifier.height(10.dp))
+    }
+}
+
+/** Small always-on graph preview shown inside the Home LIVE SPEED card. */
+@Composable
+private fun LiveSparkline(modifier: Modifier, connected: Boolean) {
+    val liveSpeeds by RideStore.liveSpeeds.collectAsState()
+    val liveThrottles by RideStore.liveThrottles.collectAsState()
+    val rides by RideStore.rides.collectAsState()
+    val recent = rides.firstOrNull()
+    val speeds = if (liveSpeeds.isNotEmpty()) liveSpeeds
+        else if (!connected) recent?.speedSamples.orEmpty() else emptyList()
+    val throttles = if (liveThrottles.isNotEmpty()) liveThrottles
+        else if (!connected) recent?.throttleSamples.orEmpty() else emptyList()
+    Canvas(modifier) {
+        if (speeds.size > 1) {
+            val max = (speeds.maxOrNull() ?: 1).coerceAtLeast(1)
+            val step = size.width / (speeds.size - 1)
+            for (i in 0 until speeds.size - 1) {
+                drawLine(JupiterColors.Red,
+                    Offset(i * step, size.height - speeds[i].toFloat() / max * size.height),
+                    Offset((i + 1) * step, size.height - speeds[i + 1].toFloat() / max * size.height),
+                    strokeWidth = 3.dp.toPx(), cap = StrokeCap.Round)
+            }
+        }
+        if (throttles.size > 1) {
+            val step = size.width / (throttles.size - 1)
+            for (i in 0 until throttles.size - 1) {
+                drawLine(JupiterColors.Accent.copy(alpha = 0.5f),
+                    Offset(i * step, size.height - throttles[i].toFloat() / 100f * size.height),
+                    Offset((i + 1) * step, size.height - throttles[i + 1].toFloat() / 100f * size.height),
+                    strokeWidth = 2.dp.toPx(), cap = StrokeCap.Round)
+            }
+        }
+    }
+}
+
+/** Full-screen speed/throttle charts, opened by tapping the LIVE SPEED card. */
+@Composable
+fun LiveGraphScreen(
+    telemetry: Telemetry,
+    onBack: () -> Unit,
+) {
+    val liveSpeeds by RideStore.liveSpeeds.collectAsState()
+    val liveThrottles by RideStore.liveThrottles.collectAsState()
+    val rides by RideStore.rides.collectAsState()
+    val recent = rides.firstOrNull()
+    val speeds = if (liveSpeeds.isNotEmpty()) liveSpeeds
+        else if (!telemetry.connected) recent?.speedSamples.orEmpty() else emptyList()
+    val throttles = if (liveThrottles.isNotEmpty()) liveThrottles
+        else if (!telemetry.connected) recent?.throttleSamples.orEmpty() else emptyList()
+    val rideTop by RideStore.liveTopSpeed.collectAsState()
+    val allTimeTop by RideStore.allTimeTopSpeed.collectAsState()
+
+    Box(Modifier.fillMaxSize().background(JupiterColors.Surface)) {
+        Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState())) {
+            Spacer(Modifier.windowInsetsTopHeight(WindowInsets.statusBars))
+            Row(
+                Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 10.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                IconButton(onClick = onBack) {
+                    Icon(Icons.AutoMirrored.Rounded.ArrowBack, "Back",
+                        tint = JupiterColors.OnSurface)
+                }
+                Column(Modifier.weight(1f), horizontalAlignment = Alignment.CenterHorizontally) {
+                    Label("SPEED & THROTTLE")
+                    Text("Live graph", fontSize = 26.sp, fontWeight = FontWeight.Medium,
+                        color = JupiterColors.OnSurface)
+                }
+                Spacer(Modifier.size(48.dp))
+            }
+            Column(Modifier.padding(horizontal = 16.dp)) {
+                RedCard(bar = true) {
+                    Label("CURRENT SPEED")
+                    Spacer(Modifier.height(8.dp))
+                    BigValue(
+                        if (telemetry.connected && telemetry.speedKmh > 0) "${telemetry.speedKmh}"
+                        else "--", "km/h", 44)
+                    Spacer(Modifier.height(8.dp))
+                    Text("Ride top $rideTop km/h · All-time best $allTimeTop km/h",
+                        fontSize = 12.sp, color = JupiterColors.OnSurfaceVariant)
+                }
+                Spacer(Modifier.height(10.dp))
+                LineGraphCard("SPEED · KM/H", speeds, 120, JupiterColors.Red, 190)
+                Spacer(Modifier.height(10.dp))
+                LineGraphCard("THROTTLE · %", throttles, 100, JupiterColors.Accent, 150)
+                Spacer(Modifier.height(110.dp))
+            }
+        }
+    }
+}
+
+@Composable
+private fun LineGraphCard(
+    title: String,
+    samples: List<Int>,
+    ceiling: Int,
+    color: Color,
+    height: Int,
+) {
+    RedCard(bar = true) {
+        Label(title)
+        Spacer(Modifier.height(10.dp))
+        Canvas(Modifier.fillMaxWidth().height(height.dp)) {
+            for (i in 1..3) {
+                val y = size.height * i / 4f
+                drawLine(JupiterColors.High.copy(alpha = 0.4f),
+                    Offset(0f, y), Offset(size.width, y), strokeWidth = 1.dp.toPx())
+            }
+            if (samples.size > 1) {
+                val max = (samples.maxOrNull() ?: 1).coerceAtLeast(1).coerceAtMost(ceiling).toFloat()
+                val step = size.width / (samples.size - 1)
+                for (i in 0 until samples.size - 1) {
+                    val y0 = size.height - samples[i].coerceAtMost(ceiling) / max * size.height
+                    val y1 = size.height - samples[i + 1].coerceAtMost(ceiling) / max * size.height
+                    drawLine(color, Offset(i * step, y0), Offset((i + 1) * step, y1),
+                        strokeWidth = 3.dp.toPx(), cap = StrokeCap.Round)
+                }
+            } else {
+                // A quiet baseline instead of an empty card when no ride yet.
+                drawLine(color.copy(alpha = 0.35f),
+                    Offset(0f, size.height * 0.85f), Offset(size.width, size.height * 0.85f),
+                    strokeWidth = 2.dp.toPx(), cap = StrokeCap.Round)
+            }
+        }
+        Spacer(Modifier.height(8.dp))
+        Text("${samples.size} samples · latest ${samples.lastOrNull() ?: 0}",
+            fontSize = 11.sp, color = JupiterColors.OnSurfaceVariant)
     }
 }
 
@@ -838,22 +955,33 @@ fun RidesScreenV2(
                 }
             }
             val maxKm = months.maxOf { it.second }.coerceAtLeast(0.1)
+            val selected = selectedBar?.let { months.getOrNull(it) }
+            // One fixed readout instead of a value under each bar: it cannot
+            // be clipped by tall bars or large system fonts (July/August).
+            Text(
+                selected?.let { "${it.first} · %.0f km".format(it.second) }
+                    ?: "Tap a bar to see km",
+                fontSize = 12.sp, color = JupiterColors.Accent,
+                modifier = Modifier.fillMaxWidth(), textAlign = TextAlign.Center,
+            )
+            Spacer(Modifier.height(8.dp))
             Row(Modifier.fillMaxWidth().height(90.dp), Arrangement.SpaceEvenly,
                 verticalAlignment = Alignment.Bottom) {
                 months.forEachIndexed { i, (label, km) ->
-                    val selected = selectedBar == i
+                    val isSelected = selectedBar == i
                     Column(horizontalAlignment = Alignment.CenterHorizontally,
                         modifier = Modifier.clickable {
-                            selectedBar = if (selected) null else i
+                            selectedBar = if (isSelected) null else i
                         }) {
                         Box(Modifier.width(18.dp)
                             .height((maxOf(2.0, km / maxKm * 80.0)).dp)
                             .clip(RoundedCornerShape(4.dp))
-                            .background(if (km > 0) JupiterColors.Red else JupiterColors.High))
+                            .background(
+                                if (isSelected) JupiterColors.Accent
+                                else if (km > 0) JupiterColors.Red else JupiterColors.High))
                         Spacer(Modifier.height(4.dp))
-                        Text(if (selected) "%.0f km".format(km) else label,
-                            fontSize = 9.sp,
-                            color = if (selected) JupiterColors.Accent
+                        Text(label, fontSize = 9.sp,
+                            color = if (isSelected) JupiterColors.Accent
                             else JupiterColors.OnSurfaceVariant,
                             maxLines = 1, softWrap = false)
                     }
@@ -871,7 +999,7 @@ fun RidesScreenV2(
                     Spacer(Modifier.width(12.dp))
                     Column(Modifier.weight(1f)) {
                         Text(r.dateLabel, fontSize = 15.sp, color = JupiterColors.OnSurface)
-                        Text(if (r.distanceKm > 0.3) "Morning ride" else "Short ride",
+                        Text(r.rideKind,
                             fontSize = 12.sp, color = JupiterColors.OnSurfaceVariant)
                     }
                     Text("%.1f km".format(r.distanceKm), fontSize = 18.sp,
@@ -964,9 +1092,14 @@ fun FindScreenV2(
             Text(parked?.coordinates ?: "--, --", fontSize = 20.sp,
                 fontWeight = FontWeight.Medium, color = JupiterColors.OnSurface)
             Text(if (parked == null) "No location saved yet"
-                else "Saved ${parked!!.timeLabel}", fontSize = 13.sp,
-                color = JupiterColors.OnSurfaceVariant)
-            Spacer(Modifier.height(14.dp))
+                else "Saved ${parked!!.timeLabel}" +
+                    if (parked!!.approximate) " · approximate fix" else "",
+                fontSize = 13.sp, color = JupiterColors.OnSurfaceVariant)
+            Spacer(Modifier.height(10.dp))
+            SecondaryButton("Refresh location",
+                { ClusterRepository.refreshParkedLocation() },
+                Modifier.fillMaxWidth())
+            Spacer(Modifier.height(10.dp))
             PrimaryButton("Navigate to scooter", {
                 val p = parked ?: return@PrimaryButton
                 val dest = "${p.lat},${p.lng}"

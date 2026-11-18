@@ -291,6 +291,36 @@ class ProtocolTest {
     }
 
     @Test
+    fun no_engine_data_never_claims_ready_with_zero_temps() {
+        val tracker = ColdStartTracker { 1_000_000L }
+        val zeros = Telemetry(rpm = 1200, speedKmh = 0, intakeTempC = 0, engineTempC = 0)
+        val state = tracker.update(zeros)
+        assertFalse(state.hasEngineData)
+        assertEquals("No engine data", state.message)
+        assertEquals(0, state.targetC)
+
+        val off = tracker.update(zeros.copy(rpm = 0))
+        assertFalse(off.hasEngineData)
+        assertEquals("Engine off", off.message)
+    }
+
+    @Test
+    fun ride_kind_uses_the_ride_start_hour() {
+        fun at(hour: Int, minute: Int): Long = java.util.Calendar.getInstance().apply {
+            set(2026, java.util.Calendar.NOVEMBER, 18, hour, minute, 0)
+            set(java.util.Calendar.MILLISECOND, 0)
+        }.timeInMillis
+        fun ride(startedAt: Long) = Ride(
+            startedAt = startedAt, endedAt = startedAt + 1_800_000L,
+            distanceKm = 4.1, avgSpeedKmh = 24.0, topSpeedKmh = 58, durationMin = 30,
+        )
+        assertEquals("Morning ride", ride(at(8, 52)).rideKind)
+        assertEquals("Evening ride", ride(at(16, 49)).rideKind)
+        assertEquals("Night ride", ride(at(23, 15)).rideKind)
+        assertEquals("Short ride", ride(at(16, 49)).copy(distanceKm = 0.1).rideKind)
+    }
+
+    @Test
     fun warm_start_skips_to_ready() {
         var now = 1_000_000L
         val tracker = ColdStartTracker { now }

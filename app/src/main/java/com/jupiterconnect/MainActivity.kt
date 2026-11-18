@@ -57,6 +57,7 @@ import com.jupiterconnect.transport.ClusterService
 import com.jupiterconnect.ui.FindScreenV2
 import com.jupiterconnect.ui.MoreScreenV2
 import com.jupiterconnect.ui.HomeScreenV2
+import com.jupiterconnect.ui.LiveGraphScreen
 import com.jupiterconnect.ui.PermissionStatus
 import com.jupiterconnect.ui.RideScreenV2
 import com.jupiterconnect.ui.RidesScreenV2
@@ -261,6 +262,9 @@ fun JupiterApp() {
 
     var selected by remember { mutableIntStateOf(0) }
     val selectTab = { i: Int -> selected = i }
+    // The LIVE SPEED card opens a dedicated full-screen chart instead of
+    // expanding inside the card.
+    var showLiveGraph by remember { mutableStateOf(false) }
 
     // "Find my cluster" opens the devices list. Check the adapter first so an
     // off phone is told why scanning would not work, but still show the list -
@@ -271,11 +275,18 @@ fun JupiterApp() {
     }
 
     Box(Modifier.fillMaxSize()) {
+        if (showLiveGraph) {
+            LiveGraphScreen(
+                telemetry = telemetry,
+                onBack = { showLiveGraph = false },
+            )
+        } else {
         when (selected) {
             0 -> HomeScreenV2(
                 telemetry = telemetry,
                 lastReading = lastReading,
                 onFindCluster = { findCluster(3) },
+                onOpenLiveGraph = { showLiveGraph = true },
                 activeTab = 0,
                 onTab = selectTab,
                 onSettings = { selected = 4 },
@@ -331,6 +342,7 @@ fun JupiterApp() {
                 onSignOut = { com.jupiterconnect.sync.SupabaseClient.signOut() },
                 onTab = selectTab,
             )
+        }
         }
     }
 }

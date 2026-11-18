@@ -109,6 +109,8 @@ object ClusterRepository {
     fun scan() = service?.startScan()
     fun connect(address: String) = service?.connectTo(address)
     fun disconnect() = service?.disconnectNow()
+    /** Manually re-capture the parking spot (Find tab). */
+    fun refreshParkedLocation() = service?.refreshParkedLocation()
     /** Caller/message mirroring is independent of turn-by-turn mirroring. */
     val phoneMirroring = MutableStateFlow(true)
 
@@ -151,6 +153,11 @@ class ClusterService : Service() {
     private var keepaliveJob: Job? = null
     private var navJob: Job? = null
     private var syncJob: Job? = null
+    private var reconnectJob: Job? = null
+    private var reconnectAttempts = 0
+    private var writeFailures = 0
+    /** Set by an explicit disconnect so the auto-retry never fights the user. */
+    @Volatile private var manualDisconnect = false
     private var disconnectedAtMs = 0L
     private var clearNotification: Runnable? = null
     private var speedAlertActive = false
@@ -296,9 +303,20 @@ class ClusterService : Service() {
         Log.d(TAG, "seen: $name [$address] rssi=${result.rssi} cluster=$isCluster")
     }
 
+    /** User/service initiated connect: clear any retry backoff first. */
     fun connectTo(address: String) {
         if (!hasBluetoothPermission()) return
         lastAddress = address
+        manualDisconnect = false
+        reconnectJob?.cancel()
+        reconnectJob = null
+        reconnectAttempts = 0
+        attemptConnect(address)
+    }
+
+    /** Low-level connect used by both user taps and the retry loop. */
+    private fun attemptConnect(address: String) {
+        if (!hasBluetoothPermission()) return
         scanCallback?.let { cb -> runCatching { adapter?.bluetoothLeScanner?.stopScan(cb) } }
         ClusterRepository.scanning.value = false
         if (gatt != null) {
@@ -319,6 +337,43 @@ class ClusterService : Service() {
         }
         Log.i(TAG, "connectGatt -> $address")
         gatt = device.connectGatt(this, false, gattCallback, BluetoothDevice.TRANSPORT_LE)
+    }
+
+    /**
+     * Retry a lost link with capped exponential backoff. A failed attempt
+     * (status 147) and a real drop (status 8) both land here, but a manual
+     * disconnect or Bluetooth-off never does - no endless retry loop.
+     */
+    private fun scheduleReconnect() {
+        val address = lastAddress ?: return
+        if (manualDisconnect || reconnectJob?.isActive == true) return
+        val adapter = adapter
+        if (adapter == null || !adapter.isEnabled) {
+            ClusterRepository.telemetry.value = ClusterRepository.telemetry.value.copy(
+                error = "Bluetooth is off - turn it on to reconnect")
+            return
+        }
+        val idx = reconnectAttempts.coerceIn(0, RECONNECT_DELAYS.lastIndex)
+        val delayMs = RECONNECT_DELAYS[idx]
+        reconnectAttempts++
+        FrameLog.note("RECONNECT in ${delayMs / 1000}s (attempt $reconnectAttempts)")
+        reconnectJob = scope.launch {
+            delay(delayMs)
+            reconnectJob = null
+            if (manualDisconnect || gatt != null) return@launch
+            if (adapter?.isEnabled != true) return@launch
+            attemptConnect(address)
+        }
+    }
+
+    /** Honest wording: status 147 is a failed attempt, not a lost connection. */
+    private fun describeLinkError(status: Int, wasEstablished: Boolean): String? = when {
+        status == 0 -> "Disconnected - searching"
+        !wasEstablished && status == GATT_CONNECTION_TIMEOUT ->
+            "Out of range - searching for cluster"
+        status == GATT_CONN_TIMEOUT -> "Link lost - reconnecting"
+        status == GATT_CONN_TERMINATE_PEER_USER -> "Cluster switched off - searching"
+        else -> "Link lost (status $status) - reconnecting"
     }
 
     /** Active only while the cluster is linked, like TVS Connect. */
@@ -395,8 +450,8 @@ class ClusterService : Service() {
      * real connect/disconnect cycle.
      */
     @SuppressLint("MissingPermission")
-    private fun saveParkedLocation() {
-        if (!connectionEstablished) return
+    private fun saveParkedLocation(force: Boolean = false) {
+        if (!force && !connectionEstablished) return
         connectionEstablished = false
         val epoch = ++parkingEpoch
         val locationAllowed =
@@ -404,39 +459,86 @@ class ClusterService : Service() {
                 PackageManager.PERMISSION_GRANTED ||
                 ContextCompat.checkSelfPermission(this, android.Manifest.permission.ACCESS_COARSE_LOCATION) ==
                 PackageManager.PERMISSION_GRANTED
-        if (!locationAllowed) return
+        if (!locationAllowed) {
+            FrameLog.note("PARKED skipped: no location permission")
+            return
+        }
         val manager = getSystemService(Context.LOCATION_SERVICE) as? LocationManager ?: return
         val providers = listOf(LocationManager.GPS_PROVIDER, LocationManager.NETWORK_PROVIDER)
             .filter { runCatching { manager.isProviderEnabled(it) }.getOrDefault(false) }
-        if (providers.isEmpty()) return
+        if (providers.isEmpty()) {
+            FrameLog.note("PARKED skipped: no location provider enabled")
+            return
+        }
 
         val fallback = providers
             .mapNotNull { runCatching { manager.getLastKnownLocation(it) }.getOrNull() }
             .maxByOrNull { it.time }
         val savedAt = System.currentTimeMillis()
         var saved = false
-        val timeout = Runnable {
-            if (saved || epoch != parkingEpoch) return@Runnable
-            saved = true
-            fallback?.let { RideStore.saveParkedLocation(it.latitude, it.longitude, savedAt) }
+        lateinit var timeout: Runnable
+        lateinit var listenerRef: LocationListener
+        fun stopUpdates() {
+            providers.forEach { p -> runCatching { manager.removeUpdates(listenerRef) } }
         }
-        val listener = object : LocationListener {
+        // Local holder so the timeout can clear the same listener instance.
+        listenerRef = object : LocationListener {
             override fun onLocationChanged(location: Location) {
                 if (saved || epoch != parkingEpoch) return
                 saved = true
                 main.removeCallbacks(timeout)
-                providers.forEach { runCatching { manager.removeUpdates(this) } }
-                RideStore.saveParkedLocation(location.latitude, location.longitude, savedAt)
+                stopUpdates()
+                // LocationManager can replay a cached fix immediately; only
+                // call it fresh when it was obtained at disconnect time.
+                val isFresh = savedAt - location.time < 60_000L
+                RideStore.saveParkedLocation(location.latitude, location.longitude, savedAt,
+                    approximate = !isFresh)
+                FrameLog.note("PARKED ${if (isFresh) "fresh" else "replayed"} " +
+                    "${"%.5f,%.5f".format(location.latitude, location.longitude)}")
             }
             override fun onStatusChanged(provider: String?, status: Int,
                                          extras: android.os.Bundle?) {}
             override fun onProviderEnabled(provider: String) {}
             override fun onProviderDisabled(provider: String) {}
         }
-        providers.forEach { provider: String ->
-            runCatching<Unit> { manager.requestSingleUpdate(provider, listener, Looper.getMainLooper()) }
+        timeout = Runnable {
+            if (saved || epoch != parkingEpoch) return@Runnable
+            saved = true
+            stopUpdates()
+            val f = fallback
+            if (f != null) {
+                // A cached fix is better than leaving last ride's spot on screen.
+                RideStore.saveParkedLocation(f.latitude, f.longitude, savedAt,
+                    approximate = true)
+                FrameLog.note("PARKED cached ${"%.5f,%.5f".format(f.latitude, f.longitude)}")
+            } else {
+                FrameLog.note("PARKED no fresh fix and no cached fix available")
+            }
         }
-        main.postDelayed(timeout, 2500L)
+        // requestLocationUpdates is more reliable than requestSingleUpdate on
+        // OEM stacks that silently drop one-shot requests. First fix wins.
+        providers.forEach { p ->
+            runCatching<Unit> {
+                manager.requestLocationUpdates(p, 1_000L, 0f, listenerRef, Looper.getMainLooper())
+            }
+        }
+        main.postDelayed(timeout, 5_000L)
+    }
+
+    /** Find-tab button: re-capture the spot with the user explicitly present. */
+    fun refreshParkedLocation() {
+        val allowed =
+            ContextCompat.checkSelfPermission(this, android.Manifest.permission.ACCESS_FINE_LOCATION) ==
+                PackageManager.PERMISSION_GRANTED ||
+                ContextCompat.checkSelfPermission(this, android.Manifest.permission.ACCESS_COARSE_LOCATION) ==
+                PackageManager.PERMISSION_GRANTED
+        if (!allowed) {
+            ClusterRepository.telemetry.value = ClusterRepository.telemetry.value.copy(
+                error = "Location permission needed to save the parking spot")
+            return
+        }
+        saveParkedLocation(force = true)
+        ClusterRepository.telemetry.value = ClusterRepository.telemetry.value.copy(error = null)
     }
 
     /** Write a short text reply to the cluster's navigation text row (0x5B 0x4F). */
@@ -474,7 +576,16 @@ class ClusterService : Service() {
     }
 
     fun disconnectNow() {
-        saveParkedLocation()
+        // Stop the retry loop first: an explicit disconnect must stay off.
+        manualDisconnect = true
+        reconnectJob?.cancel()
+        reconnectJob = null
+        reconnectAttempts = 0
+        // Only a connected bike has a parking spot to save (onDestroy also
+        // calls this, with no link at all).
+        if (connectionEstablished || gatt != null) saveParkedLocation(force = true)
+        // A manual disconnect after a ride must still finalise that ride.
+        RideStore.onDisconnected()
         keepaliveJob?.cancel()
         keepaliveJob = null
         navJob?.cancel()
@@ -504,6 +615,15 @@ class ClusterService : Service() {
                 BluetoothProfile.STATE_CONNECTED -> {
                     Log.i(TAG, "GATT connected, status=$status - requesting MTU")
                     FrameLog.note("GATT connected status=$status")
+                    reconnectJob?.cancel()
+                    reconnectJob = null
+                    reconnectAttempts = 0
+                    manualDisconnect = false
+                    // Low latency while riding; Android restores the default
+                    // connection parameters when this GATT is closed.
+                    runCatching {
+                        g.requestConnectionPriority(BluetoothGatt.CONNECTION_PRIORITY_HIGH)
+                    }
                     voiceBridge.reset()
                     connectionEstablished = true
                     parkingEpoch++
@@ -523,27 +643,37 @@ class ClusterService : Service() {
                 BluetoothProfile.STATE_DISCONNECTED -> {
                     Log.w(TAG, "GATT disconnected, status=$status")
                     FrameLog.note("GATT disconnected status=$status")
-                    saveParkedLocation()
-                    RideStore.onDisconnected()
-                    // Show the accumulated carbon saving on the cluster.
-                    scope.launch { write(buildCarbonFrame(RideStore.carbonSavedKg.toInt())) }
-                    // No telemetry means no engine data - make that explicit.
-                    ClusterRepository.warmup.value = WarmupState(message = "Engine off")
-                    // Keep syncing for two minutes after the link drops.
-                    disconnectedAtMs = System.currentTimeMillis()
-                    // Clear the foreground notification only after a long
-                    // disconnect, so a brief drop does not lose the link UI.
-                    clearNotification?.let { main.removeCallbacks(it) }
-                    clearNotification = Runnable {
-                        runCatching {
-                            getSystemService(NotificationManager::class.java)?.cancel(1)
-                        }
-                        clearNotification = null
-                    }.also { main.postDelayed(it, 5 * 60_000L) }
+                    val wasEstablished = connectionEstablished
+                    connectionEstablished = false
+                    if (wasEstablished) {
+                        // Only a real connect -> disconnect cycle closes a ride
+                        // or moves the parking spot. Status 147 means the
+                        // connection never happened, so neither may change.
+                        saveParkedLocation(force = true)
+                        RideStore.onDisconnected()
+                        // Show the accumulated carbon saving on the cluster.
+                        scope.launch { write(buildCarbonFrame(RideStore.carbonSavedKg.toInt())) }
+                        // No telemetry means no engine data - make that explicit.
+                        ClusterRepository.warmup.value = WarmupState(message = "Engine off")
+                        // Keep syncing for two minutes after the link drops.
+                        disconnectedAtMs = System.currentTimeMillis()
+                    }
+                    if (!manualDisconnect) {
+                        // Clear the foreground notification only after a long
+                        // disconnect, so a brief drop does not lose the link UI.
+                        clearNotification?.let { main.removeCallbacks(it) }
+                        clearNotification = Runnable {
+                            runCatching {
+                                getSystemService(NotificationManager::class.java)?.cancel(1)
+                            }
+                            clearNotification = null
+                        }.also { main.postDelayed(it, 5 * 60_000L) }
+                    }
                     startRideSync()
                     ClusterRepository.telemetry.value = ClusterRepository.telemetry.value.copy(
                         connected = false,
-                        error = if (status != 0) "Link lost (status $status)" else null,
+                        error = if (manualDisconnect) null
+                            else describeLinkError(status, wasEstablished),
                     )
                     updateNotification()
                     writeChar = null
@@ -554,12 +684,7 @@ class ClusterService : Service() {
                     navJob = null
                     if (g === gatt) gatt = null
                     runCatching { g.close() }
-                    lastAddress?.let { addr ->
-                        scope.launch {
-                            delay(5000)
-                            if (gatt == null) connectTo(addr)
-                        }
-                    }
+                    if (!manualDisconnect) scheduleReconnect()
                 }
             }
         }
@@ -781,6 +906,13 @@ class ClusterService : Service() {
             }
         } catch (e: SecurityException) {
             ClusterRepository.telemetry.value = ClusterRepository.telemetry.value.copy(error = e.message)
+        } catch (e: Exception) {
+            // A no-response write can fail transiently while the link is being
+            // torn down. Log a pattern instead of crashing the keepalive loop.
+            writeFailures++
+            if (writeFailures % 5 == 0) {
+                FrameLog.note("TX failures=$writeFailures (${e.message})")
+            }
         }
     }
 
@@ -797,11 +929,13 @@ class ClusterService : Service() {
             android.app.PendingIntent.FLAG_IMMUTABLE or android.app.PendingIntent.FLAG_UPDATE_CURRENT,
         )
         val t = ClusterRepository.telemetry.value
+        val err = t.error
         val (title, text) = if (t.connected) {
             "Jupiter Connect" to if (t.address.isNotBlank())
                 "Connected · ${t.address}" else "Connected to cluster"
         } else {
-            "Jupiter Connect" to "Disconnected · waiting for cluster"
+            "Jupiter Connect" to if (!err.isNullOrBlank()) err
+            else "Disconnected · waiting for cluster"
         }
         return NotificationCompat.Builder(this, "cluster")
             .setSmallIcon(R.drawable.ic_stat_link)
@@ -815,7 +949,7 @@ class ClusterService : Service() {
     /** Re-post the notification so its title/text follow the link state. */
     private fun updateNotification() {
         val t = ClusterRepository.telemetry.value
-        val key = "${t.connected}|${t.address}"
+        val key = "${t.connected}|${t.address}|${t.error}"
         // Only post when the state actually changes - never spam the shade.
         if (key == lastNotificationKey) return
         lastNotificationKey = key
@@ -839,6 +973,13 @@ class ClusterService : Service() {
 
         private const val TAG = "JupiterBle"
         private const val SCAN_TIMEOUT_MS = 20_000L
+        // HCI supervision timeout: an established link really dropped.
+        private const val GATT_CONN_TIMEOUT = 8
+        // Android 15+: a direct connect attempt timed out (never connected).
+        private const val GATT_CONNECTION_TIMEOUT = 147
+        private const val GATT_CONN_TERMINATE_PEER_USER = 19
+        /** Backoff for auto-reconnect: 5s, 10s, 20s, then 30s between tries. */
+        private val RECONNECT_DELAYS = longArrayOf(5_000L, 10_000L, 20_000L, 30_000L)
         /** Matches `TVS BT...` and `TVSBT...` - the advertised name is inferred
          * from community pairing reports, so both spellings are accepted. */
         private val CLUSTER_NAME_RE = Regex("""\bTVS\s*BT""", RegexOption.IGNORE_CASE)

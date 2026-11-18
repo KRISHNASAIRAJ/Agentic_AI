@@ -14,6 +14,8 @@ data class WarmupState(
     val ambientC: Int = 0,
     val slopeCPerMin: Double = 0.0,
     val message: String = "Engine off",
+    /** False while the cluster sends no temperature data (all readings 0). */
+    val hasEngineData: Boolean = false,
 )
 
 /**
@@ -44,7 +46,18 @@ class ColdStartTracker(
 
     fun update(t: Telemetry): WarmupState {
         val now = nowMs()
-        if (t.rpm < RUN_RPM && t.speedKmh < 1) return snapshot(t, engineOn = false)
+        val engineOn = t.rpm >= RUN_RPM || t.speedKmh >= 1
+        // The cluster reports every temperature as 0 until it has sent a real
+        // engine frame. Starting a session from those zeros produced
+        // "Warm start, ready · target 0°C start 0°C ambient 0°C", which is
+        // misleading. Wait for real readings before claiming a phase.
+        if (t.engineTempC <= 0 || t.intakeTempC <= 0) {
+            return WarmupState(
+                message = if (engineOn) "No engine data" else "Engine off",
+                hasEngineData = false,
+            )
+        }
+        if (!engineOn) return snapshot(t, engineOn = false)
 
         val gap = if (lastRunMs == 0L) null else now - lastRunMs
         if (gap == null || gap > SESSION_GAP_MS) startSession(t, now, gap)
@@ -118,6 +131,7 @@ class ColdStartTracker(
             startTemp = startTemp, ambientC = ambient,
             slopeCPerMin = if (lastSlope == Double.MAX_VALUE) 0.0 else lastSlope,
             message = msg,
+            hasEngineData = true,
         )
     }
 
