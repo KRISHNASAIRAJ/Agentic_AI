@@ -401,8 +401,13 @@ object RideStore {
             }
             if (primary) {
                 val now = System.currentTimeMillis()
-                // One sample every 2 s for the per-ride throttle/speed graph.
-                if (now - lastSampleAtMs >= 2_000L) {
+                // Adaptive sampling: 2 s while cruising, but 0.5 s while the
+                // speed is changing quickly so launches and braking show up
+                // in the eco score and the Speed/Throttle graphs.
+                val previousSpeed = rideSpeeds.lastOrNull() ?: t.speedKmh
+                val changingFast = kotlin.math.abs(t.speedKmh - previousSpeed) >= 5
+                val sampleInterval = if (changingFast) 500L else 2_000L
+                if (now - lastSampleAtMs >= sampleInterval) {
                     rideSpeeds += t.speedKmh
                     rideThrottles += t.throttlePosition
                     lastSampleAtMs = now
