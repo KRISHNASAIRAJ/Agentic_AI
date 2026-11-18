@@ -58,6 +58,9 @@ class BackgroundVoiceListener(private val context: Context) {
             return
         }
         active = true
+        // Android 14+ blocks background mic capture unless the foreground
+        // service declares the microphone type. Add it only for this listen.
+        ClusterRepository.service?.useMicrophoneForeground()
         FrameLog.note("VOICE bg listening from service (no screen)")
         if (tts == null) {
             tts = TextToSpeech(context) { result ->
@@ -120,6 +123,7 @@ class BackgroundVoiceListener(private val context: Context) {
             recognizer?.destroy()
             recognizer = null
             active = false
+            ClusterRepository.service?.releaseMicrophoneForeground()
         }
     }
 

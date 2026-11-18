@@ -120,8 +120,10 @@ fun JupiterApp() {
         add(Manifest.permission.ACCESS_COARSE_LOCATION)
         if (Build.VERSION.SDK_INT >= 33) add(Manifest.permission.POST_NOTIFICATIONS)
         // Contact names for callers/message senders on the cluster; denial just
-        // falls back to showing the raw number.
+        // falls back to showing the raw number. Mic is needed so the bike's
+        // voice button can listen from the service while the app is closed.
         add(Manifest.permission.READ_CONTACTS)
+        add(Manifest.permission.RECORD_AUDIO)
     }.toTypedArray()
 
     fun isGranted(p: String) =

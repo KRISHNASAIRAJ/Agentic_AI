@@ -21,6 +21,7 @@ import android.annotation.SuppressLint
 import android.os.BatteryManager
 import android.telephony.TelephonyManager
 import android.content.pm.PackageManager
+import android.content.pm.ServiceInfo
 import android.location.Location
 import android.location.LocationListener
 import android.location.LocationManager
@@ -30,6 +31,7 @@ import android.os.IBinder
 import android.os.Looper
 import android.util.Log
 import androidx.core.app.NotificationCompat
+import androidx.core.app.ServiceCompat
 import androidx.core.content.ContextCompat
 import com.jupiterconnect.R
 import com.jupiterconnect.debug.FrameLog
@@ -177,7 +179,10 @@ class ClusterService : Service() {
         coldStartTracker.setLastRunMs(RideStore.warmupLastRunMs)
         createChannel()
         ClusterRepository.service = this
-        startForeground(1, buildNotification())
+        // Start with the connected-device type only: microphone permission may
+        // not be granted yet at boot. The mic type is added only while listening.
+        ServiceCompat.startForeground(
+            this, 1, buildNotification(), ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE)
         // Keep rides, fuel logs and app state synced even with no bike linked.
         startRideSync()
     }
@@ -575,6 +580,23 @@ class ClusterService : Service() {
     /** Manual trigger so the voice flow can be tested without the bike. */
     fun simulateVoiceTrigger() {
         voiceBridge.simulate()
+    }
+
+    /** Add the microphone FGS type only while actually listening (Android 14+). */
+    fun useMicrophoneForeground() = setForegroundTypes(
+        ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE or
+            ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE)
+
+    fun releaseMicrophoneForeground() = setForegroundTypes(
+        ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE)
+
+    private fun setForegroundTypes(types: Int) {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.UPSIDE_DOWN_CAKE) return
+        if (ContextCompat.checkSelfPermission(this, android.Manifest.permission.RECORD_AUDIO) !=
+            PackageManager.PERMISSION_GRANTED) return
+        runCatching {
+            ServiceCompat.startForeground(this, 1, buildNotification(), types)
+        }.onFailure { FrameLog.note("VOICE foreground type update failed: ${it.message}") }
     }
 
     fun disconnectNow() {
