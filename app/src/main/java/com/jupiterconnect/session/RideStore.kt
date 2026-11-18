@@ -218,6 +218,8 @@ object RideStore {
     fun init(context: Context) {
         if (prefs != null) return
         prefs = context.applicationContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+        // Bundled Meridian fuel export powers the Rides monthly history.
+        FuelLogStore.init(context.applicationContext)
         val p = prefs ?: return
         _lastReading.value = LastReading(
             odometerKm = p.getFloat(KEY_LAST_ODO, 0f).toDouble(),

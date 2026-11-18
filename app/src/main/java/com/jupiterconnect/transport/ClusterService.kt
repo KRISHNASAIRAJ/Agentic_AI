@@ -37,6 +37,7 @@ import com.jupiterconnect.protocol.Gatt
 import com.jupiterconnect.protocol.ScannedDevice
 import com.jupiterconnect.protocol.Telemetry
 import com.jupiterconnect.session.ColdStartTracker
+import com.jupiterconnect.session.FuelLogStore
 import com.jupiterconnect.session.WarmupPhase
 import com.jupiterconnect.session.WarmupState
 import com.jupiterconnect.sync.SupabaseClient
@@ -58,6 +59,7 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
+import org.json.JSONObject
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
@@ -167,6 +169,8 @@ class ClusterService : Service() {
         createChannel()
         ClusterRepository.service = this
         startForeground(1, buildNotification())
+        // Keep rides, fuel logs and app state synced even with no bike linked.
+        startRideSync()
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -679,9 +683,9 @@ class ClusterService : Service() {
     }
 
     /**
-     * Upload pending rides while the cluster is connected, then keep trying
-     * for two minutes after disconnect so a flaky link at the end of a ride
-     * does not lose the sync. The loop exits on its own once the grace expires.
+     * Keep every app detail in the cloud: rides (including graphs), all petrol
+     * fills, and the one JSON document of settings and cumulative counters.
+     * Runs at a slow cadence while parked so sign-in without a bike still syncs.
      */
     private fun startRideSync() {
         if (syncJob?.isActive == true) return
@@ -694,15 +698,37 @@ class ClusterService : Service() {
                             RideStore.markSynced(ride.startedAt)
                         }
                     }
+                    SupabaseClient.uploadFuelLogs(FuelLogStore.fills.value, token)
+                    SupabaseClient.uploadAppState(buildAppStateJson(), token)
                 }
-                delay(30_000L)
-                val connected = ClusterRepository.telemetry.value.connected
-                val inGrace = disconnectedAtMs > 0 &&
-                    System.currentTimeMillis() - disconnectedAtMs <= 120_000L
-                if (!connected && !inGrace) break
+                delay(if (ClusterRepository.telemetry.value.connected) 30_000L else 120_000L)
             }
             syncJob = null
         }
+    }
+
+    /** Settings, cumulative counters and last-known readings sent as JSONB. */
+    private fun buildAppStateJson(): JSONObject {
+        val o = JSONObject()
+        o.put("carbon_seconds", RideStore.issSavedSeconds.value)
+        o.put("all_time_top_kmh", RideStore.allTimeTopSpeed.value)
+        val last = RideStore.lastReading.value
+        o.put("odometer_km", last.odometerKm)
+        o.put("fuel_bars", last.fuelBars)
+        o.put("range_km", last.distanceToEmptyKm)
+        o.put("economy_kmpl", last.averageFuelEconomy)
+        o.put("battery_voltage", last.batteryVoltage)
+        o.put("engine_temp_c", last.engineTempC)
+        RideStore.parkedLocation.value?.let { p ->
+            o.put("parked_lat", p.lat)
+            o.put("parked_lng", p.lng)
+            o.put("parked_at_ms", p.atMs)
+        }
+        o.put("navigation_mirroring", ClusterRepository.mirroring.value)
+        o.put("phone_mirroring", ClusterRepository.phoneMirroring.value)
+        o.put("high_speed_alert", ClusterRepository.highSpeedAlert.value)
+        o.put("high_speed_limit", ClusterRepository.highSpeedAlertSpeed.value)
+        return o
     }
 
     /**

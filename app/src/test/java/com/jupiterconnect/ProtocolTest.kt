@@ -253,6 +253,24 @@ class ProtocolTest {
     }
 
     @Test
+    fun fuel_log_months_sum_odometer_distance() {
+        val fills = listOf(
+            com.jupiterconnect.session.FuelFill(1, "2026-05-25", 260.0, 0.0, 2.81, 33037, 0.0, "BPCL"),
+            com.jupiterconnect.session.FuelFill(2, "2026-05-31", 418.0, 158.0, 4.08, 47969, 38.73, "BPCL"),
+            com.jupiterconnect.session.FuelFill(3, "2026-06-03", 586.0, 168.0, 3.32, 38386, 50.6, "HPCL"),
+        )
+        val months = com.jupiterconnect.session.aggregateFuelMonths(fills)
+        assertEquals(2, months.size)
+        // Keys use Calendar.MONTH, so May = 4 and June = 5.
+        assertEquals(202604, months[0].key)
+        assertEquals(158.0, months[0].km, 0.01)
+        assertEquals(6.89, months[0].liters, 0.01)
+        assertEquals(202605, months[1].key)
+        assertEquals(168.0, months[1].km, 0.01)
+        assertEquals(202605, com.jupiterconnect.session.fuelMonthKey("2026-06-30"))
+    }
+
+    @Test
     fun cold_start_tracker_moves_through_phases() {
         var now = 1_000_000L
         val tracker = ColdStartTracker { now }
