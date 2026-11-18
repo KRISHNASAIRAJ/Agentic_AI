@@ -25,6 +25,30 @@ class VoiceAssistantBridge(private val context: Context) {
     private var armed = true
     private var launches = 0
     private val seenValues = mutableSetOf<Int>()
+    private var lastAction = -1
+
+    /**
+     * The cluster reports handlebar switch actions in 0x10 byte 12:
+     * 1 accept call, 2 reject, 3 reject + SMS, 4 = voice assistant.
+     * It is a level held across frames, so act only on a change.
+     */
+    fun onSwitchAction(action: Int) {
+        if (action == VOICE_ACTION && lastAction != VOICE_ACTION) {
+            launches++
+            val note = "VOICE switch action #$launches (0x10 byte12=$action)"
+            FrameLog.note(note)
+            ClusterRepository.voiceDebug.value = note
+            launch()
+        }
+        if (action >= 0 && action != lastAction && action != VOICE_ACTION) {
+            ClusterRepository.voiceDebug.value = "Switch action $action (voice=4)"
+        }
+        lastAction = action
+    }
+
+    private companion object {
+        const val VOICE_ACTION = 4
+    }
 
     /** Call for every decoded telemetry frame. */
     fun onFrame(t: Telemetry) {

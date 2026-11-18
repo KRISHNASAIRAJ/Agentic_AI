@@ -13,7 +13,7 @@ data class WarmupState(
     val startTemp: Int = 0,
     val ambientC: Int = 0,
     val slopeCPerMin: Double = 0.0,
-    val message: String = "",
+    val message: String = "Engine off",
 )
 
 /**
@@ -129,9 +129,10 @@ class ColdStartTracker(
         const val TARGET_ABOVE_AMBIENT = 35
         const val TARGET_MIN = 55
         const val TARGET_MAX = 70
+        // Air-cooled 124.8 cc ETFi: 30 s idle, then ride gently for ~30 s.
         const val STARTING_MS = 30_000L
-        const val MIN_WARM_MS = 90_000L
-        const val MAX_WARM_MS = 8 * 60_000L
+        const val MIN_WARM_MS = 60_000L
+        const val MAX_WARM_MS = 3 * 60_000L
         const val SAMPLE_MS = 15_000L
         const val SLOPE_WINDOW_MS = 2 * 60_000L
         const val PLATEAU_C_PER_MIN = 0.5

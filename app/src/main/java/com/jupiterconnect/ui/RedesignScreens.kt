@@ -26,7 +26,9 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.rounded.AccessTime
 import androidx.compose.material.icons.rounded.BatteryChargingFull
+import androidx.compose.material.icons.rounded.CheckCircle
 import androidx.compose.material.icons.rounded.Bluetooth
 import androidx.compose.material.icons.rounded.BluetoothConnected
 import androidx.compose.material.icons.rounded.Check
@@ -198,7 +200,20 @@ private fun InfoRow(label: String, value: String) {
 private fun ColdStartCardV2() {
     val state by ClusterRepository.warmup.collectAsState()
     val ready = state.phase == WarmupPhase.READY
+    val engineOff = state.message == "Engine off"
     val glow = if (ready) JupiterColors.Red else JupiterColors.Accent
+    val phaseIcon = when {
+        engineOff -> Icons.Rounded.AccessTime
+        state.phase == WarmupPhase.READY -> Icons.Rounded.CheckCircle
+        state.phase == WarmupPhase.STARTING -> Icons.Rounded.AccessTime
+        else -> Icons.Rounded.Speed
+    }
+    val phaseSymbol = when {
+        engineOff -> "ENGINE OFF"
+        state.phase == WarmupPhase.STARTING -> "IDLE 30s"
+        state.phase == WarmupPhase.WARMING -> "RIDE GENTLY"
+        else -> "READY"
+    }
     RedCard(bar = true) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             Box(Modifier.size(92.dp), contentAlignment = Alignment.Center) {
@@ -223,25 +238,35 @@ private fun ColdStartCardV2() {
             Spacer(Modifier.width(16.dp))
             Column(Modifier.weight(1f)) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
+                    IconCircle(phaseIcon, phaseSymbol)
+                    Spacer(Modifier.width(10.dp))
                     Box(
                         Modifier.clip(RoundedCornerShape(999.dp))
                             .background(JupiterColors.RedTint)
                             .padding(horizontal = 10.dp, vertical = 4.dp),
                     ) {
-                        Text(state.phase.name, fontSize = 10.sp,
+                        Text(phaseSymbol, fontSize = 10.sp,
                             color = JupiterColors.Accent, letterSpacing = 1.sp)
                     }
                     Spacer(Modifier.width(8.dp))
-                    Text(if (state.cold) "COLD START" else "WARM START",
+                    Text(if (engineOff) "AIR-COOLED 124.8cc"
+                        else if (state.cold) "COLD START" else "WARM START",
                         fontSize = 10.sp, color = JupiterColors.OnSurfaceVariant,
                         letterSpacing = 1.sp)
                 }
                 Spacer(Modifier.height(8.dp))
-                Text(state.message, fontSize = 15.sp, color = JupiterColors.OnSurface)
+                Text(
+                    if (engineOff) "Engine off · idle 30-60 s on cold start"
+                    else state.message,
+                    fontSize = 15.sp, color = JupiterColors.OnSurface,
+                )
                 Spacer(Modifier.height(4.dp))
-                Text("target ${state.targetC}°C · start ${state.startTemp}°C · " +
-                    "ambient ${state.ambientC}°C", fontSize = 11.sp,
-                    color = JupiterColors.OnSurfaceVariant)
+                Text(
+                    if (engineOff) "No engine data while disconnected"
+                    else "target ${state.targetC}°C · start ${state.startTemp}°C · " +
+                        "ambient ${state.ambientC}°C",
+                    fontSize = 11.sp, color = JupiterColors.OnSurfaceVariant,
+                )
             }
         }
     }
@@ -343,12 +368,12 @@ fun HomeScreenV2(
                         }
                     }
                     Spacer(Modifier.weight(1f))
-                    val coolantV = if (telemetry.engineTempC != 0) "${telemetry.engineTempC}°" else "--"
+                    val engineTempV = if (telemetry.engineTempC != 0) "${telemetry.engineTempC}°" else "--"
                     val batteryV = if (telemetry.batteryVoltage > 0)
                         "%.1f".format(telemetry.batteryVoltage) else "--"
                     val rpmV = if (telemetry.rpm > 0) "${telemetry.rpm}" else "--"
                     Row(Modifier.fillMaxWidth(), Arrangement.SpaceBetween) {
-                        IconStat(Icons.Rounded.WaterDrop, "COOLANT", coolantV)
+                        IconStat(Icons.Rounded.WaterDrop, "ENGINE TEMP", engineTempV)
                         IconStat(Icons.Rounded.BatteryChargingFull, "BATTERY", batteryV)
                         IconStat(Icons.Rounded.Speed, "RPM", rpmV)
                     }
@@ -433,7 +458,7 @@ fun HomeScreenV2(
         Spacer(Modifier.height(10.dp))
         Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
             RedCard(modifier = Modifier.weight(1f)) {
-                Label("COOLANT")
+                Label("ENGINE TEMP")
                 BigValue(if (telemetry.engineTempC != 0) "${telemetry.engineTempC}" else "--", "°C", 36)
             }
             RedCard(modifier = Modifier.weight(1f)) {
@@ -529,7 +554,7 @@ fun RideScreenV2(
             "RANGE" to "${telemetry.distanceToEmptyKm} km",
             "FUEL" to "${telemetry.fuelBars}/6",
             "AVG ECON" to "${telemetry.averageFuelEconomy} km/L",
-            "COOLANT" to "${telemetry.engineTempC} °C",
+            "ENGINE TEMP" to "${telemetry.engineTempC} °C",
         )
         tiles.chunked(3).forEach { row ->
             Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {

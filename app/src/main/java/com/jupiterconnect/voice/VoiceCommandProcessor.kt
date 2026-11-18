@@ -82,7 +82,12 @@ class VoiceCommandProcessor(private val context: Context) {
         // package is what produced "choose an app" with no route started.
         val encoded = URLEncoder.encode(place, "UTF-8")
         val candidates = listOf(
-            Intent(Intent.ACTION_VIEW, Uri.parse("google.navigation:q=$encoded"))
+            // Official Maps URL with travelmode=bicycling - forces bike routing
+            // instead of the phone's saved "car" default.
+            Intent(Intent.ACTION_VIEW, Uri.parse(
+                "https://www.google.com/maps/dir/?api=1&destination=$encoded&travelmode=bicycling"))
+                .setPackage("com.google.android.apps.maps"),
+            Intent(Intent.ACTION_VIEW, Uri.parse("google.navigation:q=$encoded&mode=b"))
                 .setPackage("com.google.android.apps.maps"),
             Intent(Intent.ACTION_VIEW, Uri.parse("mappls://navigate?q=$encoded"))
                 .setPackage("com.mmi.maps"),

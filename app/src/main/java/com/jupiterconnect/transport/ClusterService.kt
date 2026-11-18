@@ -298,6 +298,9 @@ class ClusterService : Service() {
                 "load=${t.engineLoad} intake=${t.intakeTempC}C " +
                 "coolant=${t.engineTempC}C"
         }
+        if ((raw[1].toInt() and 0xFF) == 0x10) {
+            voiceBridge.onSwitchAction(raw[12].toInt() and 0x3F)
+        }
         RideStore.onFrame(t, primary)
         voiceBridge.onFrame(t)
         ClusterRepository.recordSpeed(t.speedKmh)
@@ -409,6 +412,8 @@ class ClusterService : Service() {
                     FrameLog.note("GATT disconnected status=$status")
                     saveParkedLocation()
                     RideStore.onDisconnected()
+                    // No telemetry means no engine data - make that explicit.
+                    ClusterRepository.warmup.value = WarmupState(message = "Engine off")
                     // Keep syncing for two minutes after the link drops.
                     disconnectedAtMs = System.currentTimeMillis()
                     // Clear the foreground notification only after a long

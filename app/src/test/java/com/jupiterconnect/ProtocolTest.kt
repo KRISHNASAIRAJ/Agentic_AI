@@ -66,7 +66,7 @@ class ProtocolTest {
         assertEquals(4, decoded.fuelBars)
         assertEquals(3578, decoded.rpm) // 0x0DFA
         assertEquals(1534.4, decoded.tripMeterKm, 0.01) // 0x003BF0 / 10
-        assertEquals(false, decoded.ignitionOn) // no 0x80 bit set
+        assertEquals(true, decoded.ignitionOn) // 0x80 = vehicle OFF, not on
 
         val engine = "5A 18 00 00 00 00 5F 4B 4B 00 00 7E 00 00 00 00 00 00 00 FF"
             .split(" ").map { it.toInt(16).toByte() }.toByteArray()
@@ -84,7 +84,7 @@ class ProtocolTest {
         fun frame(hex: String) = hex.split(" ").map { it.toInt(16).toByte() }.toByteArray()
 
         val speed = decodeFrame(
-            frame("5A 10 2A 00 D6 C8 04 0C 01 44 12 02 80 37 00 3B F0 0D FA FF"),
+            frame("5A 10 2A 00 D6 C8 04 0C 01 44 12 02 40 37 00 3B F0 0D FA FF"),
             Telemetry())!!
         assertEquals(42, speed.speedKmh)
         assertEquals(5498.4, speed.odometerKm, 0.01)
@@ -94,7 +94,7 @@ class ProtocolTest {
         assertEquals(true, speed.powerMode)
         assertEquals(68, speed.clusterTopSpeedKmh)
         assertEquals(1534.4, speed.tripMeterKm, 0.01)
-        assertEquals(true, speed.ignitionOn)
+        assertEquals(true, speed.ignitionOn) // simulator encodes ignition on as 0x40
 
         val engine = decodeFrame(
             frame("5A 18 1E 00 00 00 5E 4B 74 00 00 7E 00 00 00 00 00 00 00 FF"),

@@ -148,7 +148,8 @@ def decode_inbound(frame, current: Optional[Telemetry] = None) -> Optional[Telem
         t.cluster_top_kmh = u8(frame, 9)
         t.throttle = u8(frame, 10)
         t.backlight = u8(frame, 11) & 0x0F
-        t.ignition_on = (u8(frame, 12) & 0x80) != 0
+        # 0x80 in 0x10 byte 12 means vehicle OFF, so ignition is its inverse.
+        t.ignition_on = (u8(frame, 12) & 0x80) == 0
         t.zero_to_sixty = u8(frame, 13)
         t.trip_km = u24(frame, 14) / 10.0
     elif ident == ID_SERVICE:
@@ -208,7 +209,7 @@ def encode_speedometer(speed=0, odo_km=0.0, fuel_bars=0, avg_speed=0, power=Fals
     b[9] = max(0, min(255, int(top)))
     b[10] = max(0, min(255, int(throttle)))
     b[11] = max(0, min(15, int(backlight)))
-    b[12] = 0x80 if ignition else 0x40
+    b[12] = 0x40 if ignition else 0x80
     b[13] = max(0, min(255, int(zero60)))
     put24(b, 14, int(round(trip_km * 10)))
     put16(b, 17, int(rpm))

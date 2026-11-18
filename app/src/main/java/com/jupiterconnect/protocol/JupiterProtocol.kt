@@ -30,7 +30,9 @@ fun decodeFrame(raw: ByteArray, current: Telemetry): Telemetry? {
             clusterTopSpeedKmh = u8(raw[9]),
             throttlePosition = u8(raw[10]),
             backlightMode = u8(raw[11]) and 0x0F,
-            ignitionOn = (u8(raw[12]) and 0x80) != 0,
+            // 0x10 [12]: low 6 bits = switch action (4 = voice assist),
+            // bit 6 = ignition change, bit 7 = vehicle OFF. Inverted flag.
+            ignitionOn = (u8(raw[12]) and 0x80) == 0,
             zeroToSixtyRaw = u8(raw[13]),
             tripMeterKm = u24(raw, 14) / 10.0,
         )
