@@ -49,7 +49,13 @@ import androidx.lifecycle.compose.LocalLifecycleOwner
 import com.jupiterconnect.session.RideStore
 import com.jupiterconnect.transport.ClusterRepository
 import com.jupiterconnect.transport.ClusterService
+import com.jupiterconnect.ui.DevicesScreenV2
+import com.jupiterconnect.ui.FindScreenV2
+import com.jupiterconnect.ui.HomeScreenV2
 import com.jupiterconnect.ui.PermissionStatus
+import com.jupiterconnect.ui.RideScreenV2
+import com.jupiterconnect.ui.RidesScreenV2
+import com.jupiterconnect.ui.SettingsScreenV2
 import com.jupiterconnect.ui.PremiumDevicesScreen
 import com.jupiterconnect.ui.PremiumFindScreen
 import com.jupiterconnect.ui.PremiumHomeScreen
@@ -195,105 +201,65 @@ fun JupiterApp() {
         onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
     }
 
-    val tabs = listOf(
-        Tab("Home", Icons.Rounded.Home),
-        Tab("Ride", Icons.Rounded.Navigation),
-        Tab("Rides", Icons.Rounded.History),
-        Tab("Find", Icons.Rounded.Place),
-        Tab("Devices", Icons.Rounded.BluetoothConnected),
-        Tab("Settings", Icons.Rounded.Settings),
-    )
     var selected by remember { mutableIntStateOf(0) }
+    val selectTab = { i: Int -> selected = i }
 
-    Scaffold(
-        containerColor = MaterialTheme.colorScheme.background,
-        topBar = {
-            TopAppBar(
-                title = {
-                    Text(
-                        tabs[selected].label,
-                        style = MaterialTheme.typography.headlineMedium,
-                        color = MaterialTheme.colorScheme.onBackground,
-                    )
-                },
-                actions = {
-                    IconButton(onClick = {
-                        context.startActivity(Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS))
-                    }) {
-                        Icon(
-                            Icons.Rounded.BluetoothConnected,
-                            contentDescription = "Notification access",
-                            tint = if (notificationAccess) JupiterColors.Accent
-                            else MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
-                    }
-                },
-                colors = TopAppBarDefaults.topAppBarColors(
-                    containerColor = MaterialTheme.colorScheme.background,
-                ),
+    Box(Modifier.fillMaxSize()) {
+        when (selected) {
+            0 -> HomeScreenV2(
+                telemetry = telemetry,
+                lastReading = lastReading,
+                onFindCluster = { selected = 3 },
+                activeTab = 0,
+                onTab = selectTab,
+                onSettings = { selected = 5 },
             )
-        },
-        bottomBar = {
-            NavigationBar(
-                containerColor = MaterialTheme.colorScheme.surface,
-                tonalElevation = 0.dp,
-            ) {
-                tabs.forEachIndexed { index, tab ->
-                    NavigationBarItem(
-                        selected = selected == index,
-                        onClick = { selected = index },
-                        icon = { Icon(tab.icon, contentDescription = tab.label) },
-                        label = { Text(tab.label, style = MaterialTheme.typography.labelSmall) },
-                        colors = NavigationBarItemDefaults.colors(
-                            selectedIconColor = JupiterColors.Accent,
-                            selectedTextColor = JupiterColors.Accent,
-                            unselectedIconColor = JupiterColors.OnSurfaceVariant,
-                            unselectedTextColor = JupiterColors.OnSurfaceVariant,
-                            indicatorColor = JupiterColors.PrimaryContainer,
-                        ),
-                    )
-                }
-            }
-        },
-    ) { padding ->
-        Box(Modifier.padding(padding).fillMaxSize()) {
-            when (selected) {
-                0 -> PremiumHomeScreen(
-                    telemetry = telemetry,
-                    scanning = scanning,
-                    permissions = permStatus,
-                    lastReading = lastReading,
-                    onGrantPermissions = { launcher.launch(permissions) },
-                    onOpenDevices = { selected = 4 },
-                )
-                1 -> PremiumNavigateScreen(
-                    instruction = navInstruction,
-                    telemetry = telemetry,
-                    mirroring = mirroring,
-                    onMirroringChange = {
-                        mirroring = it
-                        ClusterRepository.mirroring.value = it
-                    },
-                )
-                2 -> PremiumRidesScreen(telemetry, rides)
-                3 -> PremiumFindScreen(telemetry, onOpenDevices = { selected = 4 })
-                4 -> PremiumDevicesScreen(
-                    devices = devices,
-                    scanning = scanning,
-                    rememberedAddress = rememberedAddress,
-                    onScan = { scanForDevices() },
-                    onConnect = { address -> connectAndRemember(address) },
-                    onForget = { forgetDevice() },
-                )
-                5 -> PremiumSettingsScreen(
-                    notificationAccess = notificationAccess,
-                    permissions = permStatus,
-                    onGrantPermissions = { launcher.launch(permissions) },
-                    onOpenNotificationAccess = {
-                        context.startActivity(Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS))
-                    },
-                )
-            }
+            1 -> RideScreenV2(
+                telemetry = telemetry,
+                instruction = navInstruction,
+                mirroring = mirroring,
+                onMirroring = {
+                    mirroring = it
+                    ClusterRepository.mirroring.value = it
+                },
+                activeTab = 1,
+                onTab = selectTab,
+                onSettings = { selected = 5 },
+            )
+            2 -> RidesScreenV2(
+                rides = rides,
+                activeTab = 2,
+                onTab = selectTab,
+                onSettings = { selected = 5 },
+            )
+            3 -> FindScreenV2(
+                activeTab = 3,
+                onTab = selectTab,
+                onSettings = { selected = 5 },
+                onFindCluster = { selected = 4 },
+                rememberedAddress = rememberedAddress,
+            )
+            4 -> DevicesScreenV2(
+                devices = devices,
+                rememberedAddress = rememberedAddress,
+                onScan = { scanForDevices() },
+                onConnect = { address -> connectAndRemember(address) },
+                onForget = { forgetDevice() },
+                activeTab = 4,
+                onTab = selectTab,
+                onSettings = { selected = 5 },
+            )
+            5 -> SettingsScreenV2(
+                notificationAccess = notificationAccess,
+                bleReady = permStatus.bluetooth,
+                email = com.jupiterconnect.sync.SupabaseClient.currentEmail(),
+                onNotificationAccess = {
+                    context.startActivity(Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS))
+                },
+                onSignOut = { com.jupiterconnect.sync.SupabaseClient.signOut() },
+                onTab = selectTab,
+                onSettings = { selected = 5 },
+            )
         }
     }
 }

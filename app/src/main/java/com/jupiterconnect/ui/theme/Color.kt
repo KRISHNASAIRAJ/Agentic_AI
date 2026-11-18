@@ -3,40 +3,41 @@ package com.jupiterconnect.ui.theme
 import androidx.compose.ui.graphics.Color
 
 /**
- * Jupiter Connect premium palette - same electric-lime automotive system used
- * by the Jupiter Drive branch. Kept under the original name so the rest of the
- * app's references stay valid.
+ * Jupiter Connect palette: black / dark-neutral surfaces and a single red
+ * accent system. No green, amber, blue, purple or light backgrounds.
  */
 object JupiterColors {
-    val Accent = Color(0xFFC8FF3D)
-    val AccentSoft = Color(0xFFE6FFB0)
-    val AccentDim = Color(0xFF7FA321)
-    val Amber = Color(0xFFFFB020)
-    val Red = Color(0xFFFF5A5A)
+    val Accent = Color(0xFFFF4D66)       // light red - icons, links, active tab
+    val AccentSoft = Color(0xFFFF4D66)
+    val AccentDim = Color(0xFFEB0028)
+    val Red = Color(0xFFEB0028)          // primary red
+    val Amber = Color(0xFFFF4D66)        // warnings use light red, never amber
+    val RedTint = Color(0xFF2A0E14)      // icon circles
+    val ActiveTab = Color(0xFF2A0A10)
+    val NavPill = Color(0xFF101012)
 
-    val Surface = Color(0xFF08090B)
-    val SurfaceDim = Color(0xFF050607)
-    val SurfaceBright = Color(0xFF1B1F24)
-    val Lowest = Color(0xFF050607)
-    val Low = Color(0xFF13161A)
-    val Container = Color(0xFF13161A)
-    val High = Color(0xFF1B1F24)
-    val Highest = Color(0xFF242A2F)
-    val Outline = Color(0xFF2E343A)
-    val OutlineVariant = Color(0xFF262B31)
-    val Hairline = Color(0xFF262B31)
+    val Surface = Color(0xFF000000)
+    val SurfaceDim = Color(0xFF000000)
+    val SurfaceBright = Color(0xFF232327)
+    val Lowest = Color(0xFF000000)
+    val Low = Color(0xFF141416)          // cards
+    val Container = Color(0xFF141416)
+    val High = Color(0xFF232327)         // raised / secondary
+    val Highest = Color(0xFF232327)
+    val Outline = Color(0xFF232327)
+    val OutlineVariant = Color(0xFF232327)
+    val Hairline = Color(0xFF232327)
 
-    val OnSurface = Color(0xFFFFFFFF)
-    val OnSurfaceVariant = Color(0xFF8E959E)
+    val OnSurface = Color(0xFFF2F2F4)
+    val OnSurfaceVariant = Color(0xFF9A9AA2)
 
-    // Retained aliases mapped onto the new system.
-    val Primary = Accent
-    val OnPrimary = Color(0xFF0A0C07)
-    val PrimaryContainer = Color(0xFF1B2410)
+    val Primary = Red
+    val OnPrimary = Color(0xFFFFFFFF)
+    val PrimaryContainer = RedTint
     val OnPrimaryContainer = Accent
-    val Secondary = Color(0xFFA9B0A0)
-    val Tertiary = Accent
-    val OnTertiary = Color(0xFF0A0C07)
-    val Error = Red
-    val Warning = Amber
+    val Secondary = Accent
+    val Tertiary = Red
+    val OnTertiary = Color(0xFFFFFFFF)
+    val Error = Color(0xFFFF6F82)
+    val Warning = Accent
 }
