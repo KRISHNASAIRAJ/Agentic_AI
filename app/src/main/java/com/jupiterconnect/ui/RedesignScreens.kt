@@ -711,6 +711,13 @@ fun SettingsScreenV2(
         }
         Spacer(Modifier.height(10.dp))
         RedCard {
+            Label("ENGINE FRAME")
+            Spacer(Modifier.height(8.dp))
+            val engine by ClusterRepository.engineDebug.collectAsState()
+            Text(engine, fontSize = 10.sp, color = JupiterColors.OnSurfaceVariant)
+        }
+        Spacer(Modifier.height(10.dp))
+        RedCard {
             Label("COLD START")
             Spacer(Modifier.height(8.dp))
             Text(warmup.message, fontSize = 15.sp, color = JupiterColors.OnSurface)

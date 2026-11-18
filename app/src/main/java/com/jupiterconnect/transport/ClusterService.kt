@@ -70,6 +70,8 @@ object ClusterRepository {
     val voiceDebug = MutableStateFlow("No 0x11 service frame seen yet")
     // Cold-start warm-up state, updated from telemetry frames.
     val warmup = MutableStateFlow(WarmupState())
+    // Raw 0x18 engine frame + decoded values, for mapping verification.
+    val engineDebug = MutableStateFlow("No 0x18 frame seen yet")
     // Recent live speeds for the speedometer graph (oldest first).
     val speedHistory = MutableStateFlow<List<Int>>(emptyList())
     val mirroring = MutableStateFlow(true)
@@ -285,7 +287,16 @@ class ClusterService : Service() {
     }
 
     /** Fan out one decoded frame to rides, voice, speed graph and warm-up. */
-    private fun onTelemetryFrame(t: Telemetry, primary: Boolean) {
+    private fun onTelemetryFrame(t: Telemetry, primary: Boolean, raw: ByteArray) {
+        if ((raw[1].toInt() and 0xFF) == 0x18) {
+            val hex = raw.joinToString(" ") { "%02X".format(it) }
+            ClusterRepository.engineDebug.value =
+                "RAW: $hex\n" +
+                "byte11=${"%02X".format(raw[11])} (${raw[11].toInt() and 0xFF}) " +
+                "→ ${"%.1f".format(t.batteryVoltage)} V\n" +
+                "load=${t.engineLoad} intake=${t.intakeTempC}C " +
+                "coolant=${t.engineTempC}C"
+        }
         RideStore.onFrame(t, primary)
         voiceBridge.onFrame(t)
         ClusterRepository.recordSpeed(t.speedKmh)
@@ -471,7 +482,7 @@ class ClusterService : Service() {
             FrameLog.record("RX", value)
             decodeFrame(value, ClusterRepository.telemetry.value)?.let {
                 ClusterRepository.telemetry.value = it
-                onTelemetryFrame(it, primary = (value[1].toInt() and 0xFF) == 0x10)
+                onTelemetryFrame(it, primary = (value[1].toInt() and 0xFF) == 0x10, raw = value)
             }
         }
 
@@ -482,7 +493,7 @@ class ClusterService : Service() {
             FrameLog.record("RX", v)
             decodeFrame(v, ClusterRepository.telemetry.value)?.let {
                 ClusterRepository.telemetry.value = it
-                onTelemetryFrame(it, primary = (v[1].toInt() and 0xFF) == 0x10)
+                onTelemetryFrame(it, primary = (v[1].toInt() and 0xFF) == 0x10, raw = v)
             }
         }
     }
