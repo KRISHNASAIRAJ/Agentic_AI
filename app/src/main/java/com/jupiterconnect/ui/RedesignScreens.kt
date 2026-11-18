@@ -912,19 +912,23 @@ fun FindScreenV2(
             Spacer(Modifier.height(14.dp))
             PrimaryButton("Navigate to scooter", {
                 val p = parked ?: return@PrimaryButton
-                // Always Google Maps, in bicycling mode - no chooser, no car default.
+                val dest = "${p.lat},${p.lng}"
+                // Always Google Maps, in MOTORISED two-wheeler mode - not the
+                // human-powered bicycle mode and not the car/transit default.
+                // Maps URLs: travelmode=two-wheeler selects the bike/scooter tab.
                 val uri = Uri.parse(
                     "https://www.google.com/maps/dir/?api=1" +
-                        "&destination=${p.lat},${p.lng}&travelmode=bicycling",
+                        "&destination=$dest&travelmode=two-wheeler",
                 )
                 val intent = Intent(Intent.ACTION_VIEW, uri)
                     .setPackage("com.google.android.apps.maps")
                     .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
                 if (runCatching { context.startActivity(intent) }.isFailure) {
+                    // Older Maps builds: google.navigation &mode=l = two-wheeler.
                     runCatching {
                         context.startActivity(
                             Intent(Intent.ACTION_VIEW,
-                                Uri.parse("geo:${p.lat},${p.lng}?q=${p.lat},${p.lng}(Scooter)"))
+                                Uri.parse("google.navigation:q=$dest&mode=l"))
                                 .setPackage("com.google.android.apps.maps")
                                 .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
                         )

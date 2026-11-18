@@ -180,10 +180,11 @@ class VoiceCommandProcessor(private val context: Context) {
     private fun openBikeRoute(place: String, reply: String): String {
         val encoded = URLEncoder.encode(place, "UTF-8")
         val candidates = listOf(
+            // Motorised two-wheeler, not human-powered bicycle or car/transit.
             Intent(Intent.ACTION_VIEW, Uri.parse(
-                "https://www.google.com/maps/dir/?api=1&destination=$encoded&travelmode=bicycling"))
+                "https://www.google.com/maps/dir/?api=1&destination=$encoded&travelmode=two-wheeler"))
                 .setPackage("com.google.android.apps.maps"),
-            Intent(Intent.ACTION_VIEW, Uri.parse("google.navigation:q=$encoded&mode=b"))
+            Intent(Intent.ACTION_VIEW, Uri.parse("google.navigation:q=$encoded&mode=l"))
                 .setPackage("com.google.android.apps.maps"),
             Intent(Intent.ACTION_VIEW, Uri.parse("mappls://navigate?q=$encoded"))
                 .setPackage("com.mmi.maps"),
