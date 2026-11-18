@@ -1,11 +1,16 @@
 package com.jupiterconnect
 
 import android.Manifest
+import android.annotation.SuppressLint
+import android.bluetooth.BluetoothAdapter
+import android.bluetooth.BluetoothManager
+import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Bundle
 import android.provider.Settings
+import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
@@ -130,6 +135,14 @@ fun JupiterApp() {
         )
     }
 
+    /** Permission is not enough - the adapter must also be powered on. */
+    @SuppressLint("MissingPermission")
+    fun isBluetoothOn(): Boolean {
+        val adapter =
+            (context.getSystemService(Context.BLUETOOTH_SERVICE) as? BluetoothManager)?.adapter
+        return adapter?.isEnabled == true
+    }
+
     // Remember the last connected cluster so reconnecting is one tap (or auto).
     val devicePrefs = remember {
         context.getSharedPreferences("jupiter_device", android.content.Context.MODE_PRIVATE)
@@ -153,9 +166,47 @@ fun JupiterApp() {
     }
 
     var permStatus by remember { mutableStateOf(currentStatus()) }
+    var bluetoothOn by remember { mutableStateOf(isBluetoothOn()) }
+
+    // ACTION_REQUEST_ENABLE shows the system "Turn on Bluetooth?" dialog. Some
+    // phones block it by policy, so keep a plain message as the fallback.
+    var resumeScanAfterEnable by remember { mutableStateOf(false) }
+    val enableBluetoothLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.StartActivityForResult()
+    ) {
+        bluetoothOn = isBluetoothOn()
+        if (bluetoothOn && resumeScanAfterEnable) {
+            resumeScanAfterEnable = false
+            ContextCompat.startForegroundService(
+                context, Intent(context, ClusterService::class.java)
+                    .setAction(ClusterService.ACTION_SCAN))
+        }
+    }
+
+    fun requestEnableBluetooth(thenScan: Boolean = false, purpose: String = "use Bluetooth") {
+        bluetoothOn = isBluetoothOn()
+        if (bluetoothOn) return
+        Toast.makeText(context, "Bluetooth is off - turn it on to $purpose", Toast.LENGTH_LONG).show()
+        resumeScanAfterEnable = thenScan
+        val launched = runCatching {
+            enableBluetoothLauncher.launch(Intent(BluetoothAdapter.ACTION_REQUEST_ENABLE))
+            true
+        }.getOrDefault(false)
+        if (!launched) Toast.makeText(context,
+            "Enable Bluetooth from Quick Settings, then try again", Toast.LENGTH_LONG).show()
+    }
+
+    /** Returns false (and prompts) when the adapter exists but is powered off. */
+    fun bluetoothReady(purpose: String, thenScan: Boolean = false): Boolean {
+        bluetoothOn = isBluetoothOn()
+        if (bluetoothOn) return true
+        requestEnableBluetooth(thenScan = thenScan, purpose = purpose)
+        return false
+    }
 
     fun startServiceIfReady() {
         permStatus = currentStatus()
+        bluetoothOn = isBluetoothOn()
         if (permStatus.bleReady) {
             rememberedAddress?.let { addr ->
                 connectToDevice(addr)
@@ -168,15 +219,17 @@ fun JupiterApp() {
         ActivityResultContracts.RequestMultiplePermissions(),
     ) { startServiceIfReady() }
 
-    // Scan must work from any screen: it re-checks permissions, starts the BLE
-    // service if it is not running yet, and only then asks it to scan. Without
-    // this, tapping Scan while the service is null silently does nothing.
+    // Scan must work from any screen: it re-checks permissions AND the real
+    // adapter state, starts the BLE service if it is not running yet, and only
+    // then asks it to scan. Without this, tapping Scan while the service is
+    // null or Bluetooth is off silently does nothing.
     fun scanForDevices() {
         permStatus = currentStatus()
         if (!permStatus.bleReady) {
             launcher.launch(permissions)
             return
         }
+        if (!bluetoothReady("scan for your cluster", thenScan = true)) return
         // Send SCAN as an Intent action. onStartCommand runs after onCreate,
         // so the service reference is guaranteed ready when it calls startScan.
         ContextCompat.startForegroundService(
@@ -204,12 +257,20 @@ fun JupiterApp() {
     var selected by remember { mutableIntStateOf(0) }
     val selectTab = { i: Int -> selected = i }
 
+    // "Find my cluster" opens the devices list. Check the adapter first so an
+    // off phone is told why scanning would not work, but still show the list -
+    // its Bluetooth row can then be tapped to turn it on.
+    fun findCluster(tab: Int) {
+        bluetoothReady("find your cluster")
+        selected = tab
+    }
+
     Box(Modifier.fillMaxSize()) {
         when (selected) {
             0 -> HomeScreenV2(
                 telemetry = telemetry,
                 lastReading = lastReading,
-                onFindCluster = { selected = 3 },
+                onFindCluster = { findCluster(3) },
                 activeTab = 0,
                 onTab = selectTab,
                 onSettings = { selected = 4 },
@@ -237,12 +298,14 @@ fun JupiterApp() {
                 activeTab = 3,
                 onTab = selectTab,
                 onSettings = { selected = 4 },
-                onFindCluster = { selected = 4 },
+                onFindCluster = { findCluster(4) },
                 rememberedAddress = rememberedAddress,
             )
             4 -> MoreScreenV2(
                 devices = devices,
                 rememberedAddress = rememberedAddress,
+                bluetoothOn = bluetoothOn,
+                onEnableBluetooth = { requestEnableBluetooth() },
                 onScan = { scanForDevices() },
                 onConnect = { address -> connectAndRemember(address) },
                 onForget = { forgetDevice() },

@@ -45,6 +45,7 @@ import androidx.compose.material.icons.rounded.History
 import androidx.compose.material.icons.rounded.Home
 import androidx.compose.material.icons.rounded.LocationOn
 import androidx.compose.material.icons.rounded.Navigation
+import androidx.compose.material.icons.rounded.Notifications
 import androidx.compose.material.icons.rounded.NotificationsActive
 import androidx.compose.material.icons.rounded.Place
 import androidx.compose.material.icons.rounded.Settings
@@ -913,22 +914,24 @@ fun FindScreenV2(
             PrimaryButton("Navigate to scooter", {
                 val p = parked ?: return@PrimaryButton
                 val dest = "${p.lat},${p.lng}"
-                // Always Google Maps, in MOTORISED two-wheeler mode - not the
-                // human-powered bicycle mode and not the car/transit default.
-                // Maps URLs: travelmode=two-wheeler selects the bike/scooter tab.
+                // Walking directions to where the scooter was parked: you are
+                // on foot going back to it, and walking routes use footpaths.
+                // This is separate from voice/normal navigation, which keeps
+                // its own two-wheeler travel mode.
+                // Maps URLs: travelmode=walking selects the walking tab.
                 val uri = Uri.parse(
                     "https://www.google.com/maps/dir/?api=1" +
-                        "&destination=$dest&travelmode=two-wheeler",
+                        "&destination=$dest&travelmode=walking",
                 )
                 val intent = Intent(Intent.ACTION_VIEW, uri)
                     .setPackage("com.google.android.apps.maps")
                     .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
                 if (runCatching { context.startActivity(intent) }.isFailure) {
-                    // Older Maps builds: google.navigation &mode=l = two-wheeler.
+                    // Older Maps builds: google.navigation &mode=w = walking.
                     runCatching {
                         context.startActivity(
                             Intent(Intent.ACTION_VIEW,
-                                Uri.parse("google.navigation:q=$dest&mode=l"))
+                                Uri.parse("google.navigation:q=$dest&mode=w"))
                                 .setPackage("com.google.android.apps.maps")
                                 .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
                         )
@@ -962,6 +965,8 @@ fun FindScreenV2(
 private fun DevicesContent(
     devices: List<ScannedDevice>,
     rememberedAddress: String?,
+    bluetoothOn: Boolean,
+    onEnableBluetooth: () -> Unit,
     onScan: () -> Unit,
     onConnect: (String) -> Unit,
     onForget: () -> Unit,
@@ -1010,6 +1015,28 @@ private fun DevicesContent(
         }
     }
     Spacer(Modifier.height(10.dp))
+    // Reflect the real adapter state, refreshed whenever the user taps Scan or
+    // Find my cluster. When it is off, tapping the row offers to turn it on.
+    Row(
+        verticalAlignment = Alignment.CenterVertically,
+        modifier = if (bluetoothOn) Modifier else Modifier.clickable { onEnableBluetooth() },
+    ) {
+        IconCircle(Icons.Rounded.Bluetooth, "Bluetooth status")
+        Spacer(Modifier.width(12.dp))
+        Column(Modifier.weight(1f)) {
+            Text(if (bluetoothOn) "Bluetooth is on" else "Bluetooth is off",
+                fontSize = 14.sp, color = JupiterColors.OnSurface)
+            if (!bluetoothOn) Text("Tap to turn it on", fontSize = 11.sp,
+                color = JupiterColors.Error)
+        }
+        Icon(
+            if (bluetoothOn) Icons.Rounded.Check else Icons.Rounded.ChevronRight,
+            "Bluetooth status",
+            modifier = Modifier.size(20.dp),
+            tint = if (bluetoothOn) JupiterColors.Accent else JupiterColors.Error,
+        )
+    }
+    Spacer(Modifier.height(10.dp))
     PrimaryButton("Scan for devices", onScan, Modifier.fillMaxWidth())
 }
 
@@ -1025,13 +1052,13 @@ private fun SettingsContent(
         Label("PERMISSIONS")
         Spacer(Modifier.height(12.dp))
         listOf(
-            "Bluetooth connect and scan" to bleReady,
-            "Location" to true,
-            "Notifications" to true,
-            "Notification access" to notificationAccess,
-        ).forEach { (name, ok) ->
+            Triple(Icons.Rounded.Bluetooth, "Bluetooth connect and scan", bleReady),
+            Triple(Icons.Rounded.LocationOn, "Location", true),
+            Triple(Icons.Rounded.Notifications, "Notifications", true),
+            Triple(Icons.Rounded.NotificationsActive, "Notification access", notificationAccess),
+        ).forEach { (icon, name, ok) ->
             Row(Modifier.padding(vertical = 6.dp), verticalAlignment = Alignment.CenterVertically) {
-                IconCircle(Icons.Rounded.Bluetooth, name)
+                IconCircle(icon, name)
                 Spacer(Modifier.width(12.dp))
                 Text(name, Modifier.weight(1f), fontSize = 14.sp,
                     color = JupiterColors.OnSurface)
@@ -1126,6 +1153,8 @@ private fun SettingsContent(
 fun MoreScreenV2(
     devices: List<ScannedDevice>,
     rememberedAddress: String?,
+    bluetoothOn: Boolean,
+    onEnableBluetooth: () -> Unit,
     onScan: () -> Unit,
     onConnect: (String) -> Unit,
     onForget: () -> Unit,
@@ -1138,7 +1167,8 @@ fun MoreScreenV2(
 ) {
     JupiterShell("More", "DEVICES & SETTINGS", 4, onTab, {}) {
         Spacer(Modifier.height(4.dp))
-        DevicesContent(devices, rememberedAddress, onScan, onConnect, onForget)
+        DevicesContent(devices, rememberedAddress, bluetoothOn, onEnableBluetooth,
+            onScan, onConnect, onForget)
         Spacer(Modifier.height(22.dp))
         Label("SETTINGS")
         Spacer(Modifier.height(10.dp))
