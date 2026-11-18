@@ -306,7 +306,10 @@ class ProtocolTest {
 
     @Test
     fun ride_kind_uses_the_ride_start_hour() {
-        fun at(hour: Int, minute: Int): Long = java.util.Calendar.getInstance().apply {
+        // The app labels rides in IST, so build the fixture in IST too. On a
+        // UTC CI runner, a default-timezone fixture shifted the hour by +5:30.
+        fun at(hour: Int, minute: Int): Long = java.util.Calendar.getInstance(
+            java.util.TimeZone.getTimeZone("Asia/Kolkata")).apply {
             set(2026, java.util.Calendar.NOVEMBER, 18, hour, minute, 0)
             set(java.util.Calendar.MILLISECOND, 0)
         }.timeInMillis
