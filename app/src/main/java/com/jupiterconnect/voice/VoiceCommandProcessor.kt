@@ -225,7 +225,7 @@ class VoiceCommandProcessor(private val context: Context) {
         else "Arrival time not available"
     }
 
-    private suspend fun weatherReply(): String = withContext(Dispatchers.IO) {
+    suspend fun weatherReply(): String = withContext(Dispatchers.IO) {
         val parked = RideStore.parkedLocation.value
             ?: return@withContext "No parked location saved yet"
         val temp = getJson(
@@ -266,14 +266,14 @@ class VoiceCommandProcessor(private val context: Context) {
         if (code in 51..82 || code == 95) "Take a rain coat" else "No rain expected"
     }
 
-    private suspend fun newsReply(): String = withContext(Dispatchers.IO) {
+    suspend fun newsReply(): String = withContext(Dispatchers.IO) {
         val xml = getText("https://news.google.com/rss?hl=en-IN&gl=IN&ceid=IN:en")
             ?: return@withContext "News unavailable"
         val title = firstXmlText(xml, "title")
         if (title.isNullOrBlank()) "News unavailable" else title.take(120)
     }
 
-    private suspend fun scoreReply(sport: String, url: String): String = withContext(Dispatchers.IO) {
+    suspend fun scoreReply(sport: String, url: String): String = withContext(Dispatchers.IO) {
         val json = getJson(url) ?: return@withContext "$sport scores unavailable"
         val events = json.optJSONArray("events") ?: return@withContext "No live $sport matches"
         if (events.length() == 0) return@withContext "No live $sport matches"

@@ -26,6 +26,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.windowInsetsTopHeight
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -59,6 +60,7 @@ import androidx.compose.material3.Switch
 import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -88,7 +90,10 @@ import com.jupiterconnect.session.RideStore
 import com.jupiterconnect.session.WarmupPhase
 import com.jupiterconnect.transport.ClusterRepository
 import com.jupiterconnect.ui.theme.JupiterColors
+import com.jupiterconnect.voice.VoiceCommandProcessor
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import java.util.Calendar
 
 private val TAB_LABELS = listOf("Home", "Ride", "Rides", "Find", "More")
@@ -183,13 +188,15 @@ private fun IconCircle(icon: ImageVector, label: String) = Box(
 /** Icon circle with a short label and live value beneath it. */
 @Composable
 private fun IconStat(icon: ImageVector, label: String, value: String) = Column(
+    Modifier.width(42.dp),
     horizontalAlignment = Alignment.CenterHorizontally,
 ) {
     IconCircle(icon, label)
-    Spacer(Modifier.height(4.dp))
-    Text(label, fontSize = 9.sp, color = JupiterColors.OnSurfaceVariant)
+    Spacer(Modifier.height(3.dp))
+    Text(label, fontSize = 9.sp, color = JupiterColors.OnSurfaceVariant,
+        maxLines = 1, softWrap = false)
     Text(value, fontSize = 11.sp, fontWeight = FontWeight.Medium,
-        color = JupiterColors.Accent)
+        color = JupiterColors.Accent, maxLines = 1, softWrap = false)
 }
 
 @Composable
@@ -263,37 +270,36 @@ private fun ColdStartCardV2() {
                 Text("${state.progress}%", fontSize = 20.sp, fontWeight = FontWeight.Medium,
                     color = JupiterColors.OnSurface)
             }
-            Spacer(Modifier.width(16.dp))
+            Spacer(Modifier.width(14.dp))
             Column(Modifier.weight(1f)) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
-                    IconCircle(phaseIcon, phaseSymbol)
-                    Spacer(Modifier.width(10.dp))
+                    Icon(phaseIcon, phaseSymbol,
+                        modifier = Modifier.size(18.dp), tint = JupiterColors.Accent)
+                    Spacer(Modifier.width(8.dp))
                     Box(
                         Modifier.clip(RoundedCornerShape(999.dp))
                             .background(JupiterColors.RedTint)
                             .padding(horizontal = 10.dp, vertical = 4.dp),
                     ) {
                         Text(phaseSymbol, fontSize = 10.sp,
-                            color = JupiterColors.Accent, letterSpacing = 1.sp)
+                            color = JupiterColors.Accent, letterSpacing = 1.sp,
+                            maxLines = 1, softWrap = false)
                     }
-                    Spacer(Modifier.width(8.dp))
-                    Text(if (engineOff) "AIR-COOLED 124.8cc"
-                        else if (state.cold) "COLD START" else "WARM START",
-                        fontSize = 10.sp, color = JupiterColors.OnSurfaceVariant,
-                        letterSpacing = 1.sp)
                 }
-                Spacer(Modifier.height(8.dp))
+                Spacer(Modifier.height(10.dp))
                 Text(
-                    if (engineOff) "Engine off · idle 30-60 s on cold start"
+                    if (engineOff) "Idle 30-60 s, then ride gently"
                     else state.message,
-                    fontSize = 15.sp, color = JupiterColors.OnSurface,
+                    fontSize = 14.sp, color = JupiterColors.OnSurface,
+                    maxLines = 2,
                 )
                 Spacer(Modifier.height(4.dp))
                 Text(
-                    if (engineOff) "No engine data while disconnected"
+                    if (engineOff) "Air-cooled 124.8 cc · no engine data offline"
                     else "target ${state.targetC}°C · start ${state.startTemp}°C · " +
                         "ambient ${state.ambientC}°C",
-                    fontSize = 11.sp, color = JupiterColors.OnSurfaceVariant,
+                    fontSize = 10.sp, color = JupiterColors.OnSurfaceVariant,
+                    maxLines = 2,
                 )
             }
         }
@@ -424,8 +430,8 @@ fun HomeScreenV2(
                         "%.1f".format(telemetry.batteryVoltage) else "--"
                     val rpmV = if (telemetry.rpm > 0) "${telemetry.rpm}" else "--"
                     Row(Modifier.fillMaxWidth(), Arrangement.SpaceBetween) {
-                        IconStat(Icons.Rounded.WaterDrop, "ENGINE TEMP", engineTempV)
-                        IconStat(Icons.Rounded.BatteryChargingFull, "BATTERY", batteryV)
+                        IconStat(Icons.Rounded.WaterDrop, "TEMP", engineTempV)
+                        IconStat(Icons.Rounded.BatteryChargingFull, "BATT", batteryV)
                         IconStat(Icons.Rounded.Speed, "RPM", rpmV)
                     }
                 }
@@ -546,21 +552,6 @@ fun HomeScreenV2(
         ColdStartCardV2()
         Spacer(Modifier.height(10.dp))
         CarbonCard()
-        Spacer(Modifier.height(18.dp))
-        Label("VEHICLE DETAILS")
-        Spacer(Modifier.height(10.dp))
-        RedCard {
-            // Live details scroll inside a fixed-height card while connected.
-            // Offline, the last known values are shown as a static list and the
-            // page itself still scrolls normally.
-            if (telemetry.connected) {
-                Box(Modifier.height(220.dp).verticalScroll(rememberScrollState())) {
-                    VehicleDetailsRows(telemetry, lastReading)
-                }
-            } else {
-                VehicleDetailsRows(telemetry, lastReading)
-            }
-        }
         Spacer(Modifier.height(10.dp))
     }
 }
@@ -570,6 +561,7 @@ fun HomeScreenV2(
 @Composable
 fun RideScreenV2(
     telemetry: Telemetry,
+    lastReading: com.jupiterconnect.session.LastReading,
     instruction: NavInstruction?,
     mirroring: Boolean,
     onMirroring: (Boolean) -> Unit,
@@ -622,6 +614,20 @@ fun RideScreenV2(
             }
             Spacer(Modifier.height(10.dp))
         }
+        TrafficScreensSection(telemetry)
+        Spacer(Modifier.height(18.dp))
+        Label("STATS")
+        Spacer(Modifier.height(10.dp))
+        RedCard {
+            if (telemetry.connected) {
+                Box(Modifier.height(220.dp).verticalScroll(rememberScrollState())) {
+                    VehicleDetailsRows(telemetry, lastReading)
+                }
+            } else {
+                VehicleDetailsRows(telemetry, lastReading)
+            }
+        }
+        Spacer(Modifier.height(10.dp))
         RedCard {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 IconCircle(Icons.Rounded.Navigation, "Navigation mirroring")
@@ -644,6 +650,93 @@ fun RideScreenV2(
     }
 }
 
+/** Cluster-style traffic screens, active only while linked, like TVS Connect. */
+@Composable
+private fun TrafficScreensSection(telemetry: Telemetry) {
+    val context = LocalContext.current
+    val labels = listOf("ISS", "Overview", "Carbon", "Weather", "News",
+        "Cricket", "Football", "Social")
+    var selected by remember { mutableStateOf(0) }
+    SectionHeading("Traffic screens",
+        trailing = if (telemetry.connected) "LIVE" else "OFFLINE")
+    Spacer(Modifier.height(10.dp))
+    if (!telemetry.connected) {
+        RedCard {
+            Text("Connect to the cluster to use traffic screens.",
+                fontSize = 13.sp, color = JupiterColors.OnSurfaceVariant)
+        }
+        return
+    }
+    Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState())) {
+        labels.forEachIndexed { i, label ->
+            val active = selected == i
+            Box(
+                Modifier.padding(end = 8.dp)
+                    .clip(RoundedCornerShape(999.dp))
+                    .background(if (active) JupiterColors.RedTint else JupiterColors.High)
+                    .clickable { selected = i }
+                    .padding(horizontal = 14.dp, vertical = 8.dp),
+            ) {
+                Text(label, fontSize = 11.sp,
+                    color = if (active) JupiterColors.Accent else JupiterColors.OnSurfaceVariant)
+            }
+        }
+    }
+    Spacer(Modifier.height(10.dp))
+    val processor = remember { VoiceCommandProcessor(context) }
+    var remote by remember { mutableStateOf("") }
+    LaunchedEffect(selected) {
+        remote = withContext(Dispatchers.IO) {
+            when (selected) {
+                3 -> processor.weatherReply()
+                4 -> processor.newsReply()
+                5 -> processor.scoreReply("Cricket",
+                    "https://site.api.espn.com/apis/site/v2/sports/cricket/1000/scoreboard")
+                6 -> processor.scoreReply("Football",
+                    "https://site.api.espn.com/apis/site/v2/sports/football/nfl/scoreboard")
+                else -> ""
+            }
+        }
+    }
+    RedCard(bar = true) {
+        when (selected) {
+            0 -> {
+                Label("FUEL SAVER MODE")
+                Spacer(Modifier.height(8.dp))
+                BigValue(if (telemetry.speedKmh <= 1) "${telemetry.issMode and 0xFF}" else "--",
+                    "s", 34)
+                Text("ISS stops ${telemetry.issCount} · ${telemetry.issDuration}s saved",
+                    fontSize = 12.sp, color = JupiterColors.OnSurfaceVariant)
+            }
+            1 -> {
+                Label("OVERVIEW")
+                Spacer(Modifier.height(8.dp))
+                InfoRow("Avg fuel economy", "${telemetry.averageFuelEconomy} km/L")
+                InfoRow("Riding since", "${RideStore.liveTripKm.collectAsState().value.let { "%.1f km".format(it) }}")
+                InfoRow("Driving range", "${telemetry.distanceToEmptyKm} km")
+            }
+            2 -> {
+                val seconds by RideStore.issSavedSeconds.collectAsState()
+                Label("CARBON FUEL SAVING")
+                BigValue("%.3f".format(seconds * RideStore.IDLE_LITRES_PER_SECOND * RideStore.CO2_KG_PER_LITRE),
+                    "kg CO2", 34)
+                Text("from day one", fontSize = 12.sp, color = JupiterColors.OnSurfaceVariant)
+            }
+            3 -> { Label("WEATHER / AQI"); Spacer(Modifier.height(6.dp)); Text(remote, fontSize = 13.sp, color = JupiterColors.OnSurface) }
+            4 -> { Label("NEWS"); Spacer(Modifier.height(6.dp)); Text(remote, fontSize = 13.sp, color = JupiterColors.OnSurface) }
+            5 -> { Label("CRICKET SCORE"); Spacer(Modifier.height(6.dp)); Text(remote, fontSize = 13.sp, color = JupiterColors.OnSurface) }
+            6 -> { Label("FOOTBALL SCORE"); Spacer(Modifier.height(6.dp)); Text(remote, fontSize = 13.sp, color = JupiterColors.OnSurface) }
+            7 -> {
+                val counts by ClusterRepository.socialCounts.collectAsState()
+                Label("SOCIAL MEDIA")
+                Spacer(Modifier.height(8.dp))
+                Text("WhatsApp ${counts.first} · Facebook ${counts.second} · Instagram ${counts.third}",
+                    fontSize = 13.sp, color = JupiterColors.OnSurface)
+            }
+        }
+    }
+}
+
 // ------------------------------------------------------------------ RIDES
 
 @Composable
@@ -655,6 +748,7 @@ fun RidesScreenV2(
 ) {
     val total = rides.sumOf { it.distanceKm }
     val top = rides.maxOfOrNull { it.topSpeedKmh } ?: 0
+    var expandedId by remember { mutableStateOf<Long?>(null) }
     JupiterShell("Rides", "SAVED ON THIS PHONE", activeTab, onTab, onSettings) {
         Spacer(Modifier.height(4.dp))
         Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
@@ -711,8 +805,10 @@ fun RidesScreenV2(
         }
         rides.forEach { r ->
             Spacer(Modifier.height(10.dp))
-            var expanded by remember { mutableStateOf(false) }
-            RedCard {
+            val expanded = expandedId == r.startedAt
+            RedCard(modifier = Modifier.clickable {
+                expandedId = if (expanded) null else r.startedAt
+            }) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     IconCircle(Icons.Rounded.TwoWheeler, "Ride")
                     Spacer(Modifier.width(12.dp))
@@ -730,19 +826,17 @@ fun RidesScreenV2(
                     Text("TOP ${r.topSpeedKmh}", fontSize = 12.sp, color = JupiterColors.OnSurfaceVariant)
                     Text("MIN ${r.durationMin}", fontSize = 12.sp, color = JupiterColors.OnSurfaceVariant)
                 }
-                Spacer(Modifier.height(8.dp))
-                Text(if (expanded) "Hide report" else "Report >", fontSize = 13.sp,
-                    color = JupiterColors.Accent, modifier = Modifier.clickable { expanded = !expanded })
                 if (expanded) {
-                    Spacer(Modifier.height(10.dp))
+                    Spacer(Modifier.height(12.dp))
                     Text("Idle ${r.idleMin} min · ISS ${r.issStops} stops · " +
                         "Fuel ${r.fuelBarsUsed} bars · Max ${r.topSpeedKmh} km/h", fontSize = 12.sp,
                         color = JupiterColors.OnSurfaceVariant)
-                    Spacer(Modifier.height(10.dp))
+                    Spacer(Modifier.height(12.dp))
                     val samples = r.speedSamples
                     val thr = r.throttleSamples
                     if (samples.size > 1) {
-                        Canvas(Modifier.fillMaxWidth().height(60.dp)) {
+                        Label("SPEED")
+                        Canvas(Modifier.fillMaxWidth().height(56.dp)) {
                             val max = (samples.maxOrNull() ?: 1).coerceAtLeast(1)
                             val step = size.width / (samples.size - 1)
                             for (i in 0 until samples.size - 1) {
@@ -751,16 +845,23 @@ fun RidesScreenV2(
                                     Offset((i + 1) * step, size.height - samples[i + 1].toFloat() / max * size.height),
                                     strokeWidth = 2.dp.toPx(), cap = StrokeCap.Round)
                             }
-                            if (thr.size > 1) {
-                                val tStep = size.width / (thr.size - 1)
+                        }
+                        if (thr.size > 1) {
+                            Spacer(Modifier.height(8.dp))
+                            Label("THROTTLE")
+                            Canvas(Modifier.fillMaxWidth().height(56.dp)) {
+                                val step = size.width / (thr.size - 1)
                                 for (i in 0 until thr.size - 1) {
-                                    drawLine(JupiterColors.Accent.copy(alpha = 0.5f),
-                                        Offset(i * tStep, size.height - thr[i].toFloat() / 100f * size.height),
-                                        Offset((i + 1) * tStep, size.height - thr[i + 1].toFloat() / 100f * size.height),
-                                        strokeWidth = 1.5.dp.toPx(), cap = StrokeCap.Round)
+                                    drawLine(JupiterColors.Accent,
+                                        Offset(i * step, size.height - thr[i].toFloat() / 100f * size.height),
+                                        Offset((i + 1) * step, size.height - thr[i + 1].toFloat() / 100f * size.height),
+                                        strokeWidth = 2.dp.toPx(), cap = StrokeCap.Round)
                                 }
                             }
                         }
+                    } else {
+                        Text("No graph data recorded for this ride", fontSize = 12.sp,
+                            color = JupiterColors.OnSurfaceVariant)
                     }
                 }
             }
@@ -811,8 +912,24 @@ fun FindScreenV2(
             Spacer(Modifier.height(14.dp))
             PrimaryButton("Navigate to scooter", {
                 val p = parked ?: return@PrimaryButton
-                val uri = Uri.parse("geo:${p.lat},${p.lng}?q=${p.lat},${p.lng}(Scooter)")
-                runCatching { context.startActivity(Intent(Intent.ACTION_VIEW, uri)) }
+                // Always Google Maps, in bicycling mode - no chooser, no car default.
+                val uri = Uri.parse(
+                    "https://www.google.com/maps/dir/?api=1" +
+                        "&destination=${p.lat},${p.lng}&travelmode=bicycling",
+                )
+                val intent = Intent(Intent.ACTION_VIEW, uri)
+                    .setPackage("com.google.android.apps.maps")
+                    .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                if (runCatching { context.startActivity(intent) }.isFailure) {
+                    runCatching {
+                        context.startActivity(
+                            Intent(Intent.ACTION_VIEW,
+                                Uri.parse("geo:${p.lat},${p.lng}?q=${p.lat},${p.lng}(Scooter)"))
+                                .setPackage("com.google.android.apps.maps")
+                                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
+                        )
+                    }
+                }
             }, Modifier.fillMaxWidth())
         }
         Spacer(Modifier.height(10.dp))
@@ -942,6 +1059,43 @@ private fun SettingsContent(
         Text(email ?: "Not signed in", fontSize = 15.sp, color = JupiterColors.OnSurface)
         Spacer(Modifier.height(12.dp))
         SecondaryButton("Sign out", onSignOut, Modifier.fillMaxWidth())
+    }
+    Spacer(Modifier.height(10.dp))
+    RedCard {
+        Label("HIGH SPEED ALERT")
+        Spacer(Modifier.height(8.dp))
+        val alert by ClusterRepository.highSpeedAlert.collectAsState()
+        val limit by ClusterRepository.highSpeedAlertSpeed.collectAsState()
+        val connected by ClusterRepository.telemetry.collectAsState()
+        Text("Active only while the cluster is connected", fontSize = 11.sp,
+            color = JupiterColors.OnSurfaceVariant)
+        Spacer(Modifier.height(8.dp))
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Column(Modifier.weight(1f)) {
+                Text("Alert at $limit km/h", fontSize = 15.sp, color = JupiterColors.OnSurface)
+                Text(if (connected.connected) "Linked" else "Waiting for cluster",
+                    fontSize = 11.sp, color = JupiterColors.OnSurfaceVariant)
+            }
+            OutlinedButton(
+                onClick = { ClusterRepository.highSpeedAlertSpeed.value = (limit - 5).coerceIn(20, 100) },
+                modifier = Modifier.size(44.dp), shape = RoundedCornerShape(14.dp),
+            ) { Text("-") }
+            Spacer(Modifier.width(6.dp))
+            OutlinedButton(
+                onClick = { ClusterRepository.highSpeedAlertSpeed.value = (limit + 5).coerceIn(20, 100) },
+                modifier = Modifier.size(44.dp), shape = RoundedCornerShape(14.dp),
+            ) { Text("+") }
+            Spacer(Modifier.width(8.dp))
+            Switch(
+                checked = alert,
+                onCheckedChange = { ClusterRepository.highSpeedAlert.value = it },
+                colors = SwitchDefaults.colors(
+                    checkedThumbColor = Color.White,
+                    checkedTrackColor = JupiterColors.Red,
+                    uncheckedTrackColor = JupiterColors.High,
+                ),
+            )
+        }
     }
     Spacer(Modifier.height(10.dp))
     RedCard {

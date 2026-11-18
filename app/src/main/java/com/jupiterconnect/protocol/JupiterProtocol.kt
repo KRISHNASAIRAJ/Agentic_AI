@@ -106,10 +106,17 @@ fun sanitize(input: String): String {
  *    the keepalive as corrupt, which is what produced the flickering/glitchy
  *    nav area. The mobile-data frame carries no checksum.
  */
-fun buildKeepalive(findMy: Boolean = false, batteryPct: Int = -1, signalBars: Int = -1): ByteArray {
+fun buildKeepalive(
+    findMy: Boolean = false,
+    batteryPct: Int = -1,
+    signalBars: Int = -1,
+    overspeedLimit: Int = 120,
+): ByteArray {
     val b = ByteArray(20)
     b[0] = 0x5B
     b[1] = OutboundId.MOBILE_DATA.toByte()
+    // Byte 3 is the cluster's overspeed limit. 120 disables the alert.
+    b[3] = overspeedLimit.coerceIn(20, 120).toByte()
     // Jupiter's enriched mobile-data layout: byte 2 packs cellular signal in
     // the high nibble and a phone-battery bucket (ceil(pct/25)) in the low
     // nibble. Leaving it zero made the cluster show "no signal / low battery".

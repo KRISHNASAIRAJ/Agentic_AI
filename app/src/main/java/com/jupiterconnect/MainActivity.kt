@@ -216,6 +216,7 @@ fun JupiterApp() {
             )
             1 -> RideScreenV2(
                 telemetry = telemetry,
+                lastReading = lastReading,
                 instruction = navInstruction,
                 mirroring = mirroring,
                 onMirroring = {

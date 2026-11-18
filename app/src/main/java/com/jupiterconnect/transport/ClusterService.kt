@@ -80,6 +80,8 @@ object ClusterRepository {
     val autoSms = MutableStateFlow(false)
     val dnd = MutableStateFlow(false)
     val highSpeedAlert = MutableStateFlow(false)
+    val highSpeedAlertSpeed = MutableStateFlow(60)
+    val socialCounts = MutableStateFlow(Triple(0, 0, 0))
 
     fun setBrightness(level: Int) {
         val next = level.coerceIn(2, 5)
@@ -139,6 +141,7 @@ class ClusterService : Service() {
     private var syncJob: Job? = null
     private var disconnectedAtMs = 0L
     private var clearNotification: Runnable? = null
+    private var speedAlertActive = false
     @SuppressLint("MissingPermission") private var scanCallback: ScanCallback? = null
 
     private val adapter: BluetoothAdapter?
@@ -303,6 +306,29 @@ class ClusterService : Service() {
         gatt = device.connectGatt(this, false, gattCallback, BluetoothDevice.TRANSPORT_LE)
     }
 
+    /** Active only while the cluster is linked, like TVS Connect. */
+    private fun checkSpeedAlert(t: Telemetry) {
+        if (!t.connected) {
+            speedAlertActive = false
+            return
+        }
+        val over = ClusterRepository.highSpeedAlert.value &&
+            t.speedKmh > ClusterRepository.highSpeedAlertSpeed.value
+        if (over == speedAlertActive) return
+        speedAlertActive = over
+        if (over) {
+            FrameLog.note("SPEED ALERT ${t.speedKmh} > ${ClusterRepository.highSpeedAlertSpeed.value}")
+            scope.launch { write(buildNavText("OVER SPEED ${t.speedKmh}")) }
+            val vibrator = getSystemService(android.os.Vibrator::class.java)
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                vibrator?.vibrate(android.os.VibrationEffect.createOneShot(180, 180))
+            } else {
+                @Suppress("DEPRECATION")
+                vibrator?.vibrate(180L)
+            }
+        }
+    }
+
     /** Fan out one decoded frame to rides, voice, speed graph and warm-up. */
     private fun onTelemetryFrame(t: Telemetry, primary: Boolean, raw: ByteArray) {
         if ((raw[1].toInt() and 0xFF) == 0x18) {
@@ -317,6 +343,7 @@ class ClusterService : Service() {
         if ((raw[1].toInt() and 0xFF) == 0x10) {
             voiceBridge.onSwitchAction(raw[12].toInt() and 0x3F)
         }
+        checkSpeedAlert(t)
         RideStore.onFrame(t, primary)
         voiceBridge.onFrame(t)
         ClusterRepository.recordSpeed(t.speedKmh)
@@ -387,6 +414,7 @@ class ClusterService : Service() {
     }
 
     fun sendSocialCounts(wa: Int, fb: Int, ig: Int) {
+        ClusterRepository.socialCounts.value = Triple(wa, fb, ig)
         scope.launch { write(buildSocialCounts(wa, fb, ig)) }
     }
 
@@ -592,6 +620,8 @@ class ClusterService : Service() {
                 write(buildKeepalive(
                     batteryPct = phoneBatteryPct(),
                     signalBars = phoneSignalBars(),
+                    overspeedLimit = if (ClusterRepository.highSpeedAlert.value)
+                        ClusterRepository.highSpeedAlertSpeed.value else 120,
                 ))
                 delay(2000)
             }
