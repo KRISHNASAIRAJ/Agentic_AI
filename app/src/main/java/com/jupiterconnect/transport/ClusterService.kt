@@ -138,6 +138,8 @@ class ClusterService : Service() {
     // Guards parking capture: a fresh spot is saved once per connect/disconnect
     // cycle, never from repeated disconnect callbacks or background location.
     @Volatile private var connectionEstablished = false
+    // Invalidates an in-flight parking fix if the bike reconnects before it lands.
+    @Volatile private var parkingEpoch = 0
     @Volatile private var writeChar: BluetoothGattCharacteristic? = null
     @Volatile private var discoveryStarted = false
     @Volatile private var lastAddress: String? = null
@@ -389,6 +391,7 @@ class ClusterService : Service() {
     private fun saveParkedLocation() {
         if (!connectionEstablished) return
         connectionEstablished = false
+        val epoch = ++parkingEpoch
         val locationAllowed =
             ContextCompat.checkSelfPermission(this, android.Manifest.permission.ACCESS_FINE_LOCATION) ==
                 PackageManager.PERMISSION_GRANTED ||
@@ -406,13 +409,13 @@ class ClusterService : Service() {
         val savedAt = System.currentTimeMillis()
         var saved = false
         val timeout = Runnable {
-            if (saved) return@Runnable
+            if (saved || epoch != parkingEpoch) return@Runnable
             saved = true
             fallback?.let { RideStore.saveParkedLocation(it.latitude, it.longitude, savedAt) }
         }
         val listener = object : LocationListener {
             override fun onLocationChanged(location: Location) {
-                if (saved) return
+                if (saved || epoch != parkingEpoch) return
                 saved = true
                 main.removeCallbacks(timeout)
                 providers.forEach { runCatching { manager.removeUpdates(this) } }
@@ -496,6 +499,7 @@ class ClusterService : Service() {
                     FrameLog.note("GATT connected status=$status")
                     voiceBridge.reset()
                     connectionEstablished = true
+                    parkingEpoch++
                     RideStore.onConnected()
                     gatt = g
                     ClusterRepository.telemetry.value = ClusterRepository.telemetry.value.copy(
