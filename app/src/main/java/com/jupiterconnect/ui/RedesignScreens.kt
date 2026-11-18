@@ -171,6 +171,14 @@ private fun Label(text: String) = Text(
     color = JupiterColors.OnSurfaceVariant, letterSpacing = 2.sp,
 )
 
+/** One-line compact label for the narrow 3-across telemetry tiles. */
+@Composable
+private fun TileLabel(text: String) = Text(
+    text.uppercase(), fontSize = 9.sp, fontWeight = FontWeight.Medium,
+    color = JupiterColors.OnSurfaceVariant, letterSpacing = 0.5.sp,
+    maxLines = 1, softWrap = false,
+)
+
 @Composable
 private fun RedCard(bar: Boolean = false, modifier: Modifier = Modifier, content: @Composable ColumnScope.() -> Unit) {
     Row(
@@ -636,10 +644,12 @@ fun RideScreenV2(
             Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                 row.forEach { (label, value) ->
                     RedCard(modifier = Modifier.weight(1f).height(92.dp)) {
-                        Label(label)
+                        TileLabel(label)
                         Spacer(Modifier.height(8.dp))
-                        Text(value, fontSize = 19.sp, fontWeight = FontWeight.Medium,
-                            maxLines = 1, color = JupiterColors.OnSurface)
+                        Text(value, fontSize = 17.sp, fontWeight = FontWeight.Medium,
+                            maxLines = 1, softWrap = false,
+                            overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
+                            color = JupiterColors.OnSurface)
                     }
                 }
             }
@@ -794,6 +804,8 @@ fun RidesScreenV2(
             RedCard(modifier = Modifier.weight(1f)) {
                 Label("TOP")
                 BigValue("$top", "km/h", 32)
+                Text("Best recorded", fontSize = 13.sp,
+                    color = JupiterColors.OnSurfaceVariant)
             }
         }
         Spacer(Modifier.height(18.dp))
