@@ -71,13 +71,10 @@ data class ParkedLocation(
     val coordinates: String get() = "%.5f, %.5f".format(lat, lng)
     val timeLabel: String
         get() {
-            val c = java.util.Calendar.getInstance().apply { timeInMillis = atMs }
-            return "%02d %s · %02d:%02d".format(
-                c.get(java.util.Calendar.DAY_OF_MONTH),
-                java.text.DateFormatSymbols().shortMonths[c.get(java.util.Calendar.MONTH)],
-                c.get(java.util.Calendar.HOUR_OF_DAY),
-                c.get(java.util.Calendar.MINUTE),
-            )
+            // Always IST, independent of the phone's locale/timezone.
+            val fmt = java.text.SimpleDateFormat("dd MMM · HH:mm", java.util.Locale.ENGLISH)
+            fmt.timeZone = java.util.TimeZone.getTimeZone("Asia/Kolkata")
+            return fmt.format(java.util.Date(atMs))
         }
 }
 
@@ -114,6 +111,9 @@ object RideStore {
     private const val KEY_PARK_LAT = "park_lat"
     private const val KEY_PARK_LNG = "park_lng"
     private const val KEY_PARK_MS = "park_ms"
+    private const val KEY_LIVE_SPEEDS = "live_speeds"
+    private const val KEY_LIVE_THROTTLES = "live_throttles"
+    private const val KEY_ALL_TIME_TOP = "all_time_top"
 
     private var prefs: SharedPreferences? = null
     private val syncedIds = mutableSetOf<Long>()
@@ -131,6 +131,10 @@ object RideStore {
     // speed (not the current speed, which drops when the accelerator is eased).
     private val _liveTopSpeed = MutableStateFlow(0)
     val liveTopSpeed: StateFlow<Int> = _liveTopSpeed.asStateFlow()
+
+    /** Best speed ever recorded; only ever rises, survives restarts. */
+    private val _allTimeTopSpeed = MutableStateFlow(0)
+    val allTimeTopSpeed: StateFlow<Int> = _allTimeTopSpeed.asStateFlow()
 
     // Trip distance derived from the odometer (which the cluster broadcasts
     // correctly). The cluster's "trip meter" byte is not a trip counter - it
@@ -198,6 +202,11 @@ object RideStore {
             hasData = p.getBoolean(KEY_LAST_HAS, false),
         )
         _issSavedSeconds.value = p.getLong(KEY_CARBON_SECONDS, 0L)
+        _allTimeTopSpeed.value = p.getInt(KEY_ALL_TIME_TOP, 0)
+        // Keep the last ride's graph visible after a disconnect or a restart.
+        // It is only cleared in onConnected(), when the next ride starts.
+        _liveSpeeds.value = p.getString(KEY_LIVE_SPEEDS, "").orEmpty().parseSamples()
+        _liveThrottles.value = p.getString(KEY_LIVE_THROTTLES, "").orEmpty().parseSamples()
         _rides.value = parseRides(p.getString(KEY_RIDES, "").orEmpty()).map { r ->
             val raw = p.getString(KEY_SAMPLES + r.startedAt, "").orEmpty()
             val parts = raw.split("|")
@@ -280,6 +289,11 @@ object RideStore {
         }
         // Peak speed never decreases when the accelerator is eased.
         if (t.speedKmh > _liveTopSpeed.value) _liveTopSpeed.value = t.speedKmh
+        // All-time best only rises; persist it so it is always shown.
+        if (t.speedKmh > _allTimeTopSpeed.value) {
+            _allTimeTopSpeed.value = t.speedKmh
+            p.edit().putInt(KEY_ALL_TIME_TOP, t.speedKmh).apply()
+        }
         if (t.rpm > maxRpm) maxRpm = t.rpm
         if (t.issCount > 0) {
             if (startIssCount < 0) startIssCount = t.issCount
@@ -329,6 +343,10 @@ object RideStore {
                     lastSampleAtMs = now
                     _liveSpeeds.value = rideSpeeds.toList()
                     _liveThrottles.value = rideThrottles.toList()
+                    p.edit()
+                        .putString(KEY_LIVE_SPEEDS, rideSpeeds.joinToString("_"))
+                        .putString(KEY_LIVE_THROTTLES, rideThrottles.joinToString("_"))
+                        .apply()
                 }
                 if (lastPrimaryAtMs > 0) {
                     val dt = (now - lastPrimaryAtMs).coerceIn(0L, 2_000L)
@@ -350,6 +368,15 @@ object RideStore {
     fun onDisconnected() {
         if (!active) return
         active = false
+        // Freeze the graph on screen after the link drops. Only the next
+        // connect/ride start clears it. Persist the last samples as well so a
+        // process restart still shows the most recent ride.
+        _liveSpeeds.value = rideSpeeds.toList()
+        _liveThrottles.value = rideThrottles.toList()
+        prefs?.edit()
+            ?.putString(KEY_LIVE_SPEEDS, rideSpeeds.joinToString("_"))
+            ?.putString(KEY_LIVE_THROTTLES, rideThrottles.joinToString("_"))
+            ?.apply()
         val start = rideStartOdo
         val end = rideLastOdo
         if (start == null || end == null || end <= start) return

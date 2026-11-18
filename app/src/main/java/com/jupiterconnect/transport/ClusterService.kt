@@ -21,6 +21,8 @@ import android.annotation.SuppressLint
 import android.os.BatteryManager
 import android.telephony.TelephonyManager
 import android.content.pm.PackageManager
+import android.location.Location
+import android.location.LocationListener
 import android.location.LocationManager
 import android.os.Build
 import android.os.Handler
@@ -133,6 +135,9 @@ class ClusterService : Service() {
     private val main = Handler(Looper.getMainLooper())
 
     @Volatile private var gatt: BluetoothGatt? = null
+    // Guards parking capture: a fresh spot is saved once per connect/disconnect
+    // cycle, never from repeated disconnect callbacks or background location.
+    @Volatile private var connectionEstablished = false
     @Volatile private var writeChar: BluetoothGattCharacteristic? = null
     @Volatile private var discoveryStarted = false
     @Volatile private var lastAddress: String? = null
@@ -372,9 +377,18 @@ class ClusterService : Service() {
         }
     }
 
-    /** Save the last known GPS fix as the parking spot when the link drops. */
+    /**
+     * Capture the parking spot the instant the link drops. Ask for a fresh fix
+     * (the scooter is parked now, not where the phone last had a cached fix),
+     * and fall back to the best cached fix if a fresh one takes too long. The
+     * saved time is the disconnect time, never the GPS fix time, so "Saved" is
+     * accurate. [connectionEstablished] keeps the spot frozen until the next
+     * real connect/disconnect cycle.
+     */
     @SuppressLint("MissingPermission")
     private fun saveParkedLocation() {
+        if (!connectionEstablished) return
+        connectionEstablished = false
         val locationAllowed =
             ContextCompat.checkSelfPermission(this, android.Manifest.permission.ACCESS_FINE_LOCATION) ==
                 PackageManager.PERMISSION_GRANTED ||
@@ -382,12 +396,37 @@ class ClusterService : Service() {
                 PackageManager.PERMISSION_GRANTED
         if (!locationAllowed) return
         val manager = getSystemService(Context.LOCATION_SERVICE) as? LocationManager ?: return
-        val best = listOf(LocationManager.GPS_PROVIDER, LocationManager.NETWORK_PROVIDER)
-            .mapNotNull { provider ->
-                runCatching { manager.getLastKnownLocation(provider) }.getOrNull()
-            }
+        val providers = listOf(LocationManager.GPS_PROVIDER, LocationManager.NETWORK_PROVIDER)
+            .filter { runCatching { manager.isProviderEnabled(it) }.getOrDefault(false) }
+        if (providers.isEmpty()) return
+
+        val fallback = providers
+            .mapNotNull { runCatching { manager.getLastKnownLocation(it) }.getOrNull() }
             .maxByOrNull { it.time }
-        best?.let { RideStore.saveParkedLocation(it.latitude, it.longitude, it.time) }
+        val savedAt = System.currentTimeMillis()
+        var saved = false
+        val timeout = Runnable {
+            if (saved) return@Runnable
+            saved = true
+            fallback?.let { RideStore.saveParkedLocation(it.latitude, it.longitude, savedAt) }
+        }
+        val listener = object : LocationListener {
+            override fun onLocationChanged(location: Location) {
+                if (saved) return
+                saved = true
+                main.removeCallbacks(timeout)
+                providers.forEach { runCatching { manager.removeUpdates(this) } }
+                RideStore.saveParkedLocation(location.latitude, location.longitude, savedAt)
+            }
+            override fun onStatusChanged(provider: String?, status: Int,
+                                         extras: android.os.Bundle?) {}
+            override fun onProviderEnabled(provider: String) {}
+            override fun onProviderDisabled(provider: String) {}
+        }
+        providers.forEach { provider: String ->
+            runCatching<Unit> { manager.requestSingleUpdate(provider, listener, Looper.getMainLooper()) }
+        }
+        main.postDelayed(timeout, 2500L)
     }
 
     /** Write a short text reply to the cluster's navigation text row (0x5B 0x4F). */
@@ -456,6 +495,7 @@ class ClusterService : Service() {
                     Log.i(TAG, "GATT connected, status=$status - requesting MTU")
                     FrameLog.note("GATT connected status=$status")
                     voiceBridge.reset()
+                    connectionEstablished = true
                     RideStore.onConnected()
                     gatt = g
                     ClusterRepository.telemetry.value = ClusterRepository.telemetry.value.copy(

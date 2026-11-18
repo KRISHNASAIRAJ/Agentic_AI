@@ -376,6 +376,8 @@ fun HomeScreenV2(
             "JULY", "AUGUST", "SEPTEMBER", "OCTOBER", "NOVEMBER", "DECEMBER")
         "${days[c.get(Calendar.DAY_OF_WEEK) - 1]}, ${c.get(Calendar.DAY_OF_MONTH)} ${months[c.get(Calendar.MONTH)]}"
     }
+    // Tap the LIVE SPEED card to expand its graph inside the card.
+    var speedGraphExpanded by remember { mutableStateOf(false) }
     JupiterShell("Jupiter 125", kicker, activeTab, onTab, onSettings) {
         Spacer(Modifier.height(4.dp))
         Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
@@ -439,23 +441,35 @@ fun HomeScreenV2(
             }
             // Right column
             Column(Modifier.weight(178f), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                Box(Modifier.height(161.dp).clip(RoundedCornerShape(34.dp)).background(JupiterColors.Low)) {
+                Box(
+                    Modifier
+                        .height(if (speedGraphExpanded) 262.dp else 161.dp)
+                        .clip(RoundedCornerShape(34.dp))
+                        .background(JupiterColors.Low)
+                        .clickable { speedGraphExpanded = !speedGraphExpanded },
+                ) {
                     Column(Modifier.padding(18.dp).fillMaxSize()) {
                         Label("LIVE SPEED")
                         val speed = if (telemetry.connected && telemetry.speedKmh > 0)
                             "${telemetry.speedKmh}" else "--"
                         BigValue(speed, "km/h", 36)
                         Spacer(Modifier.weight(1f))
-                        // Current ride grows a fresh graph; when disconnected
-                        // we show the most recent saved ride until a new one starts.
+                        // The graph is persisted by RideStore, so it stays after
+                        // a disconnect and is cleared only when the next ride
+                        // connects/starts. Tapping the card expands it in place.
                         val liveSpeeds = RideStore.liveSpeeds.collectAsState().value
                         val liveThrottles = RideStore.liveThrottles.collectAsState().value
                         val recent = RideStore.rides.collectAsState().value.firstOrNull()
                         val graph = if (liveSpeeds.isNotEmpty()) liveSpeeds
-                            else recent?.speedSamples.orEmpty()
+                            else if (!telemetry.connected) recent?.speedSamples.orEmpty()
+                            else emptyList()
                         val throttles = if (liveThrottles.isNotEmpty()) liveThrottles
-                            else recent?.throttleSamples.orEmpty()
-                        Canvas(Modifier.fillMaxWidth().height(38.dp)) {
+                            else if (!telemetry.connected) recent?.throttleSamples.orEmpty()
+                            else emptyList()
+                        Canvas(
+                            Modifier.fillMaxWidth()
+                                .height(if (speedGraphExpanded) 150.dp else 38.dp),
+                        ) {
                             if (graph.size > 1) {
                                 val max = (graph.maxOrNull() ?: 1).coerceAtLeast(1)
                                 val step = size.width / (graph.size - 1)
@@ -476,6 +490,11 @@ fun HomeScreenV2(
                                 }
                             }
                         }
+                        Spacer(Modifier.height(4.dp))
+                        Text(
+                            if (speedGraphExpanded) "TAP TO COLLAPSE" else "TAP TO EXPAND GRAPH",
+                            fontSize = 9.sp, color = JupiterColors.OnSurfaceVariant,
+                        )
                     }
                 }
                 Box(Modifier.height(161.dp).clip(RoundedCornerShape(34.dp)).background(JupiterColors.Low)) {
@@ -483,13 +502,19 @@ fun HomeScreenV2(
                         Label("ODOMETER")
                         val odo = if (telemetry.odometerKm > 0) telemetry.odometerKm else lastReading.odometerKm
                         BigValue("%.1f".format(odo), "km", 30)
-                        val top = RideStore.liveTopSpeed.collectAsState().value
+                        // All-time best only rises and is always shown; the
+                        // current ride's peak is shown underneath it.
+                        val bestTop = RideStore.allTimeTopSpeed.collectAsState().value
                             .coerceAtLeast(telemetry.clusterTopSpeedKmh)
-                        Text("Top $top km/h", fontSize = 13.sp, color = JupiterColors.OnSurfaceVariant)
+                        val rideTop = RideStore.liveTopSpeed.collectAsState().value
+                        Text("Best $bestTop km/h", fontSize = 13.sp,
+                            fontWeight = FontWeight.Medium, color = JupiterColors.Accent)
+                        Text("This ride $rideTop km/h", fontSize = 11.sp,
+                            color = JupiterColors.OnSurfaceVariant)
                         Spacer(Modifier.weight(1f))
                         Box(Modifier.fillMaxWidth().height(5.dp).clip(RoundedCornerShape(3.dp))
                             .background(JupiterColors.High)) {
-                            Box(Modifier.fillMaxWidth((top / 95f).coerceIn(0f, 1f)).height(5.dp)
+                            Box(Modifier.fillMaxWidth((bestTop / 95f).coerceIn(0f, 1f)).height(5.dp)
                                 .clip(RoundedCornerShape(3.dp)).background(JupiterColors.Red))
                         }
                     }
