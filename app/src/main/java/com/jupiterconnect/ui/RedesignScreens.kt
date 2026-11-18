@@ -177,6 +177,48 @@ private fun IconCircle(icon: ImageVector, label: String) = Box(
     contentAlignment = Alignment.Center,
 ) { Icon(icon, label, modifier = Modifier.size(21.dp), tint = JupiterColors.Accent) }
 
+/** Icon circle with a short label and live value beneath it. */
+@Composable
+private fun IconStat(icon: ImageVector, label: String, value: String) = Column(
+    horizontalAlignment = Alignment.CenterHorizontally,
+) {
+    IconCircle(icon, label)
+    Spacer(Modifier.height(4.dp))
+    Text(label, fontSize = 9.sp, color = JupiterColors.OnSurfaceVariant)
+    Text(value, fontSize = 11.sp, fontWeight = FontWeight.Medium,
+        color = JupiterColors.Accent)
+}
+
+@Composable
+private fun InfoRow(label: String, value: String) {
+    Row(Modifier.fillMaxWidth().padding(vertical = 5.dp)) {
+        Text(label, Modifier.weight(1f), fontSize = 12.sp,
+            color = JupiterColors.OnSurfaceVariant)
+        Text(value, fontSize = 12.sp, color = JupiterColors.OnSurface)
+    }
+}
+
+@Composable
+private fun VehicleDetailsRows(
+    telemetry: Telemetry,
+    lastReading: com.jupiterconnect.session.LastReading,
+) {
+    InfoRow("Speed", "${telemetry.speedKmh} km/h")
+    InfoRow("RPM", "${telemetry.rpm}")
+    InfoRow("Odometer", "%.1f km".format(
+        if (telemetry.odometerKm > 0) telemetry.odometerKm else lastReading.odometerKm))
+    InfoRow("Trip (app)", "%.2f km".format(RideStore.liveTripKm.collectAsState().value))
+    InfoRow("Top speed", "${RideStore.liveTopSpeed.collectAsState().value} km/h")
+    InfoRow("Fuel", "${if (telemetry.connected) telemetry.fuelBars else lastReading.fuelBars} / 6 bars")
+    InfoRow("Intake temp", "${telemetry.intakeTempC} °C")
+    InfoRow("Engine load", "${telemetry.engineLoad} %")
+    InfoRow("Throttle", "${telemetry.throttlePosition} %")
+    InfoRow("Mode", if (telemetry.powerMode) "POWER" else "ECO")
+    InfoRow("Ignition", if (telemetry.ignitionOn) "ON" else "OFF")
+    InfoRow("ISS mode", "${telemetry.issMode}")
+    InfoRow("Service due", if (telemetry.serviceDue) "YES" else "NO")
+}
+
 @Composable
 private fun BigValue(value: String, unit: String, size: Int = 40) {
     Row(verticalAlignment = Alignment.Bottom) {
@@ -252,10 +294,14 @@ fun HomeScreenV2(
                         }
                     }
                     Spacer(Modifier.weight(1f))
+                    val coolantV = if (telemetry.engineTempC != 0) "${telemetry.engineTempC}°" else "--"
+                    val batteryV = if (telemetry.batteryVoltage > 0)
+                        "%.1f".format(telemetry.batteryVoltage) else "--"
+                    val rpmV = if (telemetry.rpm > 0) "${telemetry.rpm}" else "--"
                     Row(Modifier.fillMaxWidth(), Arrangement.SpaceBetween) {
-                        IconCircle(Icons.Rounded.WaterDrop, "Coolant")
-                        IconCircle(Icons.Rounded.BatteryChargingFull, "Battery")
-                        IconCircle(Icons.Rounded.Speed, "Performance")
+                        IconStat(Icons.Rounded.WaterDrop, "COOLANT", coolantV)
+                        IconStat(Icons.Rounded.BatteryChargingFull, "BATTERY", batteryV)
+                        IconStat(Icons.Rounded.Speed, "RPM", rpmV)
                     }
                 }
             }
@@ -328,6 +374,45 @@ fun HomeScreenV2(
                 BigValue(if (volt > 0) "%.1f".format(volt) else "--", "V", 36)
             }
         }
+        Spacer(Modifier.height(10.dp))
+        Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+            RedCard(modifier = Modifier.weight(1f)) {
+                Label("RANGE")
+                val dte = if (telemetry.connected) telemetry.distanceToEmptyKm
+                    else lastReading.distanceToEmptyKm
+                val assumeFull = (telemetry.connected && telemetry.fuelBars >= 6 && dte <= 0) ||
+                    (!telemetry.connected && lastReading.hasData &&
+                        lastReading.fuelBars >= 6 && dte <= 0)
+                val range = when {
+                    dte > 0 -> "$dte"
+                    assumeFull -> "240"
+                    else -> "--"
+                }
+                BigValue(range, "km", 36)
+            }
+            RedCard(modifier = Modifier.weight(1f)) {
+                Label("AVG ECONOMY")
+                val econ = if (telemetry.averageFuelEconomy > 0) telemetry.averageFuelEconomy
+                    else lastReading.averageFuelEconomy
+                BigValue(if (econ > 0) "$econ" else "--", "km/L", 36)
+            }
+        }
+        Spacer(Modifier.height(18.dp))
+        Label("VEHICLE DETAILS")
+        Spacer(Modifier.height(10.dp))
+        RedCard {
+            // Live details scroll inside a fixed-height card while connected.
+            // Offline, the last known values are shown as a static list and the
+            // page itself still scrolls normally.
+            if (telemetry.connected) {
+                Box(Modifier.height(220.dp).verticalScroll(rememberScrollState())) {
+                    VehicleDetailsRows(telemetry, lastReading)
+                }
+            } else {
+                VehicleDetailsRows(telemetry, lastReading)
+            }
+        }
+        Spacer(Modifier.height(10.dp))
     }
 }
 
