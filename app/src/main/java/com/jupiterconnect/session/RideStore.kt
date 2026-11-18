@@ -110,6 +110,7 @@ object RideStore {
     private const val KEY_SYNCED = "synced_rides"
     private const val KEY_WARMUP_LAST = "warmup_last_run"
     private const val KEY_SAMPLES = "rs_"
+    private const val KEY_CARBON_SECONDS = "carbon_iss_seconds"
     private const val KEY_PARK_LAT = "park_lat"
     private const val KEY_PARK_LNG = "park_lng"
     private const val KEY_PARK_MS = "park_ms"
@@ -150,6 +151,18 @@ object RideStore {
     private val _tripFKm = MutableStateFlow(0.0)
     val tripFKm: StateFlow<Double> = _tripFKm.asStateFlow()
 
+    /** Cumulative seconds the engine was stopped by ISS; drives CO2 saved. */
+    private val _issSavedSeconds = MutableStateFlow(0L)
+    val issSavedSeconds: StateFlow<Long> = _issSavedSeconds.asStateFlow()
+
+    /** kg of CO2 not emitted because ISS stopped the engine at signals. */
+    val carbonSavedKg: Double
+        get() = _issSavedSeconds.value * IDLE_LITRES_PER_SECOND * CO2_KG_PER_LITRE
+
+    // ~0.5 L/hour idle for a 125cc scooter, and ~2.31 kg CO2 per litre petrol.
+    const val IDLE_LITRES_PER_SECOND = 0.5 / 3600.0
+    const val CO2_KG_PER_LITRE = 2.31
+
     private var rideStartMs = 0L
     private var rideStartOdo: Double? = null
     private var rideLastOdo: Double? = null
@@ -169,6 +182,7 @@ object RideStore {
     private val rideThrottles = mutableListOf<Int>()
     private var lastSampleAtMs = 0L
     private var lowFuelStartOdo: Double? = null
+    private var lastIssDuration = -1L
 
     fun init(context: Context) {
         if (prefs != null) return
@@ -183,6 +197,7 @@ object RideStore {
             engineTempC = p.getInt(KEY_LAST_TEMP, 0),
             hasData = p.getBoolean(KEY_LAST_HAS, false),
         )
+        _issSavedSeconds.value = p.getLong(KEY_CARBON_SECONDS, 0L)
         _rides.value = parseRides(p.getString(KEY_RIDES, "").orEmpty()).map { r ->
             val raw = p.getString(KEY_SAMPLES + r.startedAt, "").orEmpty()
             val parts = raw.split("|")
@@ -269,6 +284,14 @@ object RideStore {
         if (t.issCount > 0) {
             if (startIssCount < 0) startIssCount = t.issCount
             lastIssCount = t.issCount
+        }
+        // ISS duration is cumulative on the cluster; add only positive deltas.
+        if (t.issDuration > 0) {
+            if (lastIssDuration >= 0 && t.issDuration > lastIssDuration) {
+                _issSavedSeconds.value += t.issDuration.toLong() - lastIssDuration
+                prefs?.edit()?.putLong(KEY_CARBON_SECONDS, _issSavedSeconds.value)?.apply()
+            }
+            lastIssDuration = t.issDuration.toLong()
         }
         if (t.fuelBars in 1..6) {
             if (fuelStart < 0) fuelStart = t.fuelBars

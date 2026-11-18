@@ -150,6 +150,19 @@ fun buildNavControl(distanceMeters: Int, etaMinutes: Int, remainingMeters: Int, 
     return b
 }
 
+/**
+ * Carbon-saving value on the cluster's 0x9C frame. Byte 6 carries kg CO2
+ * (see RideLink PROTOCOL.md, `carbonEmission`).
+ */
+fun buildCarbonFrame(kg: Int): ByteArray {
+    val b = ByteArray(20)
+    b[0] = 0x5B
+    b[1] = 0x9C.toByte()
+    b[6] = kg.coerceIn(0, 255).toByte()
+    b[19] = 0xFF.toByte()
+    return b
+}
+
 fun buildNavText(text: String, id: Int = OutboundId.NAVIGATION_TEXT): ByteArray {
     val b = ByteArray(20)
     b[0] = 0x5B

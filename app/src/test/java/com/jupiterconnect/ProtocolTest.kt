@@ -5,6 +5,7 @@ import com.jupiterconnect.nav.NavParsing
 import com.jupiterconnect.session.ColdStartTracker
 import com.jupiterconnect.session.Ride
 import com.jupiterconnect.session.WarmupPhase
+import com.jupiterconnect.protocol.buildCarbonFrame
 import com.jupiterconnect.protocol.buildKeepalive
 import com.jupiterconnect.protocol.buildNavControl
 import com.jupiterconnect.protocol.buildNavText
@@ -185,6 +186,15 @@ class ProtocolTest {
         assertEquals(6.0, ride.economyKmPerL, 0.01)
         assertEquals(10, ride.bandPct(0))
         assertEquals(40, ride.bandPct(3))
+    }
+
+    @Test
+    fun carbon_frame_carries_kg_in_byte_six() {
+        val frame = buildCarbonFrame(6)
+        assertEquals(0x5B, frame[0].toInt() and 0xFF)
+        assertEquals(0x9C, frame[1].toInt() and 0xFF)
+        assertEquals(6, frame[6].toInt() and 0xFF)
+        assertEquals(0xFF, frame[19].toInt() and 0xFF)
     }
 
     @Test

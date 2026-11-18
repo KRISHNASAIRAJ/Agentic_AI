@@ -40,6 +40,7 @@ import com.jupiterconnect.session.WarmupState
 import com.jupiterconnect.sync.SupabaseClient
 import com.jupiterconnect.nav.NavInstruction
 import com.jupiterconnect.protocol.buildKeepalive
+import com.jupiterconnect.protocol.buildCarbonFrame
 import com.jupiterconnect.protocol.buildNavControl
 import com.jupiterconnect.protocol.buildNavText
 import com.jupiterconnect.protocol.decodeFrame
@@ -412,6 +413,8 @@ class ClusterService : Service() {
                     FrameLog.note("GATT disconnected status=$status")
                     saveParkedLocation()
                     RideStore.onDisconnected()
+                    // Show the accumulated carbon saving on the cluster.
+                    scope.launch { write(buildCarbonFrame(RideStore.carbonSavedKg.toInt())) }
                     // No telemetry means no engine data - make that explicit.
                     ClusterRepository.warmup.value = WarmupState(message = "Engine off")
                     // Keep syncing for two minutes after the link drops.

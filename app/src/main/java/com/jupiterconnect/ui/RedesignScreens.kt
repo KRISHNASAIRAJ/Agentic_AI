@@ -34,6 +34,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.AccessTime
 import androidx.compose.material.icons.rounded.BatteryChargingFull
 import androidx.compose.material.icons.rounded.CheckCircle
+import androidx.compose.material.icons.rounded.Eco
 import androidx.compose.material.icons.rounded.Bluetooth
 import androidx.compose.material.icons.rounded.BluetoothConnected
 import androidx.compose.material.icons.rounded.Check
@@ -197,6 +198,28 @@ private fun InfoRow(label: String, value: String) {
         Text(label, Modifier.weight(1f), fontSize = 12.sp,
             color = JupiterColors.OnSurfaceVariant)
         Text(value, fontSize = 12.sp, color = JupiterColors.OnSurface)
+    }
+}
+
+/** Carbon saved by ISS idle stops, with the same numbers sent to the cluster. */
+@Composable
+private fun CarbonCard() {
+    val seconds by RideStore.issSavedSeconds.collectAsState()
+    val kg = RideStore.carbonSavedKg
+    RedCard(bar = true) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            IconCircle(Icons.Rounded.Eco, "Carbon saved")
+            Spacer(Modifier.width(12.dp))
+            Column(Modifier.weight(1f)) {
+                Label("CARBON SAVED")
+                Spacer(Modifier.height(4.dp))
+                BigValue("%.3f".format(kg), "kg CO2", 32)
+            }
+        }
+        Spacer(Modifier.height(8.dp))
+        Text("ISS saved ${seconds / 60} min of idling · ~%.2f L fuel".format(
+            seconds * RideStore.IDLE_LITRES_PER_SECOND),
+            fontSize = 12.sp, color = JupiterColors.OnSurfaceVariant)
     }
 }
 
@@ -521,6 +544,8 @@ fun HomeScreenV2(
         }
         Spacer(Modifier.height(10.dp))
         ColdStartCardV2()
+        Spacer(Modifier.height(10.dp))
+        CarbonCard()
         Spacer(Modifier.height(18.dp))
         Label("VEHICLE DETAILS")
         Spacer(Modifier.height(10.dp))
