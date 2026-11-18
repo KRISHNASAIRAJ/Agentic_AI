@@ -11,6 +11,7 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -640,6 +641,10 @@ fun PremiumRidesScreen(
         }
         Spacer(Modifier.height(18.dp))
 
+        RideHistoryChart(rides)
+
+        Spacer(Modifier.height(18.dp))
+
         // Diagnostic card: shows the raw Maps notification fields and what we
         // parsed/sent. Screenshot this while "0m" blinks to see where Maps hides
         // the distance, so the next fix is targeted rather than a guess.
@@ -659,6 +664,135 @@ fun PremiumRidesScreen(
         }
         Spacer(Modifier.height(28.dp))
     }
+}
+
+/** Weekly / monthly distance history, drawn from the saved rides. */
+@Composable
+private fun RideHistoryChart(rides: List<Ride>) {
+    var weekly by remember { mutableStateOf(true) }
+    val buckets = remember(rides, weekly) { buildHistoryBuckets(rides, weekly) }
+    val maxKm = buckets.maxOfOrNull { it.km }?.coerceAtLeast(0.1) ?: 0.1
+    val totalKm = buckets.sumOf { it.km }
+    val avgSpeed = if (totalKm > 0)
+        buckets.sumOf { it.speedWeighted } / totalKm else 0.0
+    val econSum = buckets.sumOf { it.econWeighted }
+    val econKm = buckets.filter { it.econKm > 0 }.sumOf { it.econKm }
+    val economy = if (econKm > 0) econSum / econKm else 0.0
+
+    SectionHeading(
+        "History",
+        trailing = if (weekly) "LAST 8 WEEKS" else "LAST 6 MONTHS",
+    )
+    Spacer(Modifier.height(10.dp))
+    PremiumCard {
+        Column(Modifier.padding(16.dp)) {
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                OutlinedButton(
+                    onClick = { weekly = true },
+                    modifier = Modifier.weight(1f),
+                    shape = RoundedCornerShape(999.dp),
+                ) { Text("Weekly") }
+                OutlinedButton(
+                    onClick = { weekly = false },
+                    modifier = Modifier.weight(1f),
+                    shape = RoundedCornerShape(999.dp),
+                ) { Text("Monthly") }
+            }
+            Spacer(Modifier.height(16.dp))
+            Row(
+                Modifier.fillMaxWidth().height(110.dp),
+                verticalAlignment = Alignment.Bottom,
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
+            ) {
+                buckets.forEach { b ->
+                    Column(
+                        Modifier.weight(1f).fillMaxHeight(),
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        verticalArrangement = Arrangement.Bottom,
+                    ) {
+                        Box(
+                            Modifier.fillMaxWidth()
+                                .height((maxOf(2f, (b.km / maxKm).toFloat() * 100f)).dp)
+                                .clip(RoundedCornerShape(4.dp))
+                                .background(
+                                    if (b.km > 0) JupiterColors.Accent
+                                    else MaterialTheme.colorScheme.outline.copy(alpha = 0.2f),
+                                ),
+                        )
+                        Spacer(Modifier.height(4.dp))
+                        Text(b.label, style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    }
+                }
+            }
+            Spacer(Modifier.height(12.dp))
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                RideMetric(Modifier.weight(1f), "KM", "%.1f".format(totalKm), "total")
+                RideMetric(Modifier.weight(1f), "AVG", "%.0f".format(avgSpeed), "km/h")
+                RideMetric(
+                    Modifier.weight(1f), "ECON",
+                    if (economy > 0) "%.1f".format(economy) else "—", "km/L",
+                )
+            }
+        }
+    }
+}
+
+private data class HistoryBucket(
+    val label: String,
+    val km: Double,
+    val speedWeighted: Double,
+    val econWeighted: Double,
+    val econKm: Double,
+)
+
+private fun buildHistoryBuckets(rides: List<Ride>, weekly: Boolean): List<HistoryBucket> {
+    val count = if (weekly) 8 else 6
+    val labels = mutableListOf<String>()
+    val keys = mutableListOf<Int>()
+    val fmt = java.text.DateFormatSymbols().shortMonths
+    if (weekly) {
+        val monday = java.util.Calendar.getInstance().apply {
+            set(java.util.Calendar.HOUR_OF_DAY, 0)
+            set(java.util.Calendar.MINUTE, 0)
+            val dow = get(java.util.Calendar.DAY_OF_WEEK)
+            add(java.util.Calendar.DAY_OF_MONTH, -((dow - java.util.Calendar.MONDAY + 7) % 7))
+        }
+        for (i in count - 1 downTo 0) {
+            val c = monday.clone() as java.util.Calendar
+            c.add(java.util.Calendar.WEEK_OF_YEAR, -i)
+            labels += "%02d/%02d".format(
+                c.get(java.util.Calendar.MONTH) + 1, c.get(java.util.Calendar.DAY_OF_MONTH))
+            keys += c.get(java.util.Calendar.YEAR) * 100 + c.get(java.util.Calendar.WEEK_OF_YEAR)
+        }
+    } else {
+        for (i in count - 1 downTo 0) {
+            val c = java.util.Calendar.getInstance()
+            c.set(java.util.Calendar.DAY_OF_MONTH, 1)
+            c.add(java.util.Calendar.MONTH, -i)
+            labels += fmt[c.get(java.util.Calendar.MONTH)]
+            keys += c.get(java.util.Calendar.YEAR) * 100 + c.get(java.util.Calendar.MONTH)
+        }
+    }
+    val buckets = labels.map { HistoryBucket(it, 0.0, 0.0, 0.0, 0.0) }.toMutableList()
+    rides.forEach { r ->
+        val c = java.util.Calendar.getInstance().apply { timeInMillis = r.startedAt }
+        val key = if (weekly)
+            c.get(java.util.Calendar.YEAR) * 100 + c.get(java.util.Calendar.WEEK_OF_YEAR)
+        else
+            c.get(java.util.Calendar.YEAR) * 100 + c.get(java.util.Calendar.MONTH)
+        val idx = keys.indexOf(key)
+        if (idx < 0) return@forEach
+        val b = buckets[idx]
+        val econ = r.economyKmPerL
+        buckets[idx] = b.copy(
+            km = b.km + r.distanceKm,
+            speedWeighted = b.speedWeighted + r.avgSpeedKmh * r.distanceKm,
+            econWeighted = b.econWeighted + econ * r.distanceKm,
+            econKm = b.econKm + if (econ > 0) r.distanceKm else 0.0,
+        )
+    }
+    return buckets
 }
 
 /** Expandable per-ride breakdown: idle, ISS, fuel and time in each speed band. */
