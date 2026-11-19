@@ -102,7 +102,6 @@ import com.jupiterconnect.session.RideAnalytics
 import com.jupiterconnect.session.RideStore
 import com.jupiterconnect.session.WarmupPhase
 import com.jupiterconnect.transport.ClusterRepository
-import com.jupiterconnect.transport.ClusterService
 import com.jupiterconnect.ui.theme.JupiterColors
 import kotlinx.coroutines.launch
 import java.util.Calendar
@@ -399,7 +398,7 @@ private fun VehicleDetailsRows(
     StatLine("Service due", if (telemetry.serviceDue) "YES" else "NO")
 }
 
-/** Passive code discovery: what the cluster emits, what we send, and probes. */
+/** Passive code discovery: what the cluster emits and what the app sends. */
 @Composable
 private fun ProtocolDiscoveryCard() {
     val frames by FrameCatalog.frames.collectAsState()
@@ -428,20 +427,6 @@ private fun ProtocolDiscoveryCard() {
             checkedThumbColor = Color.White, checkedTrackColor = JupiterColors.Red,
             uncheckedTrackColor = JupiterColors.High))
     }
-    Spacer(Modifier.height(10.dp))
-    Label("PROBE DISPLAY IDS")
-    Spacer(Modifier.height(6.dp))
-    Text("Sends one labelled text frame. No vehicle control or calibration.",
-        fontSize = 10.sp, color = JupiterColors.OnSurfaceVariant)
-    Spacer(Modifier.height(8.dp))
-    Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState())) {
-        ClusterService.PROBE_IDS.forEach { id ->
-            SecondaryButton("0x%02X".format(id), {
-                ClusterRepository.service?.sendProbeFrame(id)
-            })
-            Spacer(Modifier.width(8.dp))
-        }
-    }
     Spacer(Modifier.height(12.dp))
     Label("SEEN ON THIS CLUSTER")
     Spacer(Modifier.height(6.dp))
@@ -450,7 +435,7 @@ private fun ProtocolDiscoveryCard() {
             color = JupiterColors.OnSurfaceVariant)
     } else {
         frames.forEach { f ->
-            StatLine("0x%02X ${f.label}".trim(), "RX ${f.rx} / TX ${f.tx}", accent = f.rx > 0)
+            StatLine("0x%02X %s".format(f.id, f.label), "RX ${f.rx} / TX ${f.tx}", accent = f.rx > 0)
             Text(f.hex, fontSize = 9.sp, color = JupiterColors.OnSurfaceVariant,
                 maxLines = 1, softWrap = false, overflow = TextOverflow.Ellipsis)
             Spacer(Modifier.height(4.dp))
@@ -510,6 +495,7 @@ fun HomeScreenV2(
         "${days[c.get(Calendar.DAY_OF_WEEK) - 1]}, ${c.get(Calendar.DAY_OF_MONTH)} ${months[c.get(Calendar.MONTH)]}"
     }
     val fills by com.jupiterconnect.session.FuelLogStore.fills.collectAsState()
+    val fusedSpeed by ClusterRepository.fusedSpeed.collectAsState()
     JupiterShell("Jupiter 125", kicker, activeTab, onTab, onSettings) {
         Spacer(Modifier.height(4.dp))
         Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
@@ -598,8 +584,8 @@ fun HomeScreenV2(
                                     tint = JupiterColors.Accent)
                             }
                         }
-                        val speed = if (telemetry.connected && telemetry.speedKmh > 0)
-                            "${telemetry.speedKmh}" else "--"
+                        val speed = if (telemetry.connected && fusedSpeed > 0)
+                            "$fusedSpeed" else "--"
                         BigValue(speed, "km/h", 36)
                         Spacer(Modifier.weight(1f))
                         // Decorative graph artwork only — NOT the saved ride's
@@ -718,6 +704,7 @@ fun LiveGraphScreen(
         else if (!telemetry.connected) recent?.throttleSamples.orEmpty() else emptyList()
     val rideTop by RideStore.liveTopSpeed.collectAsState()
     val allTimeTop by RideStore.allTimeTopSpeed.collectAsState()
+    val fusedSpeed by ClusterRepository.fusedSpeed.collectAsState()
 
     Box(Modifier.fillMaxSize().background(JupiterColors.Surface)) {
         Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState())) {
@@ -742,7 +729,7 @@ fun LiveGraphScreen(
                     Label("CURRENT SPEED")
                     Spacer(Modifier.height(8.dp))
                     BigValue(
-                        if (telemetry.connected && telemetry.speedKmh > 0) "${telemetry.speedKmh}"
+                        if (telemetry.connected && fusedSpeed > 0) "$fusedSpeed"
                         else "--", "km/h", 44)
                     Spacer(Modifier.height(8.dp))
                     Text("Ride top $rideTop km/h · All-time best $allTimeTop km/h",
@@ -1133,7 +1120,8 @@ private fun RideCard(r: Ride, expanded: Boolean, onToggle: () -> Unit) {
 /** All the personal analytics live together here, with trend-only caveats. */
 @Composable
 private fun AnalyticsCards(rides: List<Ride>, fills: List<com.jupiterconnect.session.FuelFill>) {
-    val factor = RideAnalytics.etaFactor(rides)
+    val etaSessions = RideStore.navEtaSamples().size
+    val factor = RideAnalytics.personalEtaFactor(RideStore.navEtaSamples(), rides)
     val etaRides = rides.count { it.mapsEtaMinutes > 0 }
     val trend = remember(fills) { RideAnalytics.mileageTrend(fills) }
     val latest = rides.firstOrNull()
@@ -1151,7 +1139,9 @@ private fun AnalyticsCards(rides: List<Ride>, fills: List<com.jupiterconnect.ses
     Spacer(Modifier.height(8.dp))
     RedCard {
         BigValue("%.2f".format(factor), "× Maps", 26)
-        Text("From $etaRides rides with a Maps ETA · applied to cluster arrival",
+        Text(if (etaSessions >= 5)
+                "From $etaSessions completed navigation sessions · applied to cluster arrival"
+             else "From $etaSessions sessions · $etaRides older rides · need 5 sessions",
             fontSize = 11.sp, color = JupiterColors.OnSurfaceVariant)
         Text("Trend from a few rides · not a prediction", fontSize = 9.sp,
             color = JupiterColors.OnSurfaceVariant)

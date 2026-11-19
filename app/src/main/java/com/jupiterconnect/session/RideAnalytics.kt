@@ -38,6 +38,23 @@ object RideAnalytics {
         if (mapsEtaMinutes <= 0) -1
         else max(1, (mapsEtaMinutes * factor).roundToInt())
 
+    /**
+     * Personal correction from real navigation sessions. Each sample pairs the
+     * ETA Maps published at route start with the minutes it actually took, so
+     * a route that begins mid-ride still counts. Falls back to whole-ride data
+     * from older builds until enough sessions have been recorded.
+     */
+    fun personalEtaFactor(
+        sessions: List<Pair<Int, Int>>,
+        rides: List<Ride>,
+    ): Double {
+        if (sessions.size >= MIN_ETA_RIDES) {
+            val ratios = sessions.map { (eta, actual) -> actual.toDouble() / eta }.sorted()
+            return ratios[ratios.size / 2].coerceIn(ETA_MIN_FACTOR, ETA_MAX_FACTOR)
+        }
+        return etaFactor(rides)
+    }
+
     data class MileageTrend(
         val ewma: Double,
         val mean: Double,

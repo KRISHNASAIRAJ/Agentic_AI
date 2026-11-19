@@ -167,6 +167,8 @@ object RideStore {
     private const val KEY_LIVE_SPEEDS = "live_speeds"
     private const val KEY_LIVE_THROTTLES = "live_throttles"
     private const val KEY_ALL_TIME_TOP = "all_time_top"
+    /** Navigation sessions: "eta:actual,..." for the personal ETA factor. */
+    private const val KEY_NAV_ETA_SAMPLES = "nav_eta_samples"
 
     private var prefs: SharedPreferences? = null
     private val syncedIds = mutableSetOf<Long>()
@@ -255,6 +257,32 @@ object RideStore {
             val base = carbonBaselineKg
             return if (base > 0) (carbonSavedKg - base).coerceAtLeast(0.0) else 0.0
         }
+
+    /**
+     * Real navigation sessions for the personal ETA: Maps' predicted minutes
+     * paired with the minutes it actually took. Kept separate from rides so a
+     * route that starts mid-ride still counts.
+     */
+    fun navEtaSamples(): List<Pair<Int, Int>> =
+        (prefs?.getString(KEY_NAV_ETA_SAMPLES, "").orEmpty())
+            .split(',')
+            .mapNotNull { part ->
+                val bits = part.split(':')
+                if (bits.size == 2) {
+                    val eta = bits[0].toIntOrNull()
+                    val actual = bits[1].toIntOrNull()
+                    if (eta != null && actual != null && eta > 0 && actual > 0) eta to actual else null
+                } else null
+            }
+
+    /** Store one completed navigation session, keeping the most recent 30. */
+    fun addNavEtaSample(etaMinutes: Int, actualMinutes: Int) {
+        val updated = (navEtaSamples() + (etaMinutes to actualMinutes)).takeLast(30)
+        prefs?.edit()
+            ?.putString(KEY_NAV_ETA_SAMPLES,
+                updated.joinToString(",") { "${it.first}:${it.second}" })
+            ?.apply()
+    }
 
     // ~0.5 L/hour idle for a 125cc scooter, and ~2.31 kg CO2 per litre petrol.
     const val IDLE_LITRES_PER_SECOND = 0.5 / 3600.0

@@ -10,6 +10,7 @@ import android.provider.ContactsContract.PhoneLookup
 import android.service.notification.NotificationListenerService
 import android.service.notification.StatusBarNotification
 import androidx.core.content.ContextCompat
+import com.jupiterconnect.session.RideStore
 import com.jupiterconnect.transport.ClusterRepository
 
 /**
@@ -121,6 +122,20 @@ class MapsNotificationListener : NotificationListenerService() {
             foundEta
         } else keep(foundEta, lastEta, lastEtaAtMs).coerceAtLeast(0)
 
+        // Personal ETA needs the ETA published at the START of this route and
+        // the real time until navigation ended. Capture it here rather than at
+        // ride start, because riders usually begin navigation after mounting.
+        if (effectiveEta > 0) {
+            if (!navSessionActive) {
+                navSessionActive = true
+                navSessionStartMs = now
+                // Keep this first ETA: it is Maps' prediction for this route,
+                // which is what the personal factor corrects. Later updates
+                // merely count down toward arrival.
+                navSessionEta = effectiveEta
+            }
+        }
+
         // Google Maps never publishes the trip total in its notification. When
         // a total IS seen once (Mappls, or Maps' route-start notification),
         // anchor it to the odometer and decrease it as the bike moves - that
@@ -191,6 +206,17 @@ class MapsNotificationListener : NotificationListenerService() {
             if (stillActive) {
                 pendingClear = null
                 return@Runnable
+            }
+            // Route really ended: save one ETA sample (Maps' prediction vs the
+            // time it actually took) for the personal correction.
+            if (navSessionActive) {
+                val actualMin = ((System.currentTimeMillis() - navSessionStartMs) / 60_000L)
+                if (navSessionEta > 0 && actualMin >= 2) {
+                    RideStore.addNavEtaSample(navSessionEta, actualMin.toInt())
+                }
+                navSessionActive = false
+                navSessionStartMs = 0L
+                navSessionEta = 0
             }
             ClusterRepository.navInstruction.value = null
             pendingClear = null
@@ -309,6 +335,12 @@ class MapsNotificationListener : NotificationListenerService() {
     private var remainingAnchorOdoKm: Double = -1.0
     // Key of the Maps notification we accepted; only its removal clears nav.
     private var activeKey: String? = null
+    // One navigation session = one Maps ETA sample for personalisation. Rides
+    // start/stop with Bluetooth; routes do not, so measuring ride duration
+    // against a Maps ETA was comparing unrelated time spans.
+    private var navSessionStartMs = 0L
+    private var navSessionEta = 0
+    private var navSessionActive = false
     // Last real turn, reused for metrics-only updates so the arrow and text
     // row do not blink between the real instruction and a bare distance.
     private var lastManeuver: String = ""

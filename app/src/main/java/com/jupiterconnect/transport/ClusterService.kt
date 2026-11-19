@@ -216,6 +216,7 @@ class ClusterService : Service() {
     // UI and the service always agree on the last linked cluster.
     private val linkPrefs by lazy { getSharedPreferences("jupiter_device", MODE_PRIVATE) }
     private var speedAlertActive = false
+    private var lastSpeedAlertMs = 0L
     private var lastNotificationKey = ""
     private val speedFusion = SpeedFusion()
     @Volatile private var gpsSpeedMps = -1f
@@ -526,17 +527,23 @@ class ClusterService : Service() {
 
     /** Active only while the cluster is linked, like TVS Connect. */
     private fun checkSpeedAlert(t: Telemetry) {
-        if (!t.connected) {
+        if (!t.connected || !ClusterRepository.highSpeedAlert.value) {
             speedAlertActive = false
             return
         }
-        val over = ClusterRepository.highSpeedAlert.value &&
-            t.speedKmh > ClusterRepository.highSpeedAlertSpeed.value
+        val over = t.speedKmh > ClusterRepository.highSpeedAlertSpeed.value
         if (over == speedAlertActive) return
         speedAlertActive = over
         if (over) {
+            val now = System.currentTimeMillis()
+            // A rising edge can flicker when speed hovers at the limit. Keep a
+            // short cooldown so it vibrates once per real overspeed event.
+            if (now - lastSpeedAlertMs < 10_000L) return
+            lastSpeedAlertMs = now
             FrameLog.note("SPEED ALERT ${t.speedKmh} > ${ClusterRepository.highSpeedAlertSpeed.value}")
-            scope.launch { write(buildNavText("OVER SPEED ${t.speedKmh}")) }
+            // Use the held-text path: a direct 0x4F write is overwritten by the
+            // navigation bridge on its next 1.5 s tick, so the rider never saw it.
+            ClusterRepository.showText("OVER SPEED ${t.speedKmh}", holdMs = 5_000L)
             val vibrator = getSystemService(android.os.Vibrator::class.java)
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
                 vibrator?.vibrate(android.os.VibrationEffect.createOneShot(180, 180))
@@ -849,26 +856,6 @@ class ClusterService : Service() {
     fun sendSocialCounts(wa: Int, fb: Int, ig: Int) {
         ClusterRepository.socialCounts.value = Triple(wa, fb, ig)
         scope.launch { write(buildSocialCounts(wa, fb, ig)) }
-    }
-
-    /**
-     * Send one display-only test frame for an ID recovered from the TVS
-     * protocol research. Only text/metadata IDs are allowed - no vehicle
-     * control, calibration or handshake probes. The frame is logged like any
-     * other, so the Downloads capture records both what went out and what the
-     * cluster answered with.
-     */
-    fun sendProbeFrame(id: Int) {
-        if (id !in PROBE_IDS) return
-        val text = "JC TEST %02X".format(id)
-        val b = ByteArray(20)
-        b[0] = 0x5B
-        b[1] = id.toByte()
-        val ascii = text.toByteArray(Charsets.US_ASCII)
-        System.arraycopy(ascii, 0, b, 2, minOf(ascii.size, 17))
-        b[19] = 0xFF.toByte()
-        FrameLog.note("PROBE 0x%02X \"%s\"".format(id, text))
-        scope.launch { write(b) }
     }
 
     /** Manual trigger so the voice flow can be tested without the bike. */
@@ -1215,7 +1202,8 @@ class ClusterService : Service() {
             while (isActive) {
                 // Personal correction from real rides; neutral until 5 rides
                 // carry a Maps ETA, and always bounded.
-                val etaFactor = RideAnalytics.etaFactor(RideStore.rides.value)
+                val etaFactor = RideAnalytics.personalEtaFactor(
+                    RideStore.navEtaSamples(), RideStore.rides.value)
                 // A voice reply owns the cluster text row even when no route is
                 // active, so answers appear on the bike and not only on the phone.
                 val reply = ClusterRepository.currentReplyText()
@@ -1354,9 +1342,6 @@ class ClusterService : Service() {
     }
 
     companion object {
-        /** Display-only metadata/text channels; deliberately no control IDs. */
-        val PROBE_IDS = listOf(0x4C, 0x50, 0x61, 0x62, 0x63, 0x65)
-
         const val ACTION_SCAN = "com.jupiterconnect.action.SCAN"
         const val ACTION_CONNECT = "com.jupiterconnect.action.CONNECT"
         const val EXTRA_ADDRESS = "com.jupiterconnect.extra.ADDRESS"

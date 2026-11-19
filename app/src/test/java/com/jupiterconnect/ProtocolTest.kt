@@ -485,4 +485,35 @@ class ProtocolTest {
         assertTrue(advice.severe)
         assertTrue(advice.suggestedKm < 5_000)
     }
+
+    @Test
+    fun personal_eta_uses_navigation_sessions_and_stays_bounded() {
+        // Five real routes where Maps is consistently 20% optimistic.
+        val sessions = List(5) { 25 to 30 }
+        assertEquals(1.2, RideAnalytics.personalEtaFactor(sessions, emptyList()), 0.001)
+        // A single freak jam must not move the median.
+        val withOutlier = sessions + (10 to 120)
+        assertEquals(1.2, RideAnalytics.personalEtaFactor(withOutlier, emptyList()), 0.001)
+        // Consistently way-off ratios are clamped so arrival times stay sane.
+        val extreme = List(5) { 10 to 30 }
+        assertEquals(1.5, RideAnalytics.personalEtaFactor(extreme, emptyList()), 0.001)
+        // Too few sessions falls back to the old whole-ride estimate.
+        val rides = List(5) {
+            Ride(startedAt = it * 1000L, endedAt = it * 1000L + 1_800_000L,
+                distanceKm = 10.0, avgSpeedKmh = 30.0, topSpeedKmh = 50,
+                durationMin = 30, mapsEtaMinutes = 30)
+        }
+        assertEquals(1.0, RideAnalytics.personalEtaFactor(emptyList(), rides), 0.001)
+    }
+
+    @Test
+    fun speed_fusion_keeps_cluster_speed_when_gps_is_absent() {
+        val fusion = com.jupiterconnect.session.SpeedFusion()
+        repeat(30) { fusion.update(42.0, null) }
+        val fused = fusion.update(42.0, null)
+        assertEquals(42, fused.kmh)
+        assertEquals(0.0, fused.errorKmh, 0.001)
+        assertEquals(-1, RideAnalytics.adjustedEta(-1, 1.2))
+        assertEquals(30, RideAnalytics.adjustedEta(25, 1.2))
+    }
 }

@@ -18,6 +18,8 @@ what is deferred.
 - Carbon saved: the lifetime figure from the dash is entered once in Settings
   and the app adds CO2 for every ISS stop it observes afterwards.
 - Protocol discovery card and per-connection raw frame logs for passive decoding.
+  The card is observation-only: test/probe buttons were removed because they
+  produced no useful cluster response. Only real cluster frames are counted.
 
 ## Future development (deferred)
 
