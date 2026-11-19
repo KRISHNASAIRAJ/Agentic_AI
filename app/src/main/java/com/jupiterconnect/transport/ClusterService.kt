@@ -166,7 +166,14 @@ class ClusterService : Service() {
     private var navJob: Job? = null
     private var syncJob: Job? = null
     private var reconnectJob: Job? = null
+    private var connectWatchdog: Job? = null
     private var reconnectAttempts = 0
+    private var connectedAtMs = 0L
+    private var lastFrameAtMs = 0L
+    private var lastMovingAtMs = 0L
+    // The last linked address survives a service restart, so a killed service
+    // can still redial. A user-initiated disconnect clears it.
+    private val linkPrefs by lazy { getSharedPreferences("jupiter_link", MODE_PRIVATE) }
     private var writeFailures = 0
     /** Set by an explicit disconnect so the auto-retry never fights the user. */
     @Volatile private var manualDisconnect = false
@@ -193,6 +200,9 @@ class ClusterService : Service() {
         coldStartTracker.setLastRunMs(RideStore.warmupLastRunMs)
         createChannel()
         ClusterRepository.service = this
+        // Restore the last linked bike so a service restart can redial it.
+        lastAddress = linkPrefs.getString(KEY_LAST_ADDRESS, null)
+        manualDisconnect = linkPrefs.getBoolean(KEY_USER_DISCONNECTED, false)
         // Start with the connected-device type only: microphone permission may
         // not be granted yet at boot. The mic type is added only while listening.
         ServiceCompat.startForeground(
@@ -212,7 +222,12 @@ class ClusterService : Service() {
             ACTION_CONNECT -> intent.getStringExtra(EXTRA_ADDRESS)?.let { connectTo(it) }
                 ?: startScan()
             ACTION_SCAN -> startScan()
-            else -> startScan()
+            else -> {
+                // System restart (null intent): redial the remembered cluster.
+                // A user disconnect is persisted, so this never fights them.
+                if (!manualDisconnect && !lastAddress.isNullOrBlank()) scheduleReconnect()
+                else startScan()
+            }
         }
         return START_STICKY
     }
@@ -329,6 +344,10 @@ class ClusterService : Service() {
         if (!hasBluetoothPermission()) return
         lastAddress = address
         manualDisconnect = false
+        linkPrefs.edit()
+            .putString(KEY_LAST_ADDRESS, address)
+            .putBoolean(KEY_USER_DISCONNECTED, false)
+            .apply()
         reconnectJob?.cancel()
         reconnectJob = null
         reconnectAttempts = 0
@@ -358,6 +377,45 @@ class ClusterService : Service() {
         }
         Log.i(TAG, "connectGatt -> $address")
         gatt = device.connectGatt(this, false, gattCallback, BluetoothDevice.TRANSPORT_LE)
+        armConnectWatchdog()
+    }
+
+    /**
+     * Some phones never deliver a disconnect callback for a failed direct
+     * connect, leaving [gatt] non-null so every retry bails out. If the link
+     * has not actually come up in time, close it and retry cleanly.
+     */
+    private fun armConnectWatchdog() {
+        connectWatchdog?.cancel()
+        connectWatchdog = scope.launch {
+            delay(CONNECT_WATCHDOG_MS)
+            if (connectionEstablished || gatt == null) return@launch
+            forceReconnect("connect attempt stalled ${CONNECT_WATCHDOG_MS / 1000}s")
+        }
+    }
+
+    /**
+     * Tear down a GATT that is connected in name only and let the backoff loop
+     * redial it. [connectionEstablished] is cleared first so the resulting
+     * disconnect callback cannot finalise a ride or move the parked spot.
+     */
+    private fun forceReconnect(reason: String) {
+        FrameLog.note("LINK FORCE RETRY: $reason")
+        val g = gatt
+        gatt = null
+        writeChar = null
+        connectionEstablished = false
+        runCatching { g?.close() }
+        connectWatchdog?.cancel()
+        connectWatchdog = null
+        keepaliveJob?.cancel()
+        keepaliveJob = null
+        navJob?.cancel()
+        navJob = null
+        ClusterRepository.telemetry.value = ClusterRepository.telemetry.value.copy(
+            connected = false, error = "Link stalled - reconnecting")
+        updateNotification()
+        if (!manualDisconnect) scheduleReconnect()
     }
 
     /**
@@ -373,6 +431,14 @@ class ClusterService : Service() {
             ClusterRepository.telemetry.value = ClusterRepository.telemetry.value.copy(
                 error = "Bluetooth is off - turn it on to reconnect")
             return
+        }
+        // A stale GATT from a connect attempt that never reported back would
+        // otherwise block every retry through the `gatt != null` guard below.
+        if (gatt != null && !connectionEstablished) {
+            val stale = gatt
+            gatt = null
+            writeChar = null
+            runCatching { stale?.close() }
         }
         val idx = reconnectAttempts.coerceIn(0, RECONNECT_DELAYS.lastIndex)
         val delayMs = RECONNECT_DELAYS[idx]
@@ -685,9 +751,14 @@ class ClusterService : Service() {
         }.onFailure { FrameLog.note("VOICE foreground type update failed: ${it.message}") }
     }
 
-    fun disconnectNow() {
+    fun disconnectNow(fromDestroy: Boolean = false) {
         // Stop the retry loop first: an explicit disconnect must stay off.
+        // A system teardown is not a user action, so it must not clear the
+        // remembered bike — the restarted service needs it to redial.
         manualDisconnect = true
+        if (!fromDestroy) linkPrefs.edit().putBoolean(KEY_USER_DISCONNECTED, true).apply()
+        connectWatchdog?.cancel()
+        connectWatchdog = null
         reconnectJob?.cancel()
         reconnectJob = null
         reconnectAttempts = 0
@@ -726,10 +797,15 @@ class ClusterService : Service() {
                 BluetoothProfile.STATE_CONNECTED -> {
                     Log.i(TAG, "GATT connected, status=$status - requesting MTU")
                     FrameLog.note("GATT connected status=$status")
+                    connectWatchdog?.cancel()
+                    connectWatchdog = null
                     reconnectJob?.cancel()
                     reconnectJob = null
                     reconnectAttempts = 0
                     manualDisconnect = false
+                    connectedAtMs = System.currentTimeMillis()
+                    lastFrameAtMs = 0L
+                    lastMovingAtMs = 0L
                     // Low latency while riding; Android restores the default
                     // connection parameters when this GATT is closed.
                     runCatching {
@@ -760,9 +836,15 @@ class ClusterService : Service() {
 
                 BluetoothProfile.STATE_DISCONNECTED -> {
                     Log.w(TAG, "GATT disconnected, status=$status")
-                    FrameLog.note("GATT disconnected status=$status")
                     val wasEstablished = connectionEstablished
+                    val uptimeS = if (connectedAtMs > 0)
+                        (System.currentTimeMillis() - connectedAtMs) / 1000L else 0L
+                    FrameLog.note("LINK DOWN status=$status established=$wasEstablished uptime=${uptimeS}s")
+                    connectWatchdog?.cancel()
+                    connectWatchdog = null
                     connectionEstablished = false
+                    lastFrameAtMs = 0L
+                    lastMovingAtMs = 0L
                     if (wasEstablished) {
                         // Only a real connect -> disconnect cycle closes a ride
                         // or moves the parking spot. Status 147 means the
@@ -857,9 +939,12 @@ class ClusterService : Service() {
             value: ByteArray,
         ) {
             FrameLog.record("RX", value)
+            val primary = (value[1].toInt() and 0xFF) == 0x10
+            lastFrameAtMs = System.currentTimeMillis()
             decodeFrame(value, ClusterRepository.telemetry.value)?.let {
+                if (primary && it.speedKmh > 0) lastMovingAtMs = lastFrameAtMs
                 ClusterRepository.telemetry.value = it
-                onTelemetryFrame(it, primary = (value[1].toInt() and 0xFF) == 0x10, raw = value)
+                onTelemetryFrame(it, primary = primary, raw = value)
             }
         }
 
@@ -912,6 +997,16 @@ class ClusterService : Service() {
         if (keepaliveJob?.isActive == true) return
         keepaliveJob = scope.launch {
             while (isActive) {
+                // Silent link loss: the stack still says "connected" but the
+                // cluster has gone quiet. While riding, force a clean redial
+                // instead of sitting on a dead link that never recovers.
+                val now = System.currentTimeMillis()
+                if (connectionEstablished && lastFrameAtMs > 0 && lastMovingAtMs > 0 &&
+                    now - lastMovingAtMs < 120_000L && now - lastFrameAtMs > 25_000L
+                ) {
+                    forceReconnect("no cluster frames for 25s while moving")
+                    return@launch
+                }
                 // Real phone values stop the cluster flipping between
                 // "full signal / full battery" and "no signal / low battery"
                 // every time our keepalive arrived with zeros.
@@ -1085,7 +1180,7 @@ class ClusterService : Service() {
 
     override fun onDestroy() {
         clearNotification?.let { main.removeCallbacks(it) }
-        disconnectNow()
+        disconnectNow(fromDestroy = true)
         voiceBridge.destroy()
         ClusterRepository.service = null
         scope.cancel()
@@ -1107,6 +1202,10 @@ class ClusterService : Service() {
         private const val GATT_CONN_TERMINATE_PEER_USER = 19
         /** Backoff for auto-reconnect: 5s, 10s, 20s, then 30s between tries. */
         private val RECONNECT_DELAYS = longArrayOf(5_000L, 10_000L, 20_000L, 30_000L)
+        /** A direct connect that never reports STATE_CONNECTED is stuck. */
+        private const val CONNECT_WATCHDOG_MS = 15_000L
+        private const val KEY_LAST_ADDRESS = "last_address"
+        private const val KEY_USER_DISCONNECTED = "user_disconnected"
         /** Matches `TVS BT...` and `TVSBT...` - the advertised name is inferred
          * from community pairing reports, so both spellings are accepted. */
         private val CLUSTER_NAME_RE = Regex("""\bTVS\s*BT""", RegexOption.IGNORE_CASE)
