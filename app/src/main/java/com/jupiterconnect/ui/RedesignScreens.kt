@@ -104,10 +104,7 @@ import com.jupiterconnect.session.WarmupPhase
 import com.jupiterconnect.transport.ClusterRepository
 import com.jupiterconnect.transport.ClusterService
 import com.jupiterconnect.ui.theme.JupiterColors
-import com.jupiterconnect.voice.VoiceCommandProcessor
-import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.withContext
 import java.util.Calendar
 
 private val TAB_LABELS = listOf("Home", "Ride", "Rides", "Find", "More")
@@ -250,8 +247,9 @@ private fun CarbonCard() {
         Spacer(Modifier.height(8.dp))
         val baseline = RideStore.carbonBaselineKg
         Text(
-            if (baseline > 0 && kg <= baseline + 0.001)
-                "From the cluster's Carbon Fuel Saving screen · from day one"
+            if (baseline > 0)
+                "Dash %.2f kg + %.2f kg from ISS since".format(
+                    baseline, RideStore.carbonAboveBaselineKg)
             else "ISS saved ${seconds / 60} min of idling · ~%.2f L fuel".format(
                 seconds * RideStore.IDLE_LITRES_PER_SECOND),
             fontSize = 12.sp, color = JupiterColors.OnSurfaceVariant)
@@ -859,7 +857,7 @@ fun RideScreenV2(
             }
             Spacer(Modifier.height(10.dp))
         }
-        TrafficScreensSection(telemetry)
+        // Traffic/cluster-info screens moved to future development (PLAN.md).
         Spacer(Modifier.height(18.dp))
         Label("STATS")
         Spacer(Modifier.height(10.dp))
@@ -884,107 +882,6 @@ fun RideScreenV2(
                         uncheckedTrackColor = JupiterColors.High,
                     ),
                 )
-            }
-        }
-    }
-}
-
-/** Cluster-style traffic screens, active only while linked, like TVS Connect. */
-@Composable
-private fun TrafficScreensSection(telemetry: Telemetry) {
-    val context = LocalContext.current
-    val labels = listOf("ISS", "Overview", "Carbon", "Weather", "News",
-        "Cricket", "Football", "Social")
-    var selected by remember { mutableStateOf(0) }
-    SectionHeading("Traffic screens",
-        trailing = if (telemetry.connected) "LIVE" else "OFFLINE")
-    Spacer(Modifier.height(10.dp))
-    if (!telemetry.connected) {
-        RedCard {
-            Text("Connect to the cluster to use traffic screens.",
-                fontSize = 13.sp, color = JupiterColors.OnSurfaceVariant)
-        }
-        return
-    }
-    Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState())) {
-        labels.forEachIndexed { i, label ->
-            val active = selected == i
-            Box(
-                Modifier.padding(end = 8.dp)
-                    .clip(RoundedCornerShape(999.dp))
-                    .background(if (active) JupiterColors.RedTint else JupiterColors.High)
-                    .clickable { selected = i }
-                    .padding(horizontal = 14.dp, vertical = 8.dp),
-            ) {
-                Text(label, fontSize = 11.sp,
-                    color = if (active) JupiterColors.Accent else JupiterColors.OnSurfaceVariant)
-            }
-        }
-    }
-    Spacer(Modifier.height(10.dp))
-    val processor = remember { VoiceCommandProcessor(context) }
-    var remote by remember { mutableStateOf("") }
-    LaunchedEffect(selected) {
-        remote = withContext(Dispatchers.IO) {
-            when (selected) {
-                3 -> processor.weatherReply()
-                4 -> processor.newsReply()
-                5 -> processor.scoreReply("Cricket",
-                    "https://site.api.espn.com/apis/site/v2/sports/cricket/1000/scoreboard")
-                6 -> processor.scoreReply("Football",
-                    "https://site.api.espn.com/apis/site/v2/sports/football/nfl/scoreboard")
-                else -> ""
-            }
-        }
-    }
-    RedCard(bar = true) {
-        when (selected) {
-            0 -> {
-                Label("FUEL SAVER MODE")
-                Spacer(Modifier.height(8.dp))
-                // TVS intelliGO: the (A) icon glows when the system is armed,
-                // then the cluster shows "Fuel Saver Mode" with a seconds
-                // countdown while it waits to stop the engine. Bit 7 of 0x11
-                // byte 6 is the armed state; the low bits are that countdown.
-                val raw = telemetry.issMode and 0xFF
-                val armed = raw and 0x80 != 0
-                val countdown = raw and 0x7F
-                BigValue(when {
-                    !telemetry.connected -> "--"
-                    !armed && countdown == 0 -> "OFF"
-                    countdown > 0 -> "$countdown"
-                    else -> "ON"
-                }, if (countdown > 0 && armed) "s" else "", 34)
-                Text(
-                    if (countdown > 0 && armed) "intelliGO stopping engine in ${countdown}s"
-                    else if (armed) "intelliGO armed · stops ${telemetry.issCount}"
-                    else "intelliGO off · stops ${telemetry.issCount}",
-                    fontSize = 12.sp, color = JupiterColors.OnSurfaceVariant)
-            }
-            1 -> {
-                Label("OVERVIEW")
-                Spacer(Modifier.height(8.dp))
-                InfoRow("Avg fuel economy", "${telemetry.averageFuelEconomy} km/L")
-                InfoRow("Riding since", "${RideStore.liveTripKm.collectAsState().value.let { "%.1f km".format(it) }}")
-                InfoRow("Driving range", "${telemetry.distanceToEmptyKm} km")
-            }
-            2 -> {
-                val seconds by RideStore.issSavedSeconds.collectAsState()
-                Label("CARBON FUEL SAVING")
-                BigValue("%.3f".format(seconds * RideStore.IDLE_LITRES_PER_SECOND * RideStore.CO2_KG_PER_LITRE),
-                    "kg CO2", 34)
-                Text("from day one", fontSize = 12.sp, color = JupiterColors.OnSurfaceVariant)
-            }
-            3 -> { Label("WEATHER / AQI"); Spacer(Modifier.height(6.dp)); Text(remote, fontSize = 13.sp, color = JupiterColors.OnSurface) }
-            4 -> { Label("NEWS"); Spacer(Modifier.height(6.dp)); Text(remote, fontSize = 13.sp, color = JupiterColors.OnSurface) }
-            5 -> { Label("CRICKET SCORE"); Spacer(Modifier.height(6.dp)); Text(remote, fontSize = 13.sp, color = JupiterColors.OnSurface) }
-            6 -> { Label("FOOTBALL SCORE"); Spacer(Modifier.height(6.dp)); Text(remote, fontSize = 13.sp, color = JupiterColors.OnSurface) }
-            7 -> {
-                val counts by ClusterRepository.socialCounts.collectAsState()
-                Label("SOCIAL MEDIA")
-                Spacer(Modifier.height(8.dp))
-                Text("WhatsApp ${counts.first} · Facebook ${counts.second} · Instagram ${counts.third}",
-                    fontSize = 13.sp, color = JupiterColors.OnSurface)
             }
         }
     }
@@ -1618,7 +1515,7 @@ private fun SettingsContent(
     RedCard(bar = true) {
         Label("CARBON SAVING")
         Spacer(Modifier.height(8.dp))
-        Text("Enter the kg shown on the cluster's Carbon Fuel Saving screen.",
+        Text("Enter the lifetime kg from the dash once. The app then adds CO2 saved by every ISS stop it sees from now on, so the Home value keeps growing.",
             fontSize = 12.sp, color = JupiterColors.OnSurfaceVariant)
         Spacer(Modifier.height(8.dp))
         var carbonInput by remember {

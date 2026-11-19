@@ -158,6 +158,8 @@ object RideStore {
     private const val KEY_SAMPLES = "rs_"
     private const val KEY_CARBON_SECONDS = "carbon_iss_seconds"
     private const val KEY_CARBON_BASELINE = "carbon_baseline_kg"
+    /** ISS counter when the baseline was entered, so only new stops are added. */
+    private const val KEY_CARBON_BASELINE_ISS = "carbon_baseline_iss"
     private const val KEY_PARK_LAT = "park_lat"
     private const val KEY_PARK_LNG = "park_lng"
     private const val KEY_PARK_MS = "park_ms"
@@ -213,22 +215,46 @@ object RideStore {
     /**
      * The cluster's own "Carbon Fuel Saving" figure is kept in the instrument
      * cluster, not broadcast over BLE. Enter it once from the dash (Settings)
-     * and the app shows that lifetime value as a floor, adding any ISS stops
-     * it observes itself on top.
+     * as a lifetime starting point. The app then adds the CO2 saved by every
+     * ISS stop it observes from that moment on, so the number actually grows.
      */
     var carbonBaselineKg: Double
         get() = java.lang.Double.longBitsToDouble(
             prefs?.getLong(KEY_CARBON_BASELINE, 0L) ?: 0L)
         set(value) {
             prefs?.edit()
-                ?.putLong(KEY_CARBON_BASELINE, java.lang.Double.doubleToRawLongBits(value))
+                ?.putLong(KEY_CARBON_BASELINE, java.lang.Double.doubleToRawLongBits(value.coerceAtLeast(0.0)))
+                // Snapshot the ISS counter so only stops seen AFTER entry are added.
+                ?.putLong(KEY_CARBON_BASELINE_ISS, _issSavedSeconds.value)
                 ?.apply()
         }
 
+    /** ISS total at the moment the baseline was entered. */
+    private val baselineIssSeconds: Long
+        get() = prefs?.getLong(KEY_CARBON_BASELINE_ISS, _issSavedSeconds.value)
+            ?: _issSavedSeconds.value
+
     /** kg of CO2 not emitted because ISS stopped the engine at signals. */
     val carbonSavedKg: Double
-        get() = maxOf(carbonBaselineKg,
-            _issSavedSeconds.value * IDLE_LITRES_PER_SECOND * CO2_KG_PER_LITRE)
+        get() {
+            val base = carbonBaselineKg
+            val totalSeconds = _issSavedSeconds.value
+            val appLifetime = totalSeconds * IDLE_LITRES_PER_SECOND * CO2_KG_PER_LITRE
+            if (base <= 0) return appLifetime
+            // Cluster lifetime + only the ISS stops observed since it was entered.
+            // Keep the app's own lifetime as a floor so a lower manual entry can
+            // never make the displayed total drop.
+            val added = (totalSeconds - baselineIssSeconds).coerceAtLeast(0L) *
+                IDLE_LITRES_PER_SECOND * CO2_KG_PER_LITRE
+            return maxOf(base + added, appLifetime)
+        }
+
+    /** How much of [carbonSavedKg] was added by the app after the baseline. */
+    val carbonAboveBaselineKg: Double
+        get() {
+            val base = carbonBaselineKg
+            return if (base > 0) (carbonSavedKg - base).coerceAtLeast(0.0) else 0.0
+        }
 
     // ~0.5 L/hour idle for a 125cc scooter, and ~2.31 kg CO2 per litre petrol.
     const val IDLE_LITRES_PER_SECOND = 0.5 / 3600.0
