@@ -27,6 +27,8 @@ import com.jupiterconnect.voice.BackgroundVoiceListener
  *
  * Both are level-held, so only a rising edge triggers, and the level present
  * when the service starts is primed away so no queued prompt is replayed.
+ * Voice input opens only while the app is on screen; background triggers are
+ * ignored so the microphone is never started from the service.
  */
 class VoiceAssistantBridge(private val context: Context) {
 
@@ -118,10 +120,11 @@ class VoiceAssistantBridge(private val context: Context) {
 
     private fun launch() {
         if (!ClusterRepository.uiResumed) {
-            // App in background: the mic turns on from the service and stays
-            // on until the rider speaks. No screen, no queued "speak" prompt.
-            FrameLog.note("VOICE from background - listening in service")
-            backgroundVoice.start()
+            // Voice input runs only while the app is on screen. Opening the
+            // microphone from the background requires switching the foreground
+            // service type, which is unreliable on OEM ROMs and can tear down
+            // the BLE link. Ignore the trigger instead of risking the ride.
+            FrameLog.note("VOICE trigger ignored - app in background")
             return
         }
         // App in foreground: use the existing VoiceCommandActivity screen.

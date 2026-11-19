@@ -845,11 +845,19 @@ private fun TrafficScreensSection(telemetry: Telemetry) {
             0 -> {
                 Label("FUEL SAVER MODE")
                 Spacer(Modifier.height(8.dp))
-                // 0x11 byte 6 bit 7 is the start-without-clutch voice gesture,
-                // not a fuel-saver value. Show only the real ISS bits.
-                BigValue(if (telemetry.speedKmh <= 1) "${telemetry.issMode and 0x7F}" else "--",
-                    "s", 34)
-                Text("ISS stops ${telemetry.issCount} · ${telemetry.issDuration}s saved",
+                // 0x11 byte 6 bit 7 is the ISS / fuel-saver active flag. It is
+                // also set briefly by start-without-clutch, which is why the
+                // raw value 128 was meaningless here. Show a clear ON/OFF state.
+                val saverOn = telemetry.connected && (telemetry.issMode and 0x80) != 0
+                BigValue(when {
+                    !telemetry.connected -> "--"
+                    saverOn -> "ON"
+                    else -> "OFF"
+                }, "", 34)
+                Text(
+                    if (saverOn) "ISS active · stops ${telemetry.issCount} · " +
+                        "${telemetry.issDuration}s saved"
+                    else "ISS stops ${telemetry.issCount} · ${telemetry.issDuration}s saved",
                     fontSize = 12.sp, color = JupiterColors.OnSurfaceVariant)
             }
             1 -> {

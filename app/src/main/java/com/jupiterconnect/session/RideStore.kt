@@ -293,6 +293,12 @@ object RideStore {
 
     /** Called on GATT connected. */
     fun onConnected() {
+        if (active) {
+            // A brief BLE reconnect must not throw away the ride in progress.
+            // Keep its start time, odometer span and graph samples; only a
+            // genuine new ride after a finalised disconnect resets them.
+            return
+        }
         rideStartMs = System.currentTimeMillis()
         rideStartOdo = null
         rideLastOdo = null
