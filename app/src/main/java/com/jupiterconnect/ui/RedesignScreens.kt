@@ -1573,6 +1573,15 @@ private fun PhoneFrameDebugCard() {
     }
     Text("Bytes 2-18 of START_PHONE frames as ASCII. Observation only - no frames are sent.",
         fontSize = 10.sp, color = JupiterColors.OnSurfaceVariant)
+    Spacer(Modifier.height(12.dp))
+    val carbonKg = RideStore.carbonSavedKg
+    Text("CARBON ESTIMATE  ${"%.1f".format(carbonKg)} kg",
+        fontSize = 12.sp, color = JupiterColors.OnSurface)
+    Text(RideStore.carbonEstimateSource,
+        fontSize = 10.sp, color = JupiterColors.OnSurfaceVariant)
+    Text(if (carbonKg >= 1) "Sent to dash on connect and every 60 s."
+         else "Waiting for distance and economy data - nothing sent yet.",
+        fontSize = 10.sp, color = JupiterColors.OnSurfaceVariant)
 }
 
 /** Devices at the top, all settings below, in one scrollable "More" tab. */

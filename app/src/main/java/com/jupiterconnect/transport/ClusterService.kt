@@ -211,6 +211,8 @@ class ClusterService : Service() {
     // the last cluster frame arrived, so a future drop can be explained.
     private var connectedAtMs = 0L
     private var lastFrameAtMs = 0L
+    /** Last time the estimated CO2 saving was pushed to the dash. */
+    private var lastCarbonSentMs = 0L
     // Remembered bike survives a service/process restart (OEM battery optimisers
     // love to kill background BLE services). Shares MainActivity's prefs so the
     // UI and the service always agree on the last linked cluster.
@@ -985,13 +987,9 @@ class ClusterService : Service() {
                         stopGpsSpeed()
                         saveParkedLocation(force = true)
                         RideStore.onDisconnected()
-                        // Share the estimated lifetime CO2 saving with the dash.
-                        // Never send a bare zero: that shows "0 g saved" on the
-                        // cluster, which looks like a broken value.
-                        val carbonKg = RideStore.carbonSavedKg
-                        if (carbonKg >= 1) {
-                            scope.launch { write(buildCarbonFrame(carbonKg.toInt())) }
-                        }
+                        // One last refresh on the way out, in case the ride
+                        // changed the estimate since the last periodic write.
+                        maybeSendCarbon(force = true)
                         // No telemetry means no engine data - make that explicit.
                         ClusterRepository.warmup.value = WarmupState(message = "Engine off")
                         // Keep syncing for two minutes after the link drops.
@@ -1065,6 +1063,11 @@ class ClusterService : Service() {
             }
             startKeepalive()
             startNavigationBridge()
+            // The earlier build only wrote the carbon value on disconnect, so
+            // the dash kept showing "0 g saved" for the whole ride. Push it as
+            // soon as the link is really up (writeChar is now available) and
+            // refresh it from the keepalive loop below.
+            maybeSendCarbon(force = true)
         }
 
         override fun onCharacteristicChanged(
@@ -1139,9 +1142,28 @@ class ClusterService : Service() {
                     batteryPct = phoneBatteryPct(),
                     signalBars = phoneSignalBars(),
                 ))
+                // Slow refresh so a screen the rider opens mid-ride still has
+                // a current value. Rate-limited inside maybeSendCarbon().
+                maybeSendCarbon()
                 delay(2000)
             }
         }
+    }
+
+    /**
+     * Push the estimated lifetime CO2 saving to the dash. Captured frames show
+     * the cluster always reports its own ISS idle counter and ISS stop count as
+     * zero (0x19 bytes 2-4 and 15-17), so the phone has to supply a value if the
+     * "Carbon Saving" screen is to show anything. A bare zero is never sent.
+     */
+    private fun maybeSendCarbon(force: Boolean = false) {
+        val kg = RideStore.carbonSavedKg
+        if (kg < 1) return
+        val now = System.currentTimeMillis()
+        if (!force && now - lastCarbonSentMs < 60_000L) return
+        lastCarbonSentMs = now
+        FrameLog.note("CARBON send kg=${kg.toInt()} source=${RideStore.carbonEstimateSource}")
+        scope.launch { write(buildCarbonFrame(kg.toInt())) }
     }
 
     /**
