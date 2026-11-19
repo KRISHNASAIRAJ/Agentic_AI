@@ -143,6 +143,8 @@ internal fun foldIssDuration(
  */
 object RideStore {
     private const val PREFS = "jupiter_ride_store"
+    /** A reconnect within this window continues the same ride after a BLE drop. */
+    private const val RESUME_GRACE_MS = 5 * 60_000L
     private const val KEY_LAST_ODO = "last_odo"
     private const val KEY_LAST_FUEL = "last_fuel"
     private const val KEY_LAST_DTE = "last_dte"
@@ -236,8 +238,16 @@ object RideStore {
     private var rideStartOdo: Double? = null
     private var rideLastOdo: Double? = null
     private var active = false
-    /** Maps' ETA when this ride connected; set by the transport service. */
+    /**
+     * When the BLE link dropped. A reconnect inside [RESUME_GRACE_MS] resumes
+     * the same ride (same start time, odometer span and graph) instead of
+     * splitting one journey into several half-rides.
+     */
+    private var lastDisconnectedMs = 0L
+    /** Maps' ETA from the latest connect; written by the transport service. */
     var pendingMapsEtaMinutes: Int = -1
+    /** ETA captured at ride start so a disconnect/reconnect checkpoint keeps it. */
+    private var rideMapsEtaMinutes: Int = -1
 
     // Ride report accumulators. Only the primary 0x10 frame advances the clock
     // so time is not counted once per frame type.
@@ -312,11 +322,29 @@ object RideStore {
     /** Called on GATT connected. */
     fun onConnected() {
         if (active) {
-            // A brief BLE reconnect must not throw away the ride in progress.
-            // Keep its start time, odometer span and graph samples; only a
-            // genuine new ride after a finalised disconnect resets them.
+            // Duplicate connect callback without an intervening disconnect.
             return
         }
+        val now = System.currentTimeMillis()
+        // A brief BLE drop must not split one journey into two rides. If the
+        // link comes back within the grace window, resume the checkpoint we
+        // kept on disconnect: same startedAt, odo span, ISS/fuel counters and
+        // graph samples. The persisted snapshot is keyed by startedAt, so the
+        // next checkpoint simply replaces it with the completed ride.
+        if (lastDisconnectedMs > 0L && now - lastDisconnectedMs <= RESUME_GRACE_MS &&
+            rideStartOdo != null && rideStartMs > 0L
+        ) {
+            active = true
+            lastDisconnectedMs = 0L
+            // Do not charge the outage to a speed band, and sample immediately
+            // on the first frame after reconnect.
+            lastPrimaryAtMs = 0L
+            lastSampleAtMs = 0L
+            return
+        }
+        // Genuine new ride: full reset.
+        lastDisconnectedMs = 0L
+        rideMapsEtaMinutes = pendingMapsEtaMinutes
         rideStartMs = System.currentTimeMillis()
         rideStartOdo = null
         rideLastOdo = null
@@ -472,6 +500,10 @@ object RideStore {
     fun onDisconnected() {
         if (!active) return
         active = false
+        // Remember when the link dropped so a reconnect inside the grace window
+        // resumes this ride. We deliberately keep the ride counters and samples
+        // in memory instead of throwing them away here.
+        lastDisconnectedMs = System.currentTimeMillis()
         // Freeze the graph on screen after the link drops. Only the next
         // connect/ride start clears it. Persist the last samples as well so a
         // process restart still shows the most recent ride.
@@ -481,8 +513,21 @@ object RideStore {
             ?.putString(KEY_LIVE_SPEEDS, rideSpeeds.joinToString("_"))
             ?.putString(KEY_LIVE_THROTTLES, rideThrottles.joinToString("_"))
             ?.apply()
+        // Checkpoint now: if the phone is killed during the outage, the saved
+        // ride is still complete up to the last frame we received.
         persistRideSnapshot()
         pendingMapsEtaMinutes = -1
+    }
+
+    /**
+     * An explicit Disconnect means the rider is finished - the next connect
+     * must start a fresh ride rather than resume the old one.
+     */
+    fun discardResumableRide() {
+        lastDisconnectedMs = 0L
+        rideStartOdo = null
+        rideLastOdo = null
+        active = false
     }
 
     /**
@@ -514,7 +559,7 @@ object RideStore {
             maxRpm = maxRpm,
             speedSamples = rideSpeeds.toList(),
             throttleSamples = rideThrottles.toList(),
-            mapsEtaMinutes = pendingMapsEtaMinutes,
+            mapsEtaMinutes = rideMapsEtaMinutes,
         )
         // A ride finalised from saved/imported data can carry a higher top than
         // this session saw live; keep the all-time best in step with the Rides tab.
