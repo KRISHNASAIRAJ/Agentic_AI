@@ -14,6 +14,8 @@ object OutboundId {
     const val NAVIGATION_CONTROL = 0x4E
     const val NAVIGATION_TEXT = 0x4F
     const val RIDER_NAME = 0x52
+    const val CALLER = 0x43
+    const val SMS = 0x53
 }
 
 object InboundId {

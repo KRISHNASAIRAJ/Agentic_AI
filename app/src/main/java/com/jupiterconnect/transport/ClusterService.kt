@@ -14,6 +14,7 @@ import android.bluetooth.BluetoothManager
 import android.bluetooth.BluetoothProfile
 import android.bluetooth.le.ScanCallback
 import android.bluetooth.le.ScanResult
+import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
@@ -27,6 +28,7 @@ import android.location.LocationListener
 import android.location.LocationManager
 import android.os.Build
 import android.os.Handler
+import android.os.HandlerThread
 import android.os.IBinder
 import android.os.Looper
 import android.util.Log
@@ -54,6 +56,8 @@ import com.jupiterconnect.protocol.buildNavControl
 import com.jupiterconnect.protocol.buildScreenSwitch
 import com.jupiterconnect.protocol.buildSocialCounts
 import com.jupiterconnect.protocol.buildNavText
+import com.jupiterconnect.protocol.buildCallFrame
+import com.jupiterconnect.protocol.buildMessageFrame
 import com.jupiterconnect.protocol.decodeFrame
 import com.jupiterconnect.session.RideStore
 import kotlinx.coroutines.CoroutineScope
@@ -133,6 +137,15 @@ object ClusterRepository {
         service?.sendTextRow(text)
     }
 
+    /**
+     * Incoming calls and messages use their own full-screen cluster cards
+     * (DID 0x43 / 0x53). They never touch the navigation row, so a WhatsApp
+     * message cannot replace the current direction on the dash.
+     */
+    fun showPhoneEvent(isCall: Boolean, text: String, holdMs: Long = 5_000L) {
+        service?.sendPhoneEvent(isCall, text, holdMs)
+    }
+
     @Volatile private var replyText: String? = null
     @Volatile private var replyUntilMs = 0L
 
@@ -152,6 +165,13 @@ class ClusterService : Service() {
     private val coldStartTracker = ColdStartTracker()
     private val writeLock = Mutex()
     private val main = Handler(Looper.getMainLooper())
+    // The foreground notification is only meaningful while Bluetooth is on.
+    private val bluetoothStateReceiver = object : BroadcastReceiver() {
+        override fun onReceive(context: Context?, intent: Intent?) {
+            updateForegroundForBluetooth()
+        }
+    }
+    private var bluetoothReceiverRegistered = false
 
     @Volatile private var gatt: BluetoothGatt? = null
     // Guards parking capture: a fresh spot is saved once per connect/disconnect
@@ -164,6 +184,7 @@ class ClusterService : Service() {
     @Volatile private var lastAddress: String? = null
     private var keepaliveJob: Job? = null
     private var navJob: Job? = null
+    private var phoneEventJob: Job? = null
     private var syncJob: Job? = null
     private var reconnectJob: Job? = null
     private var reconnectAttempts = 0
@@ -175,9 +196,12 @@ class ClusterService : Service() {
     private var speedAlertActive = false
     private var lastNotificationKey = ""
     private val speedFusion = SpeedFusion()
-    private var gpsSpeedMps = -1f
-    private var gpsAccuracyM = -1f
+    @Volatile private var gpsSpeedMps = -1f
+    @Volatile private var gpsAccuracyM = -1f
     private var gpsListener: LocationListener? = null
+    // BLE callbacks are delivered on the main looper. Keep GPS callbacks on a
+    // separate thread so a burst of fixes cannot delay them.
+    private var gpsThread: HandlerThread? = null
     private val batteryHistory = ArrayDeque<Double>()
     private var lastAnomalyKey = ""
     @SuppressLint("MissingPermission") private var scanCallback: ScanCallback? = null
@@ -193,12 +217,25 @@ class ClusterService : Service() {
         coldStartTracker.setLastRunMs(RideStore.warmupLastRunMs)
         createChannel()
         ClusterRepository.service = this
-        // Start with the connected-device type only: microphone permission may
-        // not be granted yet at boot. The mic type is added only while listening.
-        ServiceCompat.startForeground(
-            this, 1, buildNotification(), ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE)
+        runCatching<Unit> {
+            registerReceiver(bluetoothStateReceiver, IntentFilter(BluetoothAdapter.ACTION_STATE_CHANGED))
+            bluetoothReceiverRegistered = true
+        }
+        // Show the foreground notification only while Bluetooth is on.
+        updateForegroundForBluetooth()
         // Keep rides, fuel logs and app state synced even with no bike linked.
         startRideSync()
+    }
+
+    /** Promote to foreground only with Bluetooth on; otherwise hide the row. */
+    private fun updateForegroundForBluetooth() {
+        if (adapter?.isEnabled == true) {
+            ServiceCompat.startForeground(
+                this, 1, buildNotification(), ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE)
+        } else {
+            ServiceCompat.stopForeground(this, ServiceCompat.STOP_FOREGROUND_REMOVE)
+        }
+        updateNotification()
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -441,9 +478,11 @@ class ClusterService : Service() {
             override fun onProviderDisabled(provider: String) {}
         }
         gpsListener = listener
+        val thread = HandlerThread("JupiterGps").also { it.start() }
+        gpsThread = thread
         listOf(LocationManager.GPS_PROVIDER, LocationManager.NETWORK_PROVIDER).forEach { p ->
             runCatching<Unit> {
-                manager.requestLocationUpdates(p, 1_000L, 0f, listener, Looper.getMainLooper())
+                manager.requestLocationUpdates(p, 2_000L, 0f, listener, thread.looper)
             }
         }
     }
@@ -452,6 +491,8 @@ class ClusterService : Service() {
         val manager = getSystemService(Context.LOCATION_SERVICE) as? LocationManager ?: return
         gpsListener?.let { runCatching { manager.removeUpdates(it) } }
         gpsListener = null
+        gpsThread?.let { runCatching { it.quitSafely() } }
+        gpsThread = null
         gpsSpeedMps = -1f
         gpsAccuracyM = -1f
     }
@@ -543,7 +584,7 @@ class ClusterService : Service() {
      * real connect/disconnect cycle.
      */
     @SuppressLint("MissingPermission")
-    private fun saveParkedLocation(force: Boolean = false) {
+    private fun saveParkedLocation(force: Boolean = false, preserveAtMs: Long = 0L) {
         if (!force && !connectionEstablished) return
         connectionEstablished = false
         val epoch = ++parkingEpoch
@@ -567,7 +608,15 @@ class ClusterService : Service() {
         val fallback = providers
             .mapNotNull { runCatching { manager.getLastKnownLocation(it) }.getOrNull() }
             .maxByOrNull { it.time }
-        val savedAt = System.currentTimeMillis()
+        // Refresh keeps the original parking time: only the coordinates may be
+        // corrected, never the moment the scooter was parked.
+        val savedAt = if (preserveAtMs > 0) preserveAtMs else System.currentTimeMillis()
+        // Save immediately from the cached fix. Never wait up to 5 s for a fresh
+        // fix before the Find tab has a spot — a drop must leave one at once.
+        fallback?.let { f ->
+            RideStore.saveParkedLocation(f.latitude, f.longitude, savedAt, approximate = true)
+            FrameLog.note("PARKED cached immediately ${"%.5f,%.5f".format(f.latitude, f.longitude)}")
+        }
         var saved = false
         lateinit var timeout: Runnable
         lateinit var listenerRef: LocationListener
@@ -618,7 +667,7 @@ class ClusterService : Service() {
         main.postDelayed(timeout, 5_000L)
     }
 
-    /** Find-tab button: re-capture the spot with the user explicitly present. */
+    /** Find-tab button: re-capture the coordinates, keeping the parking time. */
     fun refreshParkedLocation() {
         val allowed =
             ContextCompat.checkSelfPermission(this, android.Manifest.permission.ACCESS_FINE_LOCATION) ==
@@ -630,7 +679,8 @@ class ClusterService : Service() {
                 error = "Location permission needed to save the parking spot")
             return
         }
-        saveParkedLocation(force = true)
+        val originalAt = RideStore.parkedLocation.value?.atMs ?: 0L
+        saveParkedLocation(force = true, preserveAtMs = originalAt)
         ClusterRepository.telemetry.value = ClusterRepository.telemetry.value.copy(error = null)
     }
 
@@ -643,6 +693,48 @@ class ClusterService : Service() {
                 write(buildNavText(text))
                 delay(250L)
             }
+        }
+    }
+
+    /**
+     * Show a call/message on the cluster's own full-screen card, for [holdMs]
+     * only. These frames (0x43 / 0x53) are separate from the navigation row, so
+     * Maps keeps rendering the current direction underneath and resumes as
+     * soon as the card times out. No app screen is opened and no other state
+     * is touched.
+     */
+    fun sendPhoneEvent(isCall: Boolean, text: String, holdMs: Long) {
+        phoneEventJob?.cancel()
+        phoneEventJob = scope.launch {
+            // A call is one card repeated while ringing. A long message is split
+            // into 17-byte pages spread across the hold window so the whole body
+            // is readable, not just its first few words.
+            val pages = if (isCall) listOf(text)
+                else com.jupiterconnect.nav.PhoneEventFormat.pages(text)
+            val started = System.currentTimeMillis()
+            val until = started + holdMs
+            while (isActive && System.currentTimeMillis() < until) {
+                val elapsed = System.currentTimeMillis() - started
+                val slot = (elapsed * pages.size / holdMs).toInt().coerceIn(0, pages.lastIndex)
+                val page = pages[slot]
+                write(if (isCall) buildCallFrame(page) else buildMessageFrame(page))
+                delay(500L)
+            }
+            if (!isActive) return@launch
+            // Clear the card. A call ends with three status frames 100 ms apart;
+            // an SMS card clears when an empty 0x53 frame arrives.
+            if (isCall) {
+                repeat(3) {
+                    write(buildKeepalive(
+                        batteryPct = phoneBatteryPct(),
+                        signalBars = phoneSignalBars(),
+                    ))
+                    delay(100L)
+                }
+            } else {
+                write(buildMessageFrame(""))
+            }
+            phoneEventJob = null
         }
     }
 
@@ -799,6 +891,8 @@ class ClusterService : Service() {
                     keepaliveJob = null
                     navJob?.cancel()
                     navJob = null
+                    phoneEventJob?.cancel()
+                    phoneEventJob = null
                     if (g === gatt) gatt = null
                     runCatching { g.close() }
                     if (!manualDisconnect) scheduleReconnect()
@@ -916,8 +1010,6 @@ class ClusterService : Service() {
                 write(buildKeepalive(
                     batteryPct = phoneBatteryPct(),
                     signalBars = phoneSignalBars(),
-                    overspeedLimit = if (ClusterRepository.highSpeedAlert.value)
-                        ClusterRepository.highSpeedAlertSpeed.value else 120,
                 ))
                 delay(2000)
             }
@@ -982,6 +1074,8 @@ class ClusterService : Service() {
     private fun startNavigationBridge() {
         if (navJob?.isActive == true) return
         navJob = scope.launch {
+            var scrollOffset = 0
+            var lastLine = ""
             while (isActive) {
                 // Personal correction from real rides; neutral until 5 rides
                 // carry a Maps ETA, and always bounded.
@@ -1003,7 +1097,15 @@ class ClusterService : Service() {
                             remaining,
                             step.pictogram,
                         ))
-                        if (reply == null) write(buildNavText(step.displayLine))
+                        if (reply == null) {
+                            val line = step.displayLine
+                            if (line != lastLine) {
+                                lastLine = line
+                                scrollOffset = 0
+                            }
+                            write(buildNavText(com.jupiterconnect.nav.NavScroll.window(line, scrollOffset)))
+                            if (line.length > com.jupiterconnect.nav.NavScroll.WIDTH) scrollOffset += 2
+                        }
                     }
                 }
                 delay(1500)
@@ -1071,6 +1173,7 @@ class ClusterService : Service() {
 
     /** Re-post the notification so its title/text follow the link state. */
     private fun updateNotification() {
+        if (adapter?.isEnabled != true) return // no notification with Bluetooth off
         val t = ClusterRepository.telemetry.value
         val key = "${t.connected}|${t.address}|${t.error}"
         // Only post when the state actually changes - never spam the shade.
@@ -1083,6 +1186,12 @@ class ClusterService : Service() {
 
     override fun onDestroy() {
         clearNotification?.let { main.removeCallbacks(it) }
+        if (bluetoothReceiverRegistered) {
+            runCatching { unregisterReceiver(bluetoothStateReceiver) }
+            bluetoothReceiverRegistered = false
+        }
+        phoneEventJob?.cancel()
+        phoneEventJob = null
         disconnectNow()
         voiceBridge.destroy()
         ClusterRepository.service = null

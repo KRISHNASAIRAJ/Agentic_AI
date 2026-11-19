@@ -110,13 +110,12 @@ fun buildKeepalive(
     findMy: Boolean = false,
     batteryPct: Int = -1,
     signalBars: Int = -1,
-    overspeedLimit: Int = 120,
 ): ByteArray {
     val b = ByteArray(20)
     b[0] = 0x5B
     b[1] = OutboundId.MOBILE_DATA.toByte()
-    // Byte 3 is the cluster's overspeed limit. 120 disables the alert.
-    b[3] = overspeedLimit.coerceIn(20, 120).toByte()
+    // Byte 3 stays ZERO as in the stable build. Writing a value here changed
+    // cluster behaviour after ~1 minute of riding and dropped the BLE link.
     // Jupiter's enriched mobile-data layout: byte 2 packs cellular signal in
     // the high nibble and a phone-battery bucket (ceil(pct/25)) in the low
     // nibble. Leaving it zero made the cluster show "no signal / low battery".
@@ -215,3 +214,16 @@ fun buildNavText(text: String, id: Int = OutboundId.NAVIGATION_TEXT): ByteArray 
     b[19] = 0xFF.toByte()
     return b
 }
+
+/**
+ * Incoming-call popup. The cluster shows its own full-screen "Incoming call"
+ * card for DID 0x43, so this never touches the navigation text row (0x4F).
+ * Stock repeats it every 500 ms while the phone is ringing.
+ */
+fun buildCallFrame(caller: String): ByteArray = buildNavText(caller, OutboundId.CALLER)
+
+/**
+ * Text-message card. DID 0x53 makes the cluster show its own full-screen
+ * message card instead of overwriting the turn-by-turn direction row.
+ */
+fun buildMessageFrame(text: String): ByteArray = buildNavText(text, OutboundId.SMS)

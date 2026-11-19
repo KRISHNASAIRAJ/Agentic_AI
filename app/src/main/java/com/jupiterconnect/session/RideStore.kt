@@ -235,6 +235,7 @@ object RideStore {
     private val rideSpeeds = mutableListOf<Int>()
     private val rideThrottles = mutableListOf<Int>()
     private var lastSampleAtMs = 0L
+    private var lastRidePersistMs = 0L
     private var lowFuelStartOdo: Double? = null
     private var lastIssDuration = -1L
 
@@ -307,6 +308,7 @@ object RideStore {
         rideSpeeds.clear()
         rideThrottles.clear()
         lastSampleAtMs = 0L
+        lastRidePersistMs = 0L
         _liveSpeeds.value = emptyList()
         _liveThrottles.value = emptyList()
         lowFuelStartOdo = null
@@ -405,6 +407,15 @@ object RideStore {
                     _liveTripKm.value = (rideLastOdo!! - start).coerceAtLeast(0.0)
                 }
             }
+            // Checkpoint the ride every 15 s so a link drop or process kill
+            // cannot lose it before the disconnect callback finalises it.
+            val nowCheckpoint = System.currentTimeMillis()
+            if (nowCheckpoint - lastRidePersistMs >= 15_000L && rideStartOdo != null &&
+                (rideLastOdo ?: 0.0) > rideStartOdo!!
+            ) {
+                lastRidePersistMs = nowCheckpoint
+                persistRideSnapshot()
+            }
             if (primary) {
                 val now = System.currentTimeMillis()
                 // Adaptive sampling: 2 s while cruising, but 0.5 s while the
@@ -453,6 +464,16 @@ object RideStore {
             ?.putString(KEY_LIVE_SPEEDS, rideSpeeds.joinToString("_"))
             ?.putString(KEY_LIVE_THROTTLES, rideThrottles.joinToString("_"))
             ?.apply()
+        persistRideSnapshot()
+        pendingMapsEtaMinutes = -1
+    }
+
+    /**
+     * Write the in-progress ride into the saved list, replacing the previous
+     * snapshot of the same ride. Called on disconnect and periodically during
+     * the ride so a BLE drop or process kill can never lose the ride.
+     */
+    private fun persistRideSnapshot() {
         val start = rideStartOdo
         val end = rideLastOdo
         if (start == null || end == null || end <= start) return
@@ -478,14 +499,13 @@ object RideStore {
             throttleSamples = rideThrottles.toList(),
             mapsEtaMinutes = pendingMapsEtaMinutes,
         )
-        pendingMapsEtaMinutes = -1
         // A ride finalised from saved/imported data can carry a higher top than
         // this session saw live; keep the all-time best in step with the Rides tab.
         if (ride.topSpeedKmh > _allTimeTopSpeed.value) {
             _allTimeTopSpeed.value = ride.topSpeedKmh
             prefs?.edit()?.putInt(KEY_ALL_TIME_TOP, ride.topSpeedKmh)?.apply()
         }
-        val updated = listOf(ride) + _rides.value
+        val updated = listOf(ride) + _rides.value.filter { it.startedAt != ride.startedAt }
         _rides.value = updated
         prefs?.edit()
             ?.putString(KEY_RIDES, serialiseRides(updated))

@@ -32,6 +32,24 @@ data class ParsedNav(
     val pictogram: Int = NavInstruction.STRAIGHT,
 )
 
+/**
+ * The cluster text row holds 17 bytes. Longer directions are shown as a
+ * sliding window so the whole street name is readable over a few ticks.
+ */
+object NavScroll {
+    const val WIDTH = 17
+    private const val GAP = "    "
+
+    /** [offset] advances by a couple of characters on each navigation tick. */
+    fun window(text: String, offset: Int): String {
+        if (text.length <= WIDTH) return text
+        val loop = text + GAP
+        val start = Math.floorMod(offset, loop.length)
+        val doubled = loop + loop
+        return doubled.substring(start, start + WIDTH)
+    }
+}
+
 /** Parse Google Maps / MapMyIndia notification extras without a maps SDK. */
 object NavParsing {
     private val DISTANCE = Regex("""(\d+(?:[.,]\d+)?)\s*(km|mi|ft|m)(?![A-Za-z])""", RegexOption.IGNORE_CASE)

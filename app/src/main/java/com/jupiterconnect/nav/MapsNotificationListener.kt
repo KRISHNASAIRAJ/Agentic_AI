@@ -212,8 +212,8 @@ class MapsNotificationListener : NotificationListenerService() {
     /**
      * Mirror incoming calls and chat messages to the cluster, the same way
      * TVS Connect does. Nothing is sent unless the scooter is linked and the
-     * owner enabled this in Settings. The cluster text row is shared with
-     * navigation, so [ClusterRepository.showText] temporarily owns it.
+     * owner enabled this in Settings. Calls (0x43) and messages (0x53) use
+     * their own full-screen cluster cards, leaving the navigation row alone.
      */
     private fun handlePhoneEvent(n: StatusBarNotification) {
         if (!ClusterRepository.phoneMirroring.value) return
@@ -257,7 +257,10 @@ class MapsNotificationListener : NotificationListenerService() {
         if (n.key == lastPhoneKey && text == lastPhoneText) return
         lastPhoneKey = n.key
         lastPhoneText = text
-        ClusterRepository.showText(text, PHONE_HOLD_MS)
+        // Use the cluster's dedicated call/message cards so the turn-by-turn
+        // direction row is never overwritten. Both clear after 5 s and Maps
+        // keeps rendering underneath without any extra work.
+        ClusterRepository.showPhoneEvent(isCall, text, PHONE_HOLD_MS)
     }
 
     /** Saved contact name for a number/contact URI, or null (show the raw value). */

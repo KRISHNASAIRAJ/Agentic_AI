@@ -8,7 +8,9 @@ import com.jupiterconnect.session.RideAnalytics
 import com.jupiterconnect.session.SpeedFusion
 import com.jupiterconnect.session.Ride
 import com.jupiterconnect.session.WarmupPhase
+import com.jupiterconnect.protocol.buildCallFrame
 import com.jupiterconnect.protocol.buildCarbonFrame
+import com.jupiterconnect.protocol.buildMessageFrame
 import com.jupiterconnect.protocol.buildKeepalive
 import com.jupiterconnect.protocol.buildNavControl
 import com.jupiterconnect.protocol.buildNavText
@@ -21,6 +23,18 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class ProtocolTest {
+
+    @Test
+    fun call_and_message_frames_do_not_overwrite_navigation_row() {
+        val call = buildCallFrame("Mom")
+        val message = buildMessageFrame("Mom: Hello")
+        val nav = buildNavText("Turn left")
+        assertEquals(0x43, call[1].toInt() and 0xFF)
+        assertEquals(0x53, message[1].toInt() and 0xFF)
+        assertEquals(0x4F, nav[1].toInt() and 0xFF)
+        assertEquals(0xFF, call[19].toInt() and 0xFF)
+        assertEquals(0xFF, message[19].toInt() and 0xFF)
+    }
 
     @Test
     fun keepalive_has_no_checksum_and_12_hour_clock() {
@@ -240,9 +254,36 @@ class ProtocolTest {
 
     @Test
     fun call_shows_contact_name_or_plain_number() {
-        assertEquals("CALL Mom", com.jupiterconnect.nav.PhoneEventFormat.call("Mom"))
-        assertEquals("C 919876543210",
+        // The 0x43 card adds the "Incoming call" label itself, so only the
+        // name/number goes on the wire.
+        assertEquals("Mom", com.jupiterconnect.nav.PhoneEventFormat.call("Mom"))
+        assertEquals("919876543210",
             com.jupiterconnect.nav.PhoneEventFormat.call("+91 98765 43210"))
+    }
+
+    @Test
+    fun long_directions_scroll_across_the_cluster_row() {
+        val line = "Towards Jubilee Hills Check Post"
+        val first = com.jupiterconnect.nav.NavScroll.window(line, 0)
+        val second = com.jupiterconnect.nav.NavScroll.window(line, 2)
+        assertEquals(17, first.length)
+        assertEquals(17, second.length)
+        assertFalse(first == second)
+        assertTrue(first.startsWith("Towards"))
+        // Every window must be a real slice of the instruction plus its gap.
+        assertTrue((first + second).contains("Jubilee"))
+        assertEquals("Turn left", com.jupiterconnect.nav.NavScroll.window("Turn left", 12))
+    }
+
+    @Test
+    fun long_messages_are_paged_into_cluster_sized_frames() {
+        val text = com.jupiterconnect.nav.PhoneEventFormat.message(
+            "Mom", "On my way I am stuck in traffic near the flyover call you later")
+        assertTrue(text.length > 17)
+        val pages = com.jupiterconnect.nav.PhoneEventFormat.pages(text)
+        assertTrue(pages.size > 1)
+        assertTrue(pages.all { it.length <= 17 })
+        assertEquals(text, pages.joinToString(""))
     }
 
     @Test
@@ -251,7 +292,8 @@ class ProtocolTest {
             com.jupiterconnect.nav.PhoneEventFormat.message("Mom", "On my way"))
         val long = com.jupiterconnect.nav.PhoneEventFormat.message(
             "Rahul", "Download the attachment please")
-        assertEquals(17, long.length)
+        // The full text is kept; the transport pages it into 17-byte frames.
+        assertEquals("Rahul: Download the attachment please", long)
         assertTrue(long.startsWith("Rahul: "))
     }
 
