@@ -121,6 +121,7 @@ fun buildKeepalive(
     findMy: Boolean = false,
     batteryPct: Int = -1,
     signalBars: Int = -1,
+    missedCalls: Int = 0,
 ): ByteArray {
     val b = ByteArray(20)
     b[0] = 0x5B
@@ -140,6 +141,10 @@ fun buildKeepalive(
     b[7] = now.get(Calendar.MINUTE).toByte()
     b[8] = now.get(Calendar.SECOND).toByte()
     b[9] = if (now.get(Calendar.AM_PM) == Calendar.PM) 1 else 0
+    // Jupiter mobile-data layout: byte 10 is the missed-call counter the
+    // cluster's Social screen reads. Leaving it zero kept "0 Missed call" no
+    // matter how many 0x43 call cards we sent.
+    b[10] = missedCalls.coerceIn(0, 255).toByte()
     b[17] = if (findMy) 1 else 0
     b[12] = now.get(Calendar.DAY_OF_MONTH).toByte()
     b[13] = (now.get(Calendar.MONTH) + 1).toByte()
@@ -211,15 +216,6 @@ fun buildSocialCounts(whatsapp: Int, facebook: Int, instagram: Int): ByteArray {
 /** Current place name on the cluster (5B 5C). */
 fun buildLocationFrame(name: String): ByteArray = buildNavText(name, 0x5C)
 
-/** Carbon-saving value on the cluster's 0x9C screen; byte 6 carries whole kg. */
-fun buildCarbonFrame(kg: Int): ByteArray {
-    val b = ByteArray(20)
-    b[0] = 0x5B
-    b[1] = 0x9C.toByte()
-    b[6] = kg.coerceIn(0, 255).toByte()
-    b[19] = 0xFF.toByte()
-    return b
-}
 
 fun buildNavText(text: String, id: Int = OutboundId.NAVIGATION_TEXT): ByteArray {
     val b = ByteArray(20)
@@ -232,11 +228,46 @@ fun buildNavText(text: String, id: Int = OutboundId.NAVIGATION_TEXT): ByteArray 
 }
 
 /**
- * Incoming-call popup. The cluster shows its own full-screen "Incoming call"
- * card for DID 0x43, so this never touches the navigation text row (0x4F).
- * Stock repeats it every 500 ms while the phone is ringing.
+ * Jupiter caller ID is a sequence, NOT a single text frame. The stock app's
+ * `writeCallerInformationToCluster` sends up to three 21-byte packets in the
+ * order national number (sub 0x01), country code (0x03), contact name (0x02);
+ * byte 2 is the sub-id and the text starts at byte 3.
+ *
+ * The old single 20-byte `5B 43 <name> FF` put the first ASCII letter in byte 2
+ * (e.g. 0x4B for 'K'), which is not a valid sub-id, so the cluster silently
+ * dropped it. VoIP callers have no phone number, so the display name is sent in
+ * both the number slot and the name slot to cover either rendering path.
  */
-fun buildCallFrame(caller: String): ByteArray = buildNavText(caller, OutboundId.CALLER)
+fun buildCallerPackets(
+    nationalNumber: String,
+    countryCode: String? = null,
+    contactName: String? = null,
+): List<ByteArray> {
+    val out = ArrayList<ByteArray>(3)
+    if (nationalNumber.isNotBlank()) out += callerPacket(0x01, nationalNumber)
+    if (!countryCode.isNullOrBlank()) out += callerPacket(0x03, countryCode)
+    if (!contactName.isNullOrBlank()) out += callerPacket(0x02, contactName)
+    return out
+}
+
+private fun callerPacket(subId: Int, text: String): ByteArray {
+    val b = ByteArray(21)
+    b[0] = 0x5B
+    b[1] = OutboundId.CALLER.toByte()
+    b[2] = subId.toByte()
+    val clean = sanitize(text)
+    for (i in clean.indices) b[3 + i] = clean[i].code.toByte()
+    b[20] = 0xFF.toByte()
+    return b
+}
+
+/**
+ * Jupiter messages render on the custom text rows (0x5B 0x4C / 0x63). The
+ * 0x53 SMS frame is model-gated to U388/iQube upstream and produced no visible
+ * card on the rider's Jupiter 125, so [buildMessageRow] is the primary channel.
+ */
+fun buildMessageRow(text: String, row2: Boolean = false): ByteArray =
+    buildNavText(text, if (row2) OutboundId.MESSAGE_ROW2 else OutboundId.MESSAGE_ROW1)
 
 /**
  * Text-message card. DID 0x53 makes the cluster show its own full-screen

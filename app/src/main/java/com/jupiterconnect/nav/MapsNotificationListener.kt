@@ -293,7 +293,7 @@ class MapsNotificationListener : NotificationListenerService() {
         // Use the cluster's dedicated call/message cards so the turn-by-turn
         // direction row is never overwritten. Both clear after 5 s and Maps
         // keeps rendering underneath without any extra work.
-        ClusterRepository.showPhoneEvent(isCall, text, PHONE_HOLD_MS)
+        ClusterRepository.showPhoneEvent(isCall, text, PHONE_HOLD_MS, n.packageName)
     }
 
     /**

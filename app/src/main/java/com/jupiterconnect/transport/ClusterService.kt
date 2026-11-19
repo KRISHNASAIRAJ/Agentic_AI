@@ -51,14 +51,14 @@ import com.jupiterconnect.sync.SupabaseClient
 import com.jupiterconnect.nav.NavInstruction
 import com.jupiterconnect.protocol.buildKeepalive
 import com.jupiterconnect.protocol.buildBrightnessFrame
-import com.jupiterconnect.protocol.buildCarbonFrame
 import com.jupiterconnect.protocol.buildLocationFrame
 import com.jupiterconnect.protocol.buildNavControl
 import com.jupiterconnect.protocol.buildScreenSwitch
 import com.jupiterconnect.protocol.buildSocialCounts
 import com.jupiterconnect.protocol.buildNavText
-import com.jupiterconnect.protocol.buildCallFrame
+import com.jupiterconnect.protocol.buildCallerPackets
 import com.jupiterconnect.protocol.buildMessageFrame
+import com.jupiterconnect.protocol.buildMessageRow
 import com.jupiterconnect.protocol.decodeFrame
 import com.jupiterconnect.session.RideStore
 import kotlinx.coroutines.CoroutineScope
@@ -147,7 +147,18 @@ object ClusterRepository {
      * (DID 0x43 / 0x53). They never touch the navigation row, so a WhatsApp
      * message cannot replace the current direction on the dash.
      */
-    fun showPhoneEvent(isCall: Boolean, text: String, holdMs: Long = 5_000L) {
+    fun showPhoneEvent(
+        isCall: Boolean,
+        text: String,
+        holdMs: Long = 5_000L,
+        sourcePackage: String? = null,
+    ) {
+        // The cluster's Social screen also carries a WhatsApp unread count.
+        // Messages use 0x4C; this counter is the separate 0x9C frame.
+        if (!isCall && sourcePackage?.startsWith("com.whatsapp") == true) {
+            val (wa, fb, ig) = socialCounts.value
+            service?.sendSocialCounts(wa + 1, fb, ig)
+        }
         service?.sendPhoneEvent(isCall, text, holdMs)
     }
 
@@ -211,8 +222,8 @@ class ClusterService : Service() {
     // the last cluster frame arrived, so a future drop can be explained.
     private var connectedAtMs = 0L
     private var lastFrameAtMs = 0L
-    /** Last time the estimated CO2 saving was pushed to the dash. */
-    private var lastCarbonSentMs = 0L
+    /** Missed-call count carried in the 0x4A keepalive (byte 10). */
+    @Volatile private var missedCalls = 0
     // Remembered bike survives a service/process restart (OEM battery optimisers
     // love to kill background BLE services). Shares MainActivity's prefs so the
     // UI and the service always agree on the last linked cluster.
@@ -796,47 +807,58 @@ class ClusterService : Service() {
     }
 
     /**
-     * Show a call/message on the cluster's own full-screen card, for [holdMs]
-     * only. These frames (0x43 / 0x53) are separate from the navigation row, so
-     * Maps keeps rendering the current direction underneath and resumes as
-     * soon as the card times out. No app screen is opened and no other state
-     * is touched.
+     * Mirror a call or message to the cluster without touching the navigation
+     * row. Calls use the three-packet 0x43 caller sequence (the single 0x43
+     * frame the old build sent had no sub-id and the cluster dropped it), and
+     * messages use the Jupiter 0x4C text row that the cluster actually renders.
+     * 0x53 is still sent for clusters that render the SMS card.
      */
     fun sendPhoneEvent(isCall: Boolean, text: String, holdMs: Long) {
         phoneEventJob?.cancel()
         phoneEventJob = scope.launch {
-            // A call is one card repeated while ringing. A long message is split
-            // into 17-byte pages spread across the hold window so the whole body
-            // is readable, not just its first few words.
+            if (isCall) {
+                // The cluster's Social screen reads the missed-call counter from
+                // 0x4A byte 10, not from the caller card. Advance it once per
+                // incoming call so the count stops sitting at zero.
+                missedCalls = (missedCalls + 1).coerceIn(0, 255)
+                FrameLog.note("CALL trigger '$text' - missedCalls=$missedCalls")
+            }
             val pages = if (isCall) listOf(text)
                 else com.jupiterconnect.nav.PhoneEventFormat.pages(text)
             val started = System.currentTimeMillis()
             val until = started + holdMs
-            while (isActive && System.currentTimeMillis() < until) {
-                val elapsed = System.currentTimeMillis() - started
-                val slot = (elapsed * pages.size / holdMs).toInt().coerceIn(0, pages.lastIndex)
-                val page = pages[slot]
-                // Release the previous text before writing the next page; the
-                // card otherwise latches the first frame and ignores changes.
-                if (!isCall && pages.size > 1) {
-                    write(buildMessageFrame(""))
-                    delay(120L)
+            if (isCall) {
+                // VoIP has no national number, so the name goes in both the
+                // number and name slots. Stock repeats the whole sequence while
+                // the phone is ringing; a blank keepalive then clears the card.
+                val packets = buildCallerPackets(text, contactName = text)
+                while (isActive && System.currentTimeMillis() < until) {
+                    packets.forEach { write(it) }
+                    delay(500L)
                 }
-                write(if (isCall) buildCallFrame(page) else buildMessageFrame(page))
-                delay(500L)
+            } else {
+                while (isActive && System.currentTimeMillis() < until) {
+                    val elapsed = System.currentTimeMillis() - started
+                    val slot = (elapsed * pages.size / holdMs).toInt().coerceIn(0, pages.lastIndex)
+                    val page = pages[slot]
+                    // 0x4C is Jupiter's message row; 0x53 covers other clusters.
+                    write(buildMessageRow(page))
+                    write(buildMessageFrame(page))
+                    delay(500L)
+                }
             }
             if (!isActive) return@launch
-            // Clear the card. A call ends with three status frames 100 ms apart;
-            // an SMS card clears when an empty 0x53 frame arrives.
             if (isCall) {
                 repeat(3) {
                     write(buildKeepalive(
                         batteryPct = phoneBatteryPct(),
                         signalBars = phoneSignalBars(),
+                        missedCalls = missedCalls,
                     ))
                     delay(100L)
                 }
             } else {
+                write(buildMessageRow(""))
                 write(buildMessageFrame(""))
             }
             phoneEventJob = null
@@ -987,9 +1009,6 @@ class ClusterService : Service() {
                         stopGpsSpeed()
                         saveParkedLocation(force = true)
                         RideStore.onDisconnected()
-                        // One last refresh on the way out, in case the ride
-                        // changed the estimate since the last periodic write.
-                        maybeSendCarbon(force = true)
                         // No telemetry means no engine data - make that explicit.
                         ClusterRepository.warmup.value = WarmupState(message = "Engine off")
                         // Keep syncing for two minutes after the link drops.
@@ -1063,11 +1082,6 @@ class ClusterService : Service() {
             }
             startKeepalive()
             startNavigationBridge()
-            // The earlier build only wrote the carbon value on disconnect, so
-            // the dash kept showing "0 g saved" for the whole ride. Push it as
-            // soon as the link is really up (writeChar is now available) and
-            // refresh it from the keepalive loop below.
-            maybeSendCarbon(force = true)
         }
 
         override fun onCharacteristicChanged(
@@ -1141,29 +1155,11 @@ class ClusterService : Service() {
                 write(buildKeepalive(
                     batteryPct = phoneBatteryPct(),
                     signalBars = phoneSignalBars(),
+                    missedCalls = missedCalls,
                 ))
-                // Slow refresh so a screen the rider opens mid-ride still has
-                // a current value. Rate-limited inside maybeSendCarbon().
-                maybeSendCarbon()
                 delay(2000)
             }
         }
-    }
-
-    /**
-     * Push the estimated lifetime CO2 saving to the dash. Captured frames show
-     * the cluster always reports its own ISS idle counter and ISS stop count as
-     * zero (0x19 bytes 2-4 and 15-17), so the phone has to supply a value if the
-     * "Carbon Saving" screen is to show anything. A bare zero is never sent.
-     */
-    private fun maybeSendCarbon(force: Boolean = false) {
-        val kg = RideStore.carbonSavedKg
-        if (kg < 1) return
-        val now = System.currentTimeMillis()
-        if (!force && now - lastCarbonSentMs < 60_000L) return
-        lastCarbonSentMs = now
-        FrameLog.note("CARBON send kg=${kg.toInt()} source=${RideStore.carbonEstimateSource}")
-        scope.launch { write(buildCarbonFrame(kg.toInt())) }
     }
 
     /**

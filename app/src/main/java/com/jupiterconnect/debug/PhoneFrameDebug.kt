@@ -25,8 +25,12 @@ object PhoneFrameDebug {
         val start = bytes[0]
         if (start != 0x5A && start != 0x5B && start != 0x9B) return ""
         if (bytes[1] != id) return ""
-        val payload = ByteArray(19) { bytes[it].toByte() }
-        return String(payload, 2, 17, Charsets.US_ASCII)
+        // Caller-ID frames carry a sub-id at byte 2 (1 number, 3 country code,
+        // 2 contact name) and the text starts at byte 3. The old single-frame
+        // form had no sub-id, so fall back to byte 2 for those.
+        val subId = bytes[2]
+        val offset = if (id == 0x43 && subId in setOf(1, 3, 2) && bytes.size >= 21) 3 else 2
+        return String(bytes.map { it.toByte() }.toByteArray(), offset, 17, Charsets.US_ASCII)
             .trimEnd('\u0000', ' ')
     }
 }

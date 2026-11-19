@@ -16,6 +16,9 @@ object OutboundId {
     const val RIDER_NAME = 0x52
     const val CALLER = 0x43
     const val SMS = 0x53
+    /** Jupiter message text rows. 0x4C is row 1, 0x63 is row 2. */
+    const val MESSAGE_ROW1 = 0x4C
+    const val MESSAGE_ROW2 = 0x63
 }
 
 object InboundId {

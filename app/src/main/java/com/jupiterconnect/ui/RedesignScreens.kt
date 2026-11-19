@@ -1579,8 +1579,8 @@ private fun PhoneFrameDebugCard() {
         fontSize = 12.sp, color = JupiterColors.OnSurface)
     Text(RideStore.carbonEstimateSource,
         fontSize = 10.sp, color = JupiterColors.OnSurfaceVariant)
-    Text(if (carbonKg >= 1) "Sent to dash on connect and every 60 s."
-         else "Waiting for distance and economy data - nothing sent yet.",
+    Text("The dash computes its own value from idle-stop (ISS) data - no phone " +
+        "frame can write it. This estimate is shown in the app only.",
         fontSize = 10.sp, color = JupiterColors.OnSurfaceVariant)
 }
 

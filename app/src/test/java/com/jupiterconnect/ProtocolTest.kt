@@ -8,8 +8,9 @@ import com.jupiterconnect.session.RideAnalytics
 import com.jupiterconnect.session.SpeedFusion
 import com.jupiterconnect.session.Ride
 import com.jupiterconnect.session.WarmupPhase
-import com.jupiterconnect.protocol.buildCallFrame
+import com.jupiterconnect.protocol.buildCallerPackets
 import com.jupiterconnect.protocol.buildMessageFrame
+import com.jupiterconnect.protocol.buildMessageRow
 import com.jupiterconnect.protocol.buildKeepalive
 import com.jupiterconnect.protocol.buildNavControl
 import com.jupiterconnect.protocol.buildNavText
@@ -24,15 +25,43 @@ import org.junit.Test
 class ProtocolTest {
 
     @Test
-    fun call_and_message_frames_do_not_overwrite_navigation_row() {
-        val call = buildCallFrame("Mom")
-        val message = buildMessageFrame("Mom: Hello")
+    fun caller_frames_use_sub_ids_and_do_not_touch_navigation_row() {
+        val packets = buildCallerPackets("9876543210", "91", "Mom")
+        assertEquals(3, packets.size)
+        // Stock order: national number (1), country code (3), contact name (2).
+        assertEquals(listOf(1, 3, 2), packets.map { it[2].toInt() and 0xFF })
+        packets.forEach {
+            assertEquals(21, it.size)
+            assertEquals(0x5B, it[0].toInt() and 0xFF)
+            assertEquals(0x43, it[1].toInt() and 0xFF)
+            assertEquals(0xFF, it[20].toInt() and 0xFF)
+        }
+        assertEquals("9876543210", String(packets[0], 3, 10, Charsets.US_ASCII))
+        assertEquals("Mom", String(packets[2], 3, 3, Charsets.US_ASCII))
+
+        // VoIP callers have no phone number: the name fills both slots.
+        val voip = buildCallerPackets("Mom", contactName = "Mom")
+        assertEquals(2, voip.size)
+        assertEquals(listOf(1, 2), voip.map { it[2].toInt() and 0xFF })
+    }
+
+    @Test
+    fun message_row_uses_the_jupiter_text_channel() {
+        val row = buildMessageRow("Mom: Hello")
+        val sms = buildMessageFrame("Mom: Hello")
         val nav = buildNavText("Turn left")
-        assertEquals(0x43, call[1].toInt() and 0xFF)
-        assertEquals(0x53, message[1].toInt() and 0xFF)
+        assertEquals(0x4C, row[1].toInt() and 0xFF)
+        assertEquals(0x53, sms[1].toInt() and 0xFF)
         assertEquals(0x4F, nav[1].toInt() and 0xFF)
-        assertEquals(0xFF, call[19].toInt() and 0xFF)
-        assertEquals(0xFF, message[19].toInt() and 0xFF)
+        assertEquals(0xFF, row[19].toInt() and 0xFF)
+        assertEquals(0x63, buildMessageRow("Mom: Hello", row2 = true)[1].toInt() and 0xFF)
+    }
+
+    @Test
+    fun keepalive_carries_the_missed_call_counter() {
+        val b = buildKeepalive(missedCalls = 7)
+        assertEquals(7, b[10].toInt() and 0xFF)
+        assertEquals(0, buildKeepalive()[10].toInt() and 0xFF)
     }
 
     @Test
