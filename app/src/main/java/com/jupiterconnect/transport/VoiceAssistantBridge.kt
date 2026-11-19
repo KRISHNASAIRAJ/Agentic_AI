@@ -20,6 +20,13 @@ import com.jupiterconnect.voice.BackgroundVoiceListener
  * of the 0x11 service frame - the same value seen when start is pressed without
  * the clutch. The cluster then displays its voice symbol and expects the phone
  * to take voice input, exactly as the TVS demo shows.
+ *
+ * Both signals are supported:
+ *  - the handlebar voice button (0x10 byte 12 action 4), and
+ *  - a short press of the start button without the clutch (0x11 byte 6 bit 7).
+ *
+ * Both are level-held, so only a rising edge triggers, and the level present
+ * when the service starts is primed away so no queued prompt is replayed.
  */
 class VoiceAssistantBridge(private val context: Context) {
 
@@ -30,6 +37,10 @@ class VoiceAssistantBridge(private val context: Context) {
     // A switch level held when the service starts is stale. Prime from the
     // first frame so opening the app never replays a queued voice prompt.
     private var primed = false
+    // Same idea for the start-without-clutch (ISS bit 7) gesture.
+    private var issPrimed = false
+    private var issWasPressed = false
+    private var lastIssLaunchMs = 0L
 
     /**
      * The cluster reports handlebar switch actions in 0x10 byte 12:
@@ -43,9 +54,9 @@ class VoiceAssistantBridge(private val context: Context) {
             lastAction = action
             return
         }
-        // ONLY the handlebar voice button (action 4) triggers. The power/
-        // start button pressed without the clutch is a different gesture and
-        // must never open voice input.
+        // The handlebar voice button (action 4) is one of two triggers; the
+        // start-without-clutch gesture arrives separately in 0x11 byte 6 and
+        // is handled in onFrame(). Ignore other switch actions here.
         if (action == VOICE_ACTION && lastAction != VOICE_ACTION) {
             launches++
             val note = "VOICE button #$launches (0x10 byte12=$action)"
@@ -65,15 +76,32 @@ class VoiceAssistantBridge(private val context: Context) {
 
     /** Call for every decoded telemetry frame. */
     fun onFrame(t: Telemetry) {
-        // Bit 7 of the ISS byte is ALSO set by pressing start without the
-        // clutch, so it is no longer used as a voice trigger. Keep the trace
-        // for diagnostics only — never open input from it.
         val raw = t.issMode and 0xFF
+        val pressed = raw and 0x80 != 0
         if (seenValues.add(raw)) {
             val note = "VOICE byte6 seen: 0x%02X (%d)".format(raw, raw)
             FrameLog.note(note)
-            ClusterRepository.voiceDebug.value = "$note | bit7=${raw and 0x80 != 0}"
+            ClusterRepository.voiceDebug.value = "$note | bit7=$pressed"
         }
+        // The start button without the clutch is a level held for a moment.
+        // Ignore any level already present when the service starts, then act
+        // only on a rising edge with a short cooldown so ISS activity cannot
+        // fire repeated voice prompts.
+        if (!issPrimed) {
+            issPrimed = true
+            issWasPressed = pressed
+            return
+        }
+        val now = System.currentTimeMillis()
+        if (pressed && !issWasPressed && now - lastIssLaunchMs > 2_000L) {
+            lastIssLaunchMs = now
+            launches++
+            val note = "VOICE start button #$launches (0x11 byte6=0x%02X)".format(raw)
+            FrameLog.note(note)
+            ClusterRepository.voiceDebug.value = note
+            launch()
+        }
+        issWasPressed = pressed
     }
 
     /** Test hook: behaves exactly like a cluster trigger. */

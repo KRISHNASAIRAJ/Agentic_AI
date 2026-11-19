@@ -355,7 +355,11 @@ private fun VehicleDetailsRows(
     InfoRow("Throttle", "${telemetry.throttlePosition} %")
     InfoRow("Mode", if (telemetry.powerMode) "POWER" else "ECO")
     InfoRow("Ignition", if (telemetry.ignitionOn) "ON" else "OFF")
-    InfoRow("ISS mode", "${telemetry.issMode}")
+    InfoRow("ISS / start", when {
+        telemetry.issMode and 0x80 != 0 -> "START (no clutch)"
+        telemetry.issMode and 0x7F == 0 -> "IDLE"
+        else -> "ISS ${telemetry.issMode and 0x7F}"
+    })
     InfoRow("Service due", if (telemetry.serviceDue) "YES" else "NO")
 }
 
@@ -572,14 +576,15 @@ fun HomeScreenV2(
         Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
             RedCard(modifier = Modifier.weight(1f)) {
                 Label("RANGE")
-                val fuel = if (telemetry.connected) telemetry.fuelBars else lastReading.fuelBars
-                val fillMileage = com.jupiterconnect.session.FuelLogStore.averageMileage
-                // Range from the real Meridian fills (5,304 km / 106.63 L ≈
-                // 49.7 km/L), not the cluster's 46 km/L DTE or a hardcoded 240.
-                // Tank is 5.1 L across six fuel bars.
-                val rangeKm = if (fuel > 0 && fillMileage > 0)
-                    fuel * (5.1 / 6.0) * fillMileage else 0.0
-                BigValue(if (rangeKm > 0) "%.0f".format(rangeKm) else "--", "km", 36)
+                // Show the cluster's own distance-to-empty — it uses the bike's
+                // real fuel level and economy (e.g. 185 km), so the app matches
+                // the dash. Fall back to the last known reading before the
+                // economy frame arrives; never fabricate a tank-size estimate.
+                val dte = if (telemetry.connected && telemetry.distanceToEmptyKm > 0)
+                    telemetry.distanceToEmptyKm
+                else if (lastReading.distanceToEmptyKm > 0) lastReading.distanceToEmptyKm
+                else 0
+                BigValue(if (dte > 0) "$dte" else "--", "km", 36)
             }
             RedCard(modifier = Modifier.weight(1f)) {
                 Label("AVG ECONOMY")
@@ -840,7 +845,9 @@ private fun TrafficScreensSection(telemetry: Telemetry) {
             0 -> {
                 Label("FUEL SAVER MODE")
                 Spacer(Modifier.height(8.dp))
-                BigValue(if (telemetry.speedKmh <= 1) "${telemetry.issMode and 0xFF}" else "--",
+                // 0x11 byte 6 bit 7 is the start-without-clutch voice gesture,
+                // not a fuel-saver value. Show only the real ISS bits.
+                BigValue(if (telemetry.speedKmh <= 1) "${telemetry.issMode and 0x7F}" else "--",
                     "s", 34)
                 Text("ISS stops ${telemetry.issCount} · ${telemetry.issDuration}s saved",
                     fontSize = 12.sp, color = JupiterColors.OnSurfaceVariant)
