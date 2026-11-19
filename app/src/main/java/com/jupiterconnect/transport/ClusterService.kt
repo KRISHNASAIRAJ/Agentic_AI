@@ -730,11 +730,9 @@ class ClusterService : Service() {
                     reconnectJob = null
                     reconnectAttempts = 0
                     manualDisconnect = false
-                    // Low latency while riding; Android restores the default
-                    // connection parameters when this GATT is closed.
-                    runCatching {
-                        g.requestConnectionPriority(BluetoothGatt.CONNECTION_PRIORITY_HIGH)
-                    }
+                    // No requestConnectionPriority(HIGH): it triggers a
+                    // parameter update that drops the link on this cluster.
+                    // The 9e5e945 behaviour (default params) was stable.
                     voiceBridge.reset()
                     connectionEstablished = true
                     parkingEpoch++
