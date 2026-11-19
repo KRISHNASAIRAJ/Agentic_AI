@@ -36,6 +36,7 @@ import androidx.core.app.NotificationCompat
 import androidx.core.app.ServiceCompat
 import androidx.core.content.ContextCompat
 import com.jupiterconnect.R
+import com.jupiterconnect.debug.FrameCatalog
 import com.jupiterconnect.debug.FrameLog
 import com.jupiterconnect.protocol.Gatt
 import com.jupiterconnect.protocol.ScannedDevice
@@ -94,6 +95,10 @@ object ClusterRepository {
     val highSpeedAlert = MutableStateFlow(false)
     val highSpeedAlertSpeed = MutableStateFlow(60)
     val socialCounts = MutableStateFlow(Triple(0, 0, 0))
+    // Experimental: send text frames with a response. The stock app uses
+    // WRITE_NO_RESPONSE, but some clusters latch the first text of a burst;
+    // a confirmed write serialises them and may let every page render.
+    val confirmedTextWrites = MutableStateFlow(false)
 
     fun setBrightness(level: Int) {
         val next = level.coerceIn(2, 5)
@@ -212,6 +217,7 @@ class ClusterService : Service() {
     override fun onCreate() {
         super.onCreate()
         voiceBridge = VoiceAssistantBridge(this)
+        FrameLog.init(applicationContext)
         RideStore.init(applicationContext)
         SupabaseClient.init(applicationContext)
         coldStartTracker.setLastRunMs(RideStore.warmupLastRunMs)
@@ -761,6 +767,26 @@ class ClusterService : Service() {
         scope.launch { write(buildSocialCounts(wa, fb, ig)) }
     }
 
+    /**
+     * Send one display-only test frame for an ID recovered from the TVS
+     * protocol research. Only text/metadata IDs are allowed - no vehicle
+     * control, calibration or handshake probes. The frame is logged like any
+     * other, so the Downloads capture records both what went out and what the
+     * cluster answered with.
+     */
+    fun sendProbeFrame(id: Int) {
+        if (id !in PROBE_IDS) return
+        val text = "JC TEST %02X".format(id)
+        val b = ByteArray(20)
+        b[0] = 0x5B
+        b[1] = id.toByte()
+        val ascii = text.toByteArray(Charsets.US_ASCII)
+        System.arraycopy(ascii, 0, b, 2, minOf(ascii.size, 17))
+        b[19] = 0xFF.toByte()
+        FrameLog.note("PROBE 0x%02X \"%s\"".format(id, text))
+        scope.launch { write(b) }
+    }
+
     /** Manual trigger so the voice flow can be tested without the bike. */
     fun simulateVoiceTrigger() {
         voiceBridge.simulate()
@@ -824,6 +850,8 @@ class ClusterService : Service() {
                 BluetoothProfile.STATE_CONNECTED -> {
                     Log.i(TAG, "GATT connected, status=$status - requesting MTU")
                     FrameLog.note("GATT connected status=$status")
+                    FrameCatalog.reset()
+                    FrameLog.startSession(g.device.address)
                     reconnectJob?.cancel()
                     reconnectJob = null
                     reconnectAttempts = 0
@@ -857,6 +885,7 @@ class ClusterService : Service() {
                 BluetoothProfile.STATE_DISCONNECTED -> {
                     Log.w(TAG, "GATT disconnected, status=$status")
                     FrameLog.note("GATT disconnected status=$status")
+                    FrameLog.endSession()
                     val wasEstablished = connectionEstablished
                     connectionEstablished = false
                     if (wasEstablished) {
@@ -955,6 +984,7 @@ class ClusterService : Service() {
             value: ByteArray,
         ) {
             FrameLog.record("RX", value)
+            FrameCatalog.observe(value, rx = true)
             decodeFrame(value, ClusterRepository.telemetry.value)?.let {
                 ClusterRepository.telemetry.value = it
                 onTelemetryFrame(it, primary = (value[1].toInt() and 0xFF) == 0x10, raw = value)
@@ -966,6 +996,7 @@ class ClusterService : Service() {
             @Suppress("DEPRECATION")
             val v = characteristic.value ?: return
             FrameLog.record("RX", v)
+            FrameCatalog.observe(v, rx = true)
             decodeFrame(v, ClusterRepository.telemetry.value)?.let {
                 ClusterRepository.telemetry.value = it
                 onTelemetryFrame(it, primary = (v[1].toInt() and 0xFF) == 0x10, raw = v)
@@ -1134,14 +1165,20 @@ class ClusterService : Service() {
         val ch = writeChar
         if (g == null || ch == null) return@withLock
         FrameLog.record("TX", bytes)
+        FrameCatalog.observe(bytes, rx = false)
+        val id = if (bytes.size > 1) bytes[1].toInt() and 0xFF else -1
+        val textFrame = id in setOf(0x43, 0x4C, 0x4F, 0x50, 0x52, 0x53, 0x61, 0x62, 0x63, 0x65)
+        val writeType = if (textFrame && ClusterRepository.confirmedTextWrites.value)
+            BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT
+        else BluetoothGattCharacteristic.WRITE_TYPE_NO_RESPONSE
         try {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-                g.writeCharacteristic(ch, bytes, BluetoothGattCharacteristic.WRITE_TYPE_NO_RESPONSE)
+                g.writeCharacteristic(ch, bytes, writeType)
             } else {
                 @Suppress("DEPRECATION")
                 ch.value = bytes
                 @Suppress("DEPRECATION")
-                ch.writeType = BluetoothGattCharacteristic.WRITE_TYPE_NO_RESPONSE
+                ch.writeType = writeType
                 @Suppress("DEPRECATION")
                 g.writeCharacteristic(ch)
             }
@@ -1216,6 +1253,9 @@ class ClusterService : Service() {
     }
 
     companion object {
+        /** Display-only metadata/text channels; deliberately no control IDs. */
+        val PROBE_IDS = listOf(0x4C, 0x50, 0x61, 0x62, 0x63, 0x65)
+
         const val ACTION_SCAN = "com.jupiterconnect.action.SCAN"
         const val ACTION_CONNECT = "com.jupiterconnect.action.CONNECT"
         const val EXTRA_ADDRESS = "com.jupiterconnect.extra.ADDRESS"

@@ -23,6 +23,8 @@ object InboundId {
     const val SERVICE = 0x11
     const val ENGINE = 0x18
     const val ECONOMY = 0x19
+    const val CLUSTER_ADDRESS = 0x42
+    const val MUSIC = 0x6B
 }
 
 /** A device seen during a BLE scan. Clusters are flagged but never hidden. */
@@ -85,6 +87,14 @@ data class Telemetry(
     val otaStatus: Int = 0,
     val instantEconomy: Int = 0,
     val issCount: Int = 0,
+
+    // Extra codes being evaluated against the rider's own cluster.
+    /** Low 6 bits of 0x10 byte 12: 1 answer, 2 reject, 3 reject+SMS, 4 voice. */
+    val switchAction: Int = 0,
+    /** 0x5B 0x42 bytes 7..12 - the cluster's own BLE address. */
+    val clusterBleAddress: String = "",
+    /** 0x6B byte 2 - media key pressed on the cluster. */
+    val mediaKey: Int = 0,
 
     val frameCount: Long = 0,
     val lastFrame: String = "-",

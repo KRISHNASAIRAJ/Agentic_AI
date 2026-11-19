@@ -88,9 +88,12 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.jupiterconnect.R
+import com.jupiterconnect.debug.FrameCatalog
+import com.jupiterconnect.debug.FrameLog
 import com.jupiterconnect.nav.NavInstruction
 import com.jupiterconnect.protocol.ScannedDevice
 import com.jupiterconnect.protocol.Telemetry
@@ -99,6 +102,7 @@ import com.jupiterconnect.session.RideAnalytics
 import com.jupiterconnect.session.RideStore
 import com.jupiterconnect.session.WarmupPhase
 import com.jupiterconnect.transport.ClusterRepository
+import com.jupiterconnect.transport.ClusterService
 import com.jupiterconnect.ui.theme.JupiterColors
 import com.jupiterconnect.voice.VoiceCommandProcessor
 import kotlinx.coroutines.Dispatchers
@@ -339,33 +343,127 @@ private fun ColdStartCardV2() {
     }
 }
 
+/**
+ * One fixed-width stat line. Both columns are weighted and single-line, so a
+ * long live value can never paint over its neighbour (the old free-width rows
+ * did exactly that in the STATS card).
+ */
+@Composable
+private fun StatLine(label: String, value: String, accent: Boolean = false) {
+    Row(Modifier.fillMaxWidth().padding(vertical = 3.dp),
+        verticalAlignment = Alignment.CenterVertically) {
+        Text(label, Modifier.weight(0.42f), fontSize = 11.sp, softWrap = false,
+            maxLines = 1, overflow = TextOverflow.Ellipsis,
+            color = JupiterColors.OnSurfaceVariant)
+        Text(value, Modifier.weight(0.58f), fontSize = 11.sp, softWrap = false,
+            maxLines = 1, overflow = TextOverflow.Ellipsis,
+            textAlign = TextAlign.End, fontWeight = FontWeight.Medium,
+            color = if (accent) JupiterColors.Accent else JupiterColors.OnSurface)
+    }
+}
+
 @Composable
 private fun VehicleDetailsRows(
     telemetry: Telemetry,
     lastReading: com.jupiterconnect.session.LastReading,
 ) {
-    InfoRow("Speed", "${telemetry.speedKmh} km/h")
-    InfoRow("RPM", "${telemetry.rpm}")
-    InfoRow("Odometer", "%.1f km".format(
+    StatLine("Speed", "${telemetry.speedKmh} km/h")
+    StatLine("RPM", "${telemetry.rpm}")
+    StatLine("Odometer", "%.1f km".format(
         if (telemetry.odometerKm > 0) telemetry.odometerKm else lastReading.odometerKm))
-    InfoRow("Trip (app)", "%.2f km".format(RideStore.liveTripKm.collectAsState().value))
-    InfoRow("Top speed", "${RideStore.liveTopSpeed.collectAsState().value} km/h")
-    InfoRow("Fuel", "${if (telemetry.connected) telemetry.fuelBars else lastReading.fuelBars} / 6 bars")
+    StatLine("Trip (app)", "%.2f km".format(RideStore.liveTripKm.collectAsState().value))
+    StatLine("Top speed", "${RideStore.liveTopSpeed.collectAsState().value} km/h")
+    StatLine("Fuel", "${if (telemetry.connected) telemetry.fuelBars else lastReading.fuelBars} / 6 bars")
     val lowFuel by RideStore.lowFuel.collectAsState()
     if (lowFuel) {
-        InfoRow("Trip F", "%.2f km".format(RideStore.tripFKm.collectAsState().value))
+        StatLine("Trip F", "%.2f km".format(RideStore.tripFKm.collectAsState().value))
     }
-    InfoRow("Intake temp", "${telemetry.intakeTempC} °C")
-    InfoRow("Engine load", "${telemetry.engineLoad} %")
-    InfoRow("Throttle", "${telemetry.throttlePosition} %")
-    InfoRow("Mode", if (telemetry.powerMode) "POWER" else "ECO")
-    InfoRow("Ignition", if (telemetry.ignitionOn) "ON" else "OFF")
-    InfoRow("ISS / start", when {
+    StatLine("Intake temp", "${telemetry.intakeTempC} °C")
+    StatLine("Engine load", "${telemetry.engineLoad} %")
+    StatLine("Throttle", "${telemetry.throttlePosition} %")
+    StatLine("Mode", if (telemetry.powerMode) "POWER" else "ECO")
+    StatLine("Ignition", if (telemetry.ignitionOn) "ON" else "OFF")
+    StatLine("ISS / start", when {
         telemetry.issMode and 0x80 != 0 -> "START (no clutch)"
         telemetry.issMode and 0x7F == 0 -> "IDLE"
         else -> "ISS ${telemetry.issMode and 0x7F}"
     })
-    InfoRow("Service due", if (telemetry.serviceDue) "YES" else "NO")
+    StatLine("Switch action", when (telemetry.switchAction) {
+        0 -> "none"
+        1 -> "answer call"
+        2 -> "reject call"
+        3 -> "reject + SMS"
+        4 -> "voice button"
+        else -> "0x%02X".format(telemetry.switchAction)
+    })
+    StatLine("Cluster addr", telemetry.clusterBleAddress.ifEmpty { "--" })
+    StatLine("Media key", if (telemetry.mediaKey != 0) "0x%02X".format(telemetry.mediaKey) else "--")
+    StatLine("Service due", if (telemetry.serviceDue) "YES" else "NO")
+}
+
+/** Passive code discovery: what the cluster emits, what we send, and probes. */
+@Composable
+private fun ProtocolDiscoveryCard() {
+    val frames by FrameCatalog.frames.collectAsState()
+    val confirmed by ClusterRepository.confirmedTextWrites.collectAsState()
+    val seen = frames.associateBy { it.id }
+    val missing = FrameCatalog.CANDIDATES.filter { seen[it.id] == null }
+
+    Label("PROTOCOL DISCOVERY")
+    Spacer(Modifier.height(8.dp))
+    Text("Every frame is saved to Downloads/JupiterConnect as one file per connection.",
+        fontSize = 11.sp, color = JupiterColors.OnSurfaceVariant)
+    FrameLog.currentSession()?.let {
+        Spacer(Modifier.height(4.dp))
+        Text("Writing: $it", fontSize = 10.sp, color = JupiterColors.Accent)
+    }
+    Spacer(Modifier.height(10.dp))
+    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+        Column(Modifier.weight(1f)) {
+            Text("Confirmed text writes", fontSize = 12.sp, color = JupiterColors.OnSurface)
+            Text("Try if cluster text stays on the first page", fontSize = 10.sp,
+                color = JupiterColors.OnSurfaceVariant)
+        }
+        Switch(checked = confirmed, onCheckedChange = {
+            ClusterRepository.confirmedTextWrites.value = it
+        }, colors = SwitchDefaults.colors(
+            checkedThumbColor = Color.White, checkedTrackColor = JupiterColors.Red,
+            uncheckedTrackColor = JupiterColors.High))
+    }
+    Spacer(Modifier.height(10.dp))
+    Label("PROBE DISPLAY IDS")
+    Spacer(Modifier.height(6.dp))
+    Text("Sends one labelled text frame. No vehicle control or calibration.",
+        fontSize = 10.sp, color = JupiterColors.OnSurfaceVariant)
+    Spacer(Modifier.height(8.dp))
+    Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState())) {
+        ClusterService.PROBE_IDS.forEach { id ->
+            SecondaryButton("0x%02X".format(id), {
+                ClusterRepository.service?.sendProbeFrame(id)
+            })
+            Spacer(Modifier.width(8.dp))
+        }
+    }
+    Spacer(Modifier.height(12.dp))
+    Label("SEEN ON THIS CLUSTER")
+    Spacer(Modifier.height(6.dp))
+    if (frames.isEmpty()) {
+        Text("No frames yet on this connection.", fontSize = 11.sp,
+            color = JupiterColors.OnSurfaceVariant)
+    } else {
+        frames.forEach { f ->
+            StatLine("0x%02X ${f.label}".trim(), "RX ${f.rx} / TX ${f.tx}", accent = f.rx > 0)
+            Text(f.hex, fontSize = 9.sp, color = JupiterColors.OnSurfaceVariant,
+                maxLines = 1, softWrap = false, overflow = TextOverflow.Ellipsis)
+            Spacer(Modifier.height(4.dp))
+        }
+    }
+    Spacer(Modifier.height(8.dp))
+    Label("NOT SEEN")
+    Spacer(Modifier.height(6.dp))
+    Text(if (missing.isEmpty()) "All candidate IDs were observed."
+        else missing.joinToString("  ") { "0x%02X".format(it.id) },
+        fontSize = 10.sp, color = JupiterColors.OnSurfaceVariant)
 }
 
 @Composable
@@ -765,15 +863,9 @@ fun RideScreenV2(
         Spacer(Modifier.height(18.dp))
         Label("STATS")
         Spacer(Modifier.height(10.dp))
-        RedCard {
-            if (telemetry.connected) {
-                Box(Modifier.height(220.dp).verticalScroll(rememberScrollState())) {
-                    VehicleDetailsRows(telemetry, lastReading)
-                }
-            } else {
-                VehicleDetailsRows(telemetry, lastReading)
-            }
-        }
+        RedCard { VehicleDetailsRows(telemetry, lastReading) }
+        Spacer(Modifier.height(10.dp))
+        RedCard { ProtocolDiscoveryCard() }
         Spacer(Modifier.height(10.dp))
         RedCard {
             Row(verticalAlignment = Alignment.CenterVertically) {

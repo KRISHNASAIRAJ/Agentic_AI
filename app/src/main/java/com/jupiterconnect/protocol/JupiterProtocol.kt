@@ -35,6 +35,7 @@ fun decodeFrame(raw: ByteArray, current: Telemetry): Telemetry? {
             ignitionOn = (u8(raw[12]) and 0x80) == 0,
             zeroToSixtyRaw = u8(raw[13]),
             tripMeterKm = u24(raw, 14) / 10.0,
+            switchAction = u8(raw[12]) and 0x3F,
         )
 
         InboundId.SERVICE -> base.copy(
@@ -74,6 +75,14 @@ fun decodeFrame(raw: ByteArray, current: Telemetry): Telemetry? {
             distanceToEmptyKm = u16(raw, 11),
             issCount = u24(raw, 15),
         )
+
+        // 0x5B 0x42 carries the cluster's own BLE address at bytes 7..12.
+        InboundId.CLUSTER_ADDRESS -> base.copy(
+            clusterBleAddress = (7..12).joinToString("") { "%02X".format(raw[it]) }
+        )
+
+        // 0x6B is the media-key frame; byte 2 is the button code.
+        InboundId.MUSIC -> base.copy(mediaKey = u8(raw[2]))
 
         else -> base
     }

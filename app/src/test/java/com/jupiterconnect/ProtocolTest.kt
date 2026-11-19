@@ -279,6 +279,44 @@ class ProtocolTest {
     }
 
     @Test
+    fun newly_catalogued_codes_decode_from_raw_frames() {
+        val speedo = ByteArray(20)
+        speedo[0] = 0x5A
+        speedo[1] = 0x10
+        speedo[12] = 0x44 // voice action 4 plus an unrelated high flag
+        assertEquals(4, decodeFrame(speedo, Telemetry())!!.switchAction)
+
+        val address = ByteArray(20)
+        address[0] = 0x5B
+        address[1] = 0x42
+        for (i in 7..12) address[i] = i.toByte()
+        assertEquals("0708090A0B0C", decodeFrame(address, Telemetry())!!.clusterBleAddress)
+
+        val music = ByteArray(20)
+        music[0] = 0x5A
+        music[1] = 0x6B
+        music[2] = 0x03
+        assertEquals(3, decodeFrame(music, Telemetry())!!.mediaKey)
+    }
+
+    @Test
+    fun frame_catalogue_tracks_both_directions_per_code() {
+        com.jupiterconnect.debug.FrameCatalog.reset()
+        val f = ByteArray(20)
+        f[0] = 0x5A
+        f[1] = 0x10
+        com.jupiterconnect.debug.FrameCatalog.observe(f, rx = true)
+        com.jupiterconnect.debug.FrameCatalog.observe(f, rx = true)
+        com.jupiterconnect.debug.FrameCatalog.observe(f, rx = false)
+        val seen = com.jupiterconnect.debug.FrameCatalog.byId(0x10)!!
+        assertEquals(2L, seen.rx)
+        assertEquals(1L, seen.tx)
+        assertEquals("speedometer", seen.label)
+        assertTrue(seen.hex.startsWith("5A 10"))
+        com.jupiterconnect.debug.FrameCatalog.reset()
+    }
+
+    @Test
     fun long_messages_are_paged_into_cluster_sized_frames() {
         val text = com.jupiterconnect.nav.PhoneEventFormat.message(
             "Mom", "On my way I am stuck in traffic near the flyover call you later")
