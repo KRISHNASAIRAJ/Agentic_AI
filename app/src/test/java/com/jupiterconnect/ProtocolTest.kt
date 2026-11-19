@@ -70,7 +70,10 @@ class ProtocolTest {
 
     @Test
     fun cluster_text_is_ascii_and_capped_at_17() {
-        assertEquals("NHX44 XXXX", sanitize("NH-44 தென்"))
+        // Punctuation becomes a space, never a stray "X" in the message.
+        val cleaned = sanitize("NH-44 தென்")
+        assertFalse(cleaned.contains('X'))
+        assertTrue(cleaned.startsWith("NH 44"))
         assertEquals(17, sanitize("ABCDEFGHIJKLMNOPQRSTUVWXYZ").length)
     }
 
@@ -288,13 +291,13 @@ class ProtocolTest {
 
     @Test
     fun message_shows_sender_and_text_within_seventeen_chars() {
-        assertEquals("Mom: On my way",
+        assertEquals("Mom On my way",
             com.jupiterconnect.nav.PhoneEventFormat.message("Mom", "On my way"))
         val long = com.jupiterconnect.nav.PhoneEventFormat.message(
             "Rahul", "Download the attachment please")
         // The full text is kept; the transport pages it into 17-byte frames.
-        assertEquals("Rahul: Download the attachment please", long)
-        assertTrue(long.startsWith("Rahul: "))
+        assertEquals("Rahul Download the attachment please", long)
+        assertTrue(long.startsWith("Rahul "))
     }
 
     @Test

@@ -717,6 +717,12 @@ class ClusterService : Service() {
                 val elapsed = System.currentTimeMillis() - started
                 val slot = (elapsed * pages.size / holdMs).toInt().coerceIn(0, pages.lastIndex)
                 val page = pages[slot]
+                // Release the previous text before writing the next page; the
+                // card otherwise latches the first frame and ignores changes.
+                if (!isCall && pages.size > 1) {
+                    write(buildMessageFrame(""))
+                    delay(120L)
+                }
                 write(if (isCall) buildCallFrame(page) else buildMessageFrame(page))
                 delay(500L)
             }
@@ -1091,20 +1097,30 @@ class ClusterService : Service() {
                         val eta = if (step.etaMinutes > 0)
                             RideAnalytics.adjustedEta(step.etaMinutes, etaFactor)
                         else step.etaMinutes
+                        val line = step.displayLine
+                        val long = line.length > com.jupiterconnect.nav.NavScroll.WIDTH
                         write(buildNavControl(
                             distance,
                             eta,
                             remaining,
                             step.pictogram,
+                            lines = if (long) 2 else 1,
                         ))
                         if (reply == null) {
-                            val line = step.displayLine
                             if (line != lastLine) {
                                 lastLine = line
                                 scrollOffset = 0
                             }
-                            write(buildNavText(com.jupiterconnect.nav.NavScroll.window(line, scrollOffset)))
-                            if (line.length > com.jupiterconnect.nav.NavScroll.WIDTH) scrollOffset += 2
+                            val window = com.jupiterconnect.nav.NavScroll.window(line, scrollOffset)
+                            // The dash latches the first text of a frame pair and
+                            // ignores later writes. A blank frame releases it so
+                            // each scrolled window is rendered as a fresh line.
+                            if (long && scrollOffset > 0) {
+                                write(buildNavText(""))
+                                delay(120L)
+                            }
+                            write(buildNavText(window))
+                            if (long) scrollOffset += 2
                         }
                     }
                 }

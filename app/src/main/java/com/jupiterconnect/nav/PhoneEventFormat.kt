@@ -24,7 +24,7 @@ internal object PhoneEventFormat {
     fun message(sender: String, body: String): String {
         val who = clean(sender).ifBlank { "MSG" }
         val text = clean(body).ifBlank { return "" }
-        return "$who: $text"
+        return "$who $text"
     }
 
     /**

@@ -155,6 +155,7 @@ object RideStore {
     private const val KEY_WARMUP_LAST = "warmup_last_run"
     private const val KEY_SAMPLES = "rs_"
     private const val KEY_CARBON_SECONDS = "carbon_iss_seconds"
+    private const val KEY_CARBON_BASELINE = "carbon_baseline_kg"
     private const val KEY_PARK_LAT = "park_lat"
     private const val KEY_PARK_LNG = "park_lng"
     private const val KEY_PARK_MS = "park_ms"
@@ -207,9 +208,25 @@ object RideStore {
     private val _issSavedSeconds = MutableStateFlow(0L)
     val issSavedSeconds: StateFlow<Long> = _issSavedSeconds.asStateFlow()
 
+    /**
+     * The cluster's own "Carbon Fuel Saving" figure is kept in the instrument
+     * cluster, not broadcast over BLE. Enter it once from the dash (Settings)
+     * and the app shows that lifetime value as a floor, adding any ISS stops
+     * it observes itself on top.
+     */
+    var carbonBaselineKg: Double
+        get() = java.lang.Double.longBitsToDouble(
+            prefs?.getLong(KEY_CARBON_BASELINE, 0L) ?: 0L)
+        set(value) {
+            prefs?.edit()
+                ?.putLong(KEY_CARBON_BASELINE, java.lang.Double.doubleToRawLongBits(value))
+                ?.apply()
+        }
+
     /** kg of CO2 not emitted because ISS stopped the engine at signals. */
     val carbonSavedKg: Double
-        get() = _issSavedSeconds.value * IDLE_LITRES_PER_SECOND * CO2_KG_PER_LITRE
+        get() = maxOf(carbonBaselineKg,
+            _issSavedSeconds.value * IDLE_LITRES_PER_SECOND * CO2_KG_PER_LITRE)
 
     // ~0.5 L/hour idle for a 125cc scooter, and ~2.31 kg CO2 per litre petrol.
     const val IDLE_LITRES_PER_SECOND = 0.5 / 3600.0

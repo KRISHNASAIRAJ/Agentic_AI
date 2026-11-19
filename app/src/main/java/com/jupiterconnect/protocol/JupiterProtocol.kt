@@ -87,7 +87,9 @@ fun sanitize(input: String): String {
         sb.append(
             when {
                 c in 'A'..'Z' || c in 'a'..'z' || c in '0'..'9' || c == ' ' -> c
-                else -> 'X'
+                // A space keeps text readable; the stock `X` substitution made
+                // punctuation look like stray letters ("MomX Hello").
+                else -> ' '
             },
         )
     }
@@ -139,7 +141,13 @@ fun buildKeepalive(
 }
 
 /** Navigation control: distance/ETA/remaining big-endian, pictogram, row count. */
-fun buildNavControl(distanceMeters: Int, etaMinutes: Int, remainingMeters: Int, pictogram: Int): ByteArray {
+fun buildNavControl(
+    distanceMeters: Int,
+    etaMinutes: Int,
+    remainingMeters: Int,
+    pictogram: Int,
+    lines: Int = 1,
+): ByteArray {
     val b = ByteArray(20)
     b[0] = 0x5A
     b[1] = OutboundId.NAVIGATION_CONTROL.toByte()
@@ -150,7 +158,9 @@ fun buildNavControl(distanceMeters: Int, etaMinutes: Int, remainingMeters: Int, 
     val r = remainingMeters.coerceIn(0, 0xFFFFFF)
     b[6] = (r ushr 16).toByte(); b[7] = (r ushr 8).toByte(); b[8] = r.toByte()
     b[9] = pictogram.toByte()
-    b[10] = 1
+    // The cluster expects 2 when the instruction is longer than one 17-byte
+    // text frame. Keeping it at 1 makes it render only the first fragment.
+    b[10] = lines.coerceIn(1, 2).toByte()
     b[11] = 1
     b[19] = 0xFF.toByte()
     return b

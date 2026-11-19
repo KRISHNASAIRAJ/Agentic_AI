@@ -43,6 +43,7 @@ class VoiceAssistantBridge(private val context: Context) {
     private var issPrimed = false
     private var issWasPressed = false
     private var lastIssLaunchMs = 0L
+    private var lastIssCount = -1
 
     /**
      * The cluster reports handlebar switch actions in 0x10 byte 12:
@@ -95,7 +96,12 @@ class VoiceAssistantBridge(private val context: Context) {
             return
         }
         val now = System.currentTimeMillis()
-        if (pressed && !issWasPressed && now - lastIssLaunchMs > 2_000L) {
+        // A real ISS stop advances the lifetime ISS counter; a start-button
+        // press does not. Ignore the former so voice only follows the rider's
+        // deliberate press, not every automatic stop at a signal.
+        val issAutoStop = lastIssCount >= 0 && t.issCount != lastIssCount
+        lastIssCount = t.issCount
+        if (pressed && !issWasPressed && !issAutoStop && now - lastIssLaunchMs > 2_000L) {
             lastIssLaunchMs = now
             launches++
             val note = "VOICE start button #$launches (0x11 byte6=0x%02X)".format(raw)

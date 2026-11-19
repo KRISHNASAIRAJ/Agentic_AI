@@ -61,6 +61,7 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Switch
 import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
@@ -243,8 +244,12 @@ private fun CarbonCard() {
             }
         }
         Spacer(Modifier.height(8.dp))
-        Text("ISS saved ${seconds / 60} min of idling · ~%.2f L fuel".format(
-            seconds * RideStore.IDLE_LITRES_PER_SECOND),
+        val baseline = RideStore.carbonBaselineKg
+        Text(
+            if (baseline > 0 && kg <= baseline + 0.001)
+                "From the cluster's Carbon Fuel Saving screen · from day one"
+            else "ISS saved ${seconds / 60} min of idling · ~%.2f L fuel".format(
+                seconds * RideStore.IDLE_LITRES_PER_SECOND),
             fontSize = 12.sp, color = JupiterColors.OnSurfaceVariant)
     }
 }
@@ -845,19 +850,23 @@ private fun TrafficScreensSection(telemetry: Telemetry) {
             0 -> {
                 Label("FUEL SAVER MODE")
                 Spacer(Modifier.height(8.dp))
-                // 0x11 byte 6 bit 7 is the ISS / fuel-saver active flag. It is
-                // also set briefly by start-without-clutch, which is why the
-                // raw value 128 was meaningless here. Show a clear ON/OFF state.
-                val saverOn = telemetry.connected && (telemetry.issMode and 0x80) != 0
+                // TVS intelliGO: the (A) icon glows when the system is armed,
+                // then the cluster shows "Fuel Saver Mode" with a seconds
+                // countdown while it waits to stop the engine. Bit 7 of 0x11
+                // byte 6 is the armed state; the low bits are that countdown.
+                val raw = telemetry.issMode and 0xFF
+                val armed = raw and 0x80 != 0
+                val countdown = raw and 0x7F
                 BigValue(when {
                     !telemetry.connected -> "--"
-                    saverOn -> "ON"
-                    else -> "OFF"
-                }, "", 34)
+                    !armed && countdown == 0 -> "OFF"
+                    countdown > 0 -> "$countdown"
+                    else -> "ON"
+                }, if (countdown > 0 && armed) "s" else "", 34)
                 Text(
-                    if (saverOn) "ISS active · stops ${telemetry.issCount} · " +
-                        "${telemetry.issDuration}s saved"
-                    else "ISS stops ${telemetry.issCount} · ${telemetry.issDuration}s saved",
+                    if (countdown > 0 && armed) "intelliGO stopping engine in ${countdown}s"
+                    else if (armed) "intelliGO armed · stops ${telemetry.issCount}"
+                    else "intelliGO off · stops ${telemetry.issCount}",
                     fontSize = 12.sp, color = JupiterColors.OnSurfaceVariant)
             }
             1 -> {
@@ -1512,6 +1521,28 @@ private fun SettingsContent(
                 ),
             )
         }
+    }
+    Spacer(Modifier.height(10.dp))
+    RedCard(bar = true) {
+        Label("CARBON SAVING")
+        Spacer(Modifier.height(8.dp))
+        Text("Enter the kg shown on the cluster's Carbon Fuel Saving screen.",
+            fontSize = 12.sp, color = JupiterColors.OnSurfaceVariant)
+        Spacer(Modifier.height(8.dp))
+        var carbonInput by remember {
+            mutableStateOf("%.2f".format(RideStore.carbonBaselineKg))
+        }
+        OutlinedTextField(
+            value = carbonInput,
+            onValueChange = { carbonInput = it },
+            label = { Text("Cluster CO2 saved (kg)") },
+            singleLine = true,
+            modifier = Modifier.fillMaxWidth(),
+        )
+        Spacer(Modifier.height(8.dp))
+        SecondaryButton("Save carbon value", {
+            carbonInput.toDoubleOrNull()?.let { RideStore.carbonBaselineKg = it.coerceAtLeast(0.0) }
+        }, Modifier.fillMaxWidth())
     }
     Spacer(Modifier.height(10.dp))
     RedCard(bar = true) {
