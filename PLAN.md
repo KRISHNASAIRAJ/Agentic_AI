@@ -15,8 +15,9 @@ what is deferred.
 - Ride recording with checkpoints; a brief link drop resumes the same ride
   instead of splitting it into several.
 - Fuel logs, cumulative stats, parked location, call/message cards.
-- Carbon saved: the lifetime figure from the dash is entered once in Settings
-  and the app adds CO2 for every ISS stop it observes afterwards.
+- Carbon saving shown on the cluster comes from an **estimate**, with no manual
+  entry: the cluster's lifetime ISS idle-seconds counter first, then distance +
+  fuel economy. A bare zero is never sent, so the dash no longer shows "0 g saved".
 - Protocol discovery card and per-connection raw frame logs for passive decoding.
   The card is observation-only: test/probe buttons were removed because they
   produced no useful cluster response. Only real cluster frames are counted.

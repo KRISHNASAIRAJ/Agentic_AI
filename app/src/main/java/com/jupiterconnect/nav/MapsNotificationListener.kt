@@ -248,7 +248,10 @@ class MapsNotificationListener : NotificationListenerService() {
         val notification = n.notification ?: return
         val extras = notification.extras ?: return
         val category = notification.category
-        val isCall = category == Notification.CATEGORY_CALL || n.packageName in DIALER_PACKAGES
+        val isVoipApp = n.packageName in VOIP_CALL_PACKAGES
+        val isCall = category == Notification.CATEGORY_CALL ||
+            n.packageName in DIALER_PACKAGES ||
+            (isVoipApp && isVoipCall(notification, extras))
         @Suppress("DEPRECATION")
         val messages = runCatching { extras.getParcelableArray(Notification.EXTRA_MESSAGES) }.getOrNull()
         val isMessage = messages != null || category == Notification.CATEGORY_MESSAGE
@@ -262,10 +265,14 @@ class MapsNotificationListener : NotificationListenerService() {
             person?.uri?.toString() ?: person?.name?.toString()
         } else null
         val text = if (isCall) {
-            val raw = personInfo
-                ?: extras.getCharSequence(Notification.EXTRA_TITLE)?.toString()
-                ?: extras.getCharSequence(Notification.EXTRA_TEXT)?.toString().orEmpty()
-            PhoneEventFormat.call(resolveContactName(raw) ?: raw)
+            val raw = if (isVoipApp) voipCaller(extras, personInfo) else
+                personInfo
+                    ?: extras.getCharSequence(Notification.EXTRA_TITLE)?.toString()
+                    ?: extras.getCharSequence(Notification.EXTRA_TEXT)?.toString().orEmpty()
+            // A WhatsApp display name is already a name; only look up contacts
+            // for phone numbers, where the saved contact is more useful.
+            val who = if (raw.any { it.isLetter() }) raw else (resolveContactName(raw) ?: raw)
+            PhoneEventFormat.call(who)
         } else {
             val latest = messages?.filterIsInstance<Notification.MessagingStyle.Message>()?.lastOrNull()
             val rawSender = personInfo
@@ -287,6 +294,42 @@ class MapsNotificationListener : NotificationListenerService() {
         // direction row is never overwritten. Both clear after 5 s and Maps
         // keeps rendering underneath without any extra work.
         ClusterRepository.showPhoneEvent(isCall, text, PHONE_HOLD_MS)
+    }
+
+    /**
+     * WhatsApp (and other VOIP apps) do not always tag a call with CATEGORY_CALL.
+     * Their incoming-call notification carries Accept/Decline/Reject actions,
+     * which is a reliable signal that this is a call and not a chat message.
+     */
+    private fun isVoipCall(notification: Notification, extras: Bundle): Boolean {
+        if (notification.category == Notification.CATEGORY_CALL) return true
+        val actions = notification.actions?.mapNotNull { it.title?.toString() }.orEmpty()
+        if (actions.any { label ->
+            listOf("answer", "accept", "reject", "decline", "hang up", "end call", "join")
+                .any { label.contains(it, ignoreCase = true) }
+        }) return true
+        val text = extras.getCharSequence(Notification.EXTRA_TITLE)?.toString().orEmpty() + " " +
+            extras.getCharSequence(Notification.EXTRA_TEXT)?.toString().orEmpty()
+        return text.contains("call", true) || text.contains("ringing", true) ||
+            text.contains("incoming", true)
+    }
+
+    /**
+     * Prefer the caller's name over generic labels like "Incoming voice call"
+     * or the app name, which several VOIP apps put in the notification title.
+     */
+    private fun voipCaller(extras: Bundle, personInfo: String?): String {
+        val generic = listOf("incoming", "voice call", "video call", "whatsapp",
+            "ringing", "call from", "telegram", "signal", "skype", "zoom")
+        val candidates = buildList {
+            add(personInfo)
+            add(extras.getCharSequence(Notification.EXTRA_TITLE)?.toString())
+            add(extras.getCharSequence(Notification.EXTRA_TEXT)?.toString())
+            add(extras.getCharSequence(Notification.EXTRA_BIG_TEXT)?.toString())
+            addAll(collectExtraTexts(extras).asIterable())
+        }.mapNotNull { it?.trim() }.filter { it.isNotBlank() }
+        return candidates.firstOrNull { c -> generic.none { c.contains(it, true) } }
+            ?: candidates.firstOrNull().orEmpty()
     }
 
     /** Saved contact name for a number/contact URI, or null (show the raw value). */
@@ -356,6 +399,14 @@ class MapsNotificationListener : NotificationListenerService() {
             "com.samsung.android.dialer", "com.samsung.android.incallui",
             "com.miui.dialer", "com.oneplus.dialer", "com.oppo.dialer",
             "com.vivo.dialer", "com.qualcomm.timeservice",
+        )
+        /** Apps whose incoming calls must show the same 0x43 card as dialer calls. */
+        private val VOIP_CALL_PACKAGES = setOf(
+            "com.whatsapp", "com.whatsapp.w4b",
+            "org.telegram.messenger", "org.telegram.messenger.web",
+            "org.thoughtcrime.securesms", "com.skype.raider",
+            "com.microsoft.teams", "us.zoom.videomeetings",
+            "com.google.android.apps.meetings", "com.discord",
         )
         private val MANEUVER_WORDS = listOf(
             "turn", "head", "continue", "keep", "merge", "fork",

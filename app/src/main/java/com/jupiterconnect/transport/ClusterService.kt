@@ -985,8 +985,13 @@ class ClusterService : Service() {
                         stopGpsSpeed()
                         saveParkedLocation(force = true)
                         RideStore.onDisconnected()
-                        // Show the accumulated carbon saving on the cluster.
-                        scope.launch { write(buildCarbonFrame(RideStore.carbonSavedKg.toInt())) }
+                        // Share the estimated lifetime CO2 saving with the dash.
+                        // Never send a bare zero: that shows "0 g saved" on the
+                        // cluster, which looks like a broken value.
+                        val carbonKg = RideStore.carbonSavedKg
+                        if (carbonKg >= 1) {
+                            scope.launch { write(buildCarbonFrame(carbonKg.toInt())) }
+                        }
                         // No telemetry means no engine data - make that explicit.
                         ClusterRepository.warmup.value = WarmupState(message = "Engine off")
                         // Keep syncing for two minutes after the link drops.

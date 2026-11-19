@@ -37,7 +37,6 @@ import androidx.compose.material.icons.rounded.AccessTime
 import androidx.compose.material.icons.automirrored.rounded.ArrowBack
 import androidx.compose.material.icons.rounded.BatteryChargingFull
 import androidx.compose.material.icons.rounded.CheckCircle
-import androidx.compose.material.icons.rounded.Eco
 import androidx.compose.material.icons.rounded.Bluetooth
 import androidx.compose.material.icons.rounded.BluetoothConnected
 import androidx.compose.material.icons.rounded.Check
@@ -94,6 +93,7 @@ import androidx.compose.ui.unit.sp
 import com.jupiterconnect.R
 import com.jupiterconnect.debug.FrameCatalog
 import com.jupiterconnect.debug.FrameLog
+import com.jupiterconnect.debug.PhoneFrameDebug
 import com.jupiterconnect.nav.NavInstruction
 import com.jupiterconnect.protocol.ScannedDevice
 import com.jupiterconnect.protocol.Telemetry
@@ -225,33 +225,6 @@ private fun InfoRow(label: String, value: String) {
         Text(label, Modifier.weight(1f), fontSize = 12.sp,
             color = JupiterColors.OnSurfaceVariant)
         Text(value, fontSize = 12.sp, color = JupiterColors.OnSurface)
-    }
-}
-
-/** Carbon saved by ISS idle stops, with the same numbers sent to the cluster. */
-@Composable
-private fun CarbonCard() {
-    val seconds by RideStore.issSavedSeconds.collectAsState()
-    val kg = RideStore.carbonSavedKg
-    RedCard(bar = true) {
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            IconCircle(Icons.Rounded.Eco, "Carbon saved")
-            Spacer(Modifier.width(12.dp))
-            Column(Modifier.weight(1f)) {
-                Label("CARBON SAVED")
-                Spacer(Modifier.height(4.dp))
-                BigValue("%.3f".format(kg), "kg CO2", 32)
-            }
-        }
-        Spacer(Modifier.height(8.dp))
-        val baseline = RideStore.carbonBaselineKg
-        Text(
-            if (baseline > 0)
-                "Dash %.2f kg + %.2f kg from ISS since".format(
-                    baseline, RideStore.carbonAboveBaselineKg)
-            else "ISS saved ${seconds / 60} min of idling · ~%.2f L fuel".format(
-                seconds * RideStore.IDLE_LITRES_PER_SECOND),
-            fontSize = 12.sp, color = JupiterColors.OnSurfaceVariant)
     }
 }
 
@@ -682,8 +655,6 @@ fun HomeScreenV2(
         }
         Spacer(Modifier.height(10.dp))
         ColdStartCardV2()
-        Spacer(Modifier.height(10.dp))
-        CarbonCard()
         Spacer(Modifier.height(10.dp))
     }
 }
@@ -1501,29 +1472,7 @@ private fun SettingsContent(
             )
         }
     }
-    Spacer(Modifier.height(10.dp))
-    RedCard(bar = true) {
-        Label("CARBON SAVING")
-        Spacer(Modifier.height(8.dp))
-        Text("Enter the lifetime kg from the dash once. The app then adds CO2 saved by every ISS stop it sees from now on, so the Home value keeps growing.",
-            fontSize = 12.sp, color = JupiterColors.OnSurfaceVariant)
-        Spacer(Modifier.height(8.dp))
-        var carbonInput by remember {
-            mutableStateOf("%.2f".format(RideStore.carbonBaselineKg))
-        }
-        OutlinedTextField(
-            value = carbonInput,
-            onValueChange = { carbonInput = it },
-            label = { Text("Cluster CO2 saved (kg)") },
-            singleLine = true,
-            modifier = Modifier.fillMaxWidth(),
-        )
-        Spacer(Modifier.height(8.dp))
-        SecondaryButton("Save carbon value", {
-            carbonInput.toDoubleOrNull()?.let { RideStore.carbonBaselineKg = it.coerceAtLeast(0.0) }
-        }, Modifier.fillMaxWidth())
-    }
-    Spacer(Modifier.height(10.dp))
+
     RedCard(bar = true) {
         Label("CLOUD SYNC")
         Spacer(Modifier.height(8.dp))
@@ -1589,6 +1538,43 @@ private fun SettingsContent(
     }
 }
 
+/**
+ * Passive debug for the call/message channels. Shows whether any START_PHONE
+ * frame (0x43 caller / 0x53 message) was ever seen from the cluster, with the
+ * ASCII payload decoded exactly like the community protocol note. Sends nothing.
+ */
+@Composable
+private fun PhoneFrameDebugCard() {
+    val frames by FrameCatalog.frames.collectAsState()
+    Label("PHONE FRAME DEBUG")
+    Spacer(Modifier.height(8.dp))
+    PhoneFrameDebug.PHONE_IDS.forEach { id ->
+        val seen = frames.firstOrNull { it.id == id }
+        val rxHex = seen?.lastRxHex.orEmpty()
+        val txHex = seen?.lastTxHex.orEmpty()
+        RedCard {
+            StatLine(
+                if (id == 0x43) "0x43 caller" else "0x53 message",
+                "RX ${seen?.rx ?: 0} / TX ${seen?.tx ?: 0}",
+                accent = (seen?.rx ?: 0) > 0,
+            )
+            Spacer(Modifier.height(4.dp))
+            Text("RX text: ${if (rxHex.isEmpty()) "-" else PhoneFrameDebug.decode(rxHex, id).ifEmpty { "(no ASCII)" }}",
+                fontSize = 11.sp, color = JupiterColors.OnSurface)
+            Text("TX text: ${if (txHex.isEmpty()) "-" else PhoneFrameDebug.decode(txHex, id).ifEmpty { "(no ASCII)" }}",
+                fontSize = 11.sp, color = JupiterColors.OnSurfaceVariant)
+            if (rxHex.isNotEmpty()) {
+                Spacer(Modifier.height(2.dp))
+                Text(rxHex, fontSize = 9.sp, color = JupiterColors.OnSurfaceVariant,
+                    maxLines = 1, softWrap = false, overflow = TextOverflow.Ellipsis)
+            }
+        }
+        Spacer(Modifier.height(8.dp))
+    }
+    Text("Bytes 2-18 of START_PHONE frames as ASCII. Observation only - no frames are sent.",
+        fontSize = 10.sp, color = JupiterColors.OnSurfaceVariant)
+}
+
 /** Devices at the top, all settings below, in one scrollable "More" tab. */
 @Composable
 fun MoreScreenV2(
@@ -1618,5 +1604,7 @@ fun MoreScreenV2(
         Spacer(Modifier.height(10.dp))
         SettingsContent(notificationAccess, bleReady, contactsGranted,
             phoneMirroring, onPhoneMirroring, email, onNotificationAccess, onSignOut)
+        Spacer(Modifier.height(18.dp))
+        PhoneFrameDebugCard()
     }
 }

@@ -211,10 +211,7 @@ fun buildSocialCounts(whatsapp: Int, facebook: Int, instagram: Int): ByteArray {
 /** Current place name on the cluster (5B 5C). */
 fun buildLocationFrame(name: String): ByteArray = buildNavText(name, 0x5C)
 
-/**
- * Carbon-saving value on the cluster's 0x9C frame. Byte 6 carries kg CO2
- * (see RideLink PROTOCOL.md, `carbonEmission`).
- */
+/** Carbon-saving value on the cluster's 0x9C screen; byte 6 carries whole kg. */
 fun buildCarbonFrame(kg: Int): ByteArray {
     val b = ByteArray(20)
     b[0] = 0x5B
