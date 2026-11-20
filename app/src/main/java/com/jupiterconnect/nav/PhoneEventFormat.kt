@@ -4,6 +4,11 @@ package com.jupiterconnect.nav
  * The cluster's text row holds only 17 ASCII bytes, so caller/message text has
  * to be compressed before it goes over BLE. These helpers are deliberately
  * pure so the exact on-screen strings can be unit tested.
+ *
+ * NOTE: this is a deliberate local deviation from TVS Connect 8.14.3, which
+ * maps emoji to `@` and every other non-alphanumeric character to `X`. Folding
+ * punctuation to a space keeps names readable ("Mom Hello" instead of
+ * "MomXHello") but is not stock behaviour. Documented in docs/RE_TVS_CONNECT.md.
  */
 internal object PhoneEventFormat {
     private const val MAX = 17

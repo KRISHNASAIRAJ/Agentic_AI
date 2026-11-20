@@ -128,6 +128,7 @@ fun buildKeepalive(
     b[1] = OutboundId.MOBILE_DATA.toByte()
     // Byte 3 stays ZERO as in the stable build. Writing a value here changed
     // cluster behaviour after ~1 minute of riding and dropped the BLE link.
+    // Bluetooth connection behaviour is deliberately left untouched.
     // Jupiter's enriched mobile-data layout: byte 2 packs cellular signal in
     // the high nibble and a phone-battery bucket (ceil(pct/25)) in the low
     // nibble. Leaving it zero made the cluster show "no signal / low battery".
@@ -143,8 +144,9 @@ fun buildKeepalive(
     b[9] = if (now.get(Calendar.AM_PM) == Calendar.PM) 1 else 0
     // Jupiter mobile-data layout: byte 10 is the missed-call counter the
     // cluster's Social screen reads. Leaving it zero kept "0 Missed call" no
-    // matter how many 0x43 call cards we sent.
-    b[10] = missedCalls.coerceIn(0, 255).toByte()
+    // matter how many 0x43 call cards we sent. TVS Connect reads unread missed
+    // calls from the call log and caps the wire value at 99.
+    b[10] = missedCalls.coerceIn(0, 99).toByte()
     b[17] = if (findMy) 1 else 0
     b[12] = now.get(Calendar.DAY_OF_MONTH).toByte()
     b[13] = (now.get(Calendar.MONTH) + 1).toByte()
@@ -201,13 +203,21 @@ fun buildScreenSwitch(id: Int): ByteArray {
     return b
 }
 
-/** Social unread counts shown on the cluster's social screen. */
+/**
+ * Social unread counts shown on the cluster's social screen (0x5B 0x9C).
+ *
+ * Confirmed from TVS Connect 8.14.3
+ * (N109U347N251DataSenderToCluster.sendMobileDataNotificationAndAlert):
+ * byte 2 carries WhatsApp in the low 5 bits (caps at 31), byte 3 carries
+ * Facebook in the low 4 bits (caps at 15), and byte 4 is the raw Instagram
+ * count. Higher bits are zero in the original bit-string packing.
+ */
 fun buildSocialCounts(whatsapp: Int, facebook: Int, instagram: Int): ByteArray {
     val b = ByteArray(20)
     b[0] = 0x5B
     b[1] = 0x9C.toByte()
-    b[2] = whatsapp.coerceIn(0, 255).toByte()
-    b[3] = facebook.coerceIn(0, 255).toByte()
+    b[2] = (whatsapp.coerceIn(0, 31) and 0x1F).toByte()
+    b[3] = (facebook.coerceIn(0, 15) and 0x0F).toByte()
     b[4] = instagram.coerceIn(0, 255).toByte()
     b[19] = 0xFF.toByte()
     return b
@@ -228,15 +238,15 @@ fun buildNavText(text: String, id: Int = OutboundId.NAVIGATION_TEXT): ByteArray 
 }
 
 /**
- * Jupiter caller ID is a sequence, NOT a single text frame. The stock app's
- * `writeCallerInformationToCluster` sends up to three 21-byte packets in the
- * order national number (sub 0x01), country code (0x03), contact name (0x02);
- * byte 2 is the sub-id and the text starts at byte 3.
+ * Legacy caller-ID sequence used by other TVS models: up to three 21-byte
+ * packets in the order national number (sub 0x01), country code (0x03),
+ * contact name (0x02); byte 2 is the sub-id and the text starts at byte 3.
+ * This is `writeCallerInformationToCluster` in TVS Connect 8.14.3.
  *
- * The old single 20-byte `5B 43 <name> FF` put the first ASCII letter in byte 2
- * (e.g. 0x4B for 'K'), which is not a valid sub-id, so the cluster silently
- * dropped it. VoIP callers have no phone number, so the display name is sent in
- * both the number slot and the name slot to cover either rendering path.
+ * The Jupiter branch is different: `writeJupiterCallerInformationToCluster`
+ * sends one 20-byte `5B 43 <name> FF` frame with no sub-id byte. Use
+ * [buildCallerFrame] for Jupiter; this builder is kept as a fallback for
+ * A/B testing against the dash and for non-Jupiter clusters.
  */
 fun buildCallerPackets(
     nationalNumber: String,
@@ -262,6 +272,16 @@ private fun callerPacket(subId: Int, text: String): ByteArray {
 }
 
 /**
+ * Jupiter caller ID: one 20-byte `5B 43` frame with the saved contact name (or
+ * the raw number), 0x00 padding and an 0xFF terminator. No sub-id byte.
+ *
+ * This is the branch the genuine Play Store app uses for Jupiter
+ * (`writeJupiterCallerInformationToCluster`, TVS Connect 8.14.3). [buildCallerPackets]
+ * remains available for the legacy three-packet sequence used by other models.
+ */
+fun buildCallerFrame(name: String): ByteArray = buildNavText(name, OutboundId.CALLER)
+
+/**
  * Jupiter messages render on the custom text rows (0x5B 0x4C / 0x63). The
  * 0x53 SMS frame is model-gated to U388/iQube upstream and produced no visible
  * card on the rider's Jupiter 125, so [buildMessageRow] is the primary channel.
@@ -270,7 +290,11 @@ fun buildMessageRow(text: String, row2: Boolean = false): ByteArray =
     buildNavText(text, if (row2) OutboundId.MESSAGE_ROW2 else OutboundId.MESSAGE_ROW1)
 
 /**
- * Text-message card. DID 0x53 makes the cluster show its own full-screen
+ * Text-message card. DID 0x53 is a genuine TVS Connect ID
+ * (`createSendSMSNameArray`) and makes the cluster show its own full-screen
  * message card instead of overwriting the turn-by-turn direction row.
+ * Community notes say that card is model-gated to U388/iQube, so on Jupiter
+ * it is sent together with the 0x4C text row; whether the card renders on the
+ * 2026 Jupiter 125 still needs a dash capture.
  */
 fun buildMessageFrame(text: String): ByteArray = buildNavText(text, OutboundId.SMS)

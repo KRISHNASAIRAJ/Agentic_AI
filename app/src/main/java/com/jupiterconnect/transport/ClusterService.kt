@@ -27,6 +27,7 @@ import android.location.Location
 import android.location.LocationListener
 import android.location.LocationManager
 import android.os.Build
+import android.provider.CallLog
 import android.os.Handler
 import android.os.HandlerThread
 import android.os.IBinder
@@ -56,6 +57,7 @@ import com.jupiterconnect.protocol.buildNavControl
 import com.jupiterconnect.protocol.buildScreenSwitch
 import com.jupiterconnect.protocol.buildSocialCounts
 import com.jupiterconnect.protocol.buildNavText
+import com.jupiterconnect.protocol.buildCallerFrame
 import com.jupiterconnect.protocol.buildCallerPackets
 import com.jupiterconnect.protocol.buildMessageFrame
 import com.jupiterconnect.protocol.buildMessageRow
@@ -134,6 +136,13 @@ object ClusterRepository {
     fun refreshParkedLocation() = service?.refreshParkedLocation()
     /** Caller/message mirroring is independent of turn-by-turn mirroring. */
     val phoneMirroring = MutableStateFlow(true)
+    /**
+     * Debug flag for A/B testing against the dash: send the legacy 21-byte
+     * 1/3/2 caller sequence instead of Jupiter's single 20-byte 0x43 frame.
+     * Off by default — the single frame is what TVS Connect 8.14.3 uses for
+     * Jupiter. No Bluetooth connection behaviour is affected by this flag.
+     */
+    val legacyCallerPackets = MutableStateFlow(false)
 
     /** Show a short reply on the cluster, overriding the nav text briefly. */
     fun showText(text: String, holdMs: Long = 10_000L) {
@@ -153,13 +162,32 @@ object ClusterRepository {
         holdMs: Long = 5_000L,
         sourcePackage: String? = null,
     ) {
-        // The cluster's Social screen also carries a WhatsApp unread count.
-        // Messages use 0x4C; this counter is the separate 0x9C frame.
-        if (!isCall && sourcePackage?.startsWith("com.whatsapp") == true) {
-            val (wa, fb, ig) = socialCounts.value
-            service?.sendSocialCounts(wa + 1, fb, ig)
-        }
+        // Social unread counters use the separate 0x9C frame, never the text row.
+        if (!isCall) onSocialNotification(sourcePackage)
         service?.sendPhoneEvent(isCall, text, holdMs)
+    }
+
+    /**
+     * TVS Connect increments a per-app unread counter for each notification.
+     * The wire field widths are applied in buildSocialCounts (WA <=31, FB <=15).
+     */
+    fun onSocialNotification(sourcePackage: String?) {
+        val pkg = sourcePackage.orEmpty()
+        val (wa, fb, ig) = socialCounts.value
+        val next = when {
+            pkg.startsWith("com.whatsapp") -> Triple(wa + 1, fb, ig)
+            pkg.startsWith("com.facebook.katana") || pkg == "com.facebook.orca" ->
+                Triple(wa, fb + 1, ig)
+            pkg.startsWith("com.instagram") -> Triple(wa, fb, ig + 1)
+            else -> return
+        }
+        service?.sendSocialCounts(next.first, next.second, next.third)
+    }
+
+    /** Clear all social unread counters (the APK's clearRecords() equivalent). */
+    fun clearSocialCounts() {
+        socialCounts.value = Triple(0, 0, 0)
+        service?.sendSocialCounts(0, 0, 0)
     }
 
     @Volatile private var replyText: String? = null
@@ -222,8 +250,28 @@ class ClusterService : Service() {
     // the last cluster frame arrived, so a future drop can be explained.
     private var connectedAtMs = 0L
     private var lastFrameAtMs = 0L
-    /** Missed-call count carried in the 0x4A keepalive (byte 10). */
-    @Volatile private var missedCalls = 0
+    /**
+     * Unread missed calls for the 0x4A keepalive (byte 10). TVS Connect reads
+     * CallLog.Calls with type=MISSED and is_read=0, requires READ_CALL_LOG and
+     * caps the value at 99. Reading it fresh each keepalive means a call the
+     * user has since opened no longer shows as missed on the dash.
+     */
+    @SuppressLint("MissingPermission")
+    private fun currentMissedCalls(): Int {
+        if (ContextCompat.checkSelfPermission(
+                this, android.Manifest.permission.READ_CALL_LOG
+            ) != PackageManager.PERMISSION_GRANTED
+        ) return 0
+        return runCatching {
+            contentResolver.query(
+                CallLog.Calls.CONTENT_URI,
+                arrayOf(CallLog.Calls._ID),
+                "${CallLog.Calls.TYPE}=? AND ${CallLog.Calls.IS_READ}=?",
+                arrayOf(CallLog.Calls.MISSED_TYPE.toString(), "0"),
+                null,
+            )?.use { it.count.coerceAtMost(99) } ?: 0
+        }.getOrDefault(0)
+    }
     // Remembered bike survives a service/process restart (OEM battery optimisers
     // love to kill background BLE services). Shares MainActivity's prefs so the
     // UI and the service always agree on the last linked cluster.
@@ -808,30 +856,30 @@ class ClusterService : Service() {
 
     /**
      * Mirror a call or message to the cluster without touching the navigation
-     * row. Calls use the three-packet 0x43 caller sequence (the single 0x43
-     * frame the old build sent had no sub-id and the cluster dropped it), and
-     * messages use the Jupiter 0x4C text row that the cluster actually renders.
-     * 0x53 is still sent for clusters that render the SMS card.
+     * row. Jupiter's own branch in TVS Connect 8.14.3 sends a single 20-byte
+     * 0x43 frame; the legacy 1/3/2 sequence is available via a debug flag.
+     * Messages use the Jupiter 0x4C text row; 0x53 is a genuine TVS ID whose
+     * rendering on this cluster is still unverified.
      */
     fun sendPhoneEvent(isCall: Boolean, text: String, holdMs: Long) {
         phoneEventJob?.cancel()
         phoneEventJob = scope.launch {
             if (isCall) {
-                // The cluster's Social screen reads the missed-call counter from
-                // 0x4A byte 10, not from the caller card. Advance it once per
-                // incoming call so the count stops sitting at zero.
-                missedCalls = (missedCalls + 1).coerceIn(0, 255)
-                FrameLog.note("CALL trigger '$text' - missedCalls=$missedCalls")
+                // Missed calls are read from the call log into 0x4A byte 10,
+                // not derived from caller cards. Keep the log entry for debugging.
+                FrameLog.note("CALL trigger '$text' - missedCalls=${currentMissedCalls()}")
             }
             val pages = if (isCall) listOf(text)
                 else com.jupiterconnect.nav.PhoneEventFormat.pages(text)
             val started = System.currentTimeMillis()
             val until = started + holdMs
             if (isCall) {
-                // VoIP has no national number, so the name goes in both the
-                // number and name slots. Stock repeats the whole sequence while
-                // the phone is ringing; a blank keepalive then clears the card.
-                val packets = buildCallerPackets(text, contactName = text)
+                // TVS Connect's Jupiter branch writes one 20-byte frame. The
+                // legacy 21-byte sub-ID sequence is kept behind a debug flag
+                // for A/B testing against the dash.
+                val packets = if (ClusterRepository.legacyCallerPackets.value) {
+                    buildCallerPackets(text, contactName = text)
+                } else listOf(buildCallerFrame(text))
                 while (isActive && System.currentTimeMillis() < until) {
                     packets.forEach { write(it) }
                     delay(500L)
@@ -849,11 +897,12 @@ class ClusterService : Service() {
             }
             if (!isActive) return@launch
             if (isCall) {
+                val calls = currentMissedCalls()
                 repeat(3) {
                     write(buildKeepalive(
                         batteryPct = phoneBatteryPct(),
                         signalBars = phoneSignalBars(),
-                        missedCalls = missedCalls,
+                        missedCalls = calls,
                     ))
                     delay(100L)
                 }
@@ -1155,7 +1204,7 @@ class ClusterService : Service() {
                 write(buildKeepalive(
                     batteryPct = phoneBatteryPct(),
                     signalBars = phoneSignalBars(),
-                    missedCalls = missedCalls,
+                    missedCalls = currentMissedCalls(),
                 ))
                 delay(2000)
             }

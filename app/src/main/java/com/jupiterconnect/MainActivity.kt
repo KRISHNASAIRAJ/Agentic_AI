@@ -124,6 +124,9 @@ fun JupiterApp() {
         // falls back to showing the raw number. Mic is needed so the bike's
         // voice button can listen from the service while the app is closed.
         add(Manifest.permission.READ_CONTACTS)
+        // Unread missed calls on the dash come from the call log; denial just
+        // makes byte 10 report zero, like the stock app without the permission.
+        add(Manifest.permission.READ_CALL_LOG)
         add(Manifest.permission.RECORD_AUDIO)
     }.toTypedArray()
 
@@ -141,6 +144,7 @@ fun JupiterApp() {
             notifications = if (Build.VERSION.SDK_INT >= 33)
                 isGranted(Manifest.permission.POST_NOTIFICATIONS) else true,
             contacts = isGranted(Manifest.permission.READ_CONTACTS),
+            callLog = isGranted(Manifest.permission.READ_CALL_LOG),
         )
     }
 
@@ -339,6 +343,7 @@ fun JupiterApp() {
                 notificationAccess = notificationAccess,
                 bleReady = permStatus.bluetooth,
                 contactsGranted = permStatus.contacts,
+                callLogGranted = permStatus.callLog,
                 phoneMirroring = phoneMirroring,
                 onPhoneMirroring = { enabled ->
                     phoneMirroring = enabled

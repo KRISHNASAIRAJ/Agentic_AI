@@ -152,6 +152,13 @@ simulate → capture → correct loop, and the reliability lessons — is in
 
 Regenerate the deck with `python docs/make_ppt.py`.
 
+For the protocol facts themselves, see the first-party reverse engineering of
+the Play Store TVS Connect 8.14.3 APK in
+[`docs/RE_TVS_CONNECT.md`](docs/RE_TVS_CONNECT.md) (styled:
+[`docs/RE_TVS_CONNECT.html`](docs/RE_TVS_CONNECT.html)). The artifact identity,
+confirmed byte layouts and cross-source conflicts are summarised in
+[`docs/PROTOCOL_NOTES.md`](docs/PROTOCOL_NOTES.md).
+
 ---
 
 ## Roadmap

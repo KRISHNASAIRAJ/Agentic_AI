@@ -212,7 +212,11 @@ object RideStore {
     val issSavedSeconds: StateFlow<Long> = _issSavedSeconds.asStateFlow()
 
     /**
-     * Estimated lifetime CO2 saved, sent to the cluster's Carbon Saving screen.
+     * Estimated lifetime CO2 saved, shown in the app only.
+     *
+     * No BLE frame can write the dash's Carbon Saving screen: TVS Connect 8.14.3
+     * formats its own figure with a x0.8 factor and stores it per ride. The
+     * formula below is our independent estimate, not a recovered TVS formula.
      *
      * The cluster does not broadcast this figure, so we derive it from data we
      * do have, in order of trust:

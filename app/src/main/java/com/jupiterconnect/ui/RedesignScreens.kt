@@ -39,6 +39,7 @@ import androidx.compose.material.icons.rounded.BatteryChargingFull
 import androidx.compose.material.icons.rounded.CheckCircle
 import androidx.compose.material.icons.rounded.Bluetooth
 import androidx.compose.material.icons.rounded.BluetoothConnected
+import androidx.compose.material.icons.rounded.Call
 import androidx.compose.material.icons.rounded.Check
 import androidx.compose.material.icons.rounded.ChevronRight
 import androidx.compose.material.icons.rounded.Headphones
@@ -1408,6 +1409,7 @@ private fun SettingsContent(
     notificationAccess: Boolean,
     bleReady: Boolean,
     contactsGranted: Boolean,
+    callLogGranted: Boolean,
     phoneMirroring: Boolean,
     onPhoneMirroring: (Boolean) -> Unit,
     email: String?,
@@ -1423,6 +1425,7 @@ private fun SettingsContent(
             Triple(Icons.Rounded.Notifications, "Notifications", true),
             Triple(Icons.Rounded.NotificationsActive, "Notification access", notificationAccess),
             Triple(Icons.Rounded.Person, "Contacts (caller names)", contactsGranted),
+            Triple(Icons.Rounded.Call, "Call log (missed calls)", callLogGranted),
         ).forEach { (icon, name, ok) ->
             Row(Modifier.padding(vertical = 6.dp), verticalAlignment = Alignment.CenterVertically) {
                 IconCircle(icon, name)
@@ -1471,6 +1474,11 @@ private fun SettingsContent(
                 ),
             )
         }
+        Spacer(Modifier.height(10.dp))
+        SecondaryButton("Clear social counters",
+            { ClusterRepository.clearSocialCounts() }, Modifier.fillMaxWidth())
+        Text("WhatsApp / Facebook / Instagram unread counts are mirrored on 0x9C.",
+            fontSize = 11.sp, color = JupiterColors.OnSurfaceVariant)
     }
 
     RedCard(bar = true) {
@@ -1580,7 +1588,8 @@ private fun PhoneFrameDebugCard() {
     Text(RideStore.carbonEstimateSource,
         fontSize = 10.sp, color = JupiterColors.OnSurfaceVariant)
     Text("The dash computes its own value from idle-stop (ISS) data - no phone " +
-        "frame can write it. This estimate is shown in the app only.",
+        "frame can write it. This is our independent estimate (TVS formats its " +
+        "own figure with a x0.8 factor), shown in the app only.",
         fontSize = 10.sp, color = JupiterColors.OnSurfaceVariant)
 }
 
@@ -1597,6 +1606,7 @@ fun MoreScreenV2(
     notificationAccess: Boolean,
     bleReady: Boolean,
     contactsGranted: Boolean,
+    callLogGranted: Boolean,
     phoneMirroring: Boolean,
     onPhoneMirroring: (Boolean) -> Unit,
     email: String?,
@@ -1611,7 +1621,7 @@ fun MoreScreenV2(
         Spacer(Modifier.height(22.dp))
         Label("SETTINGS")
         Spacer(Modifier.height(10.dp))
-        SettingsContent(notificationAccess, bleReady, contactsGranted,
+        SettingsContent(notificationAccess, bleReady, contactsGranted, callLogGranted,
             phoneMirroring, onPhoneMirroring, email, onNotificationAccess, onSignOut)
         Spacer(Modifier.height(18.dp))
         PhoneFrameDebugCard()

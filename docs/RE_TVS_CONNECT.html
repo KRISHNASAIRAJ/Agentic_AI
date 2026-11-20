@@ -1,0 +1,532 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>TVS Connect RE × Jupiter Connect — Protocol & Implementation Report</title>
+<style>
+  :root{
+    --bg:#0b0f14; --bg2:#111821; --card:#141d28; --card2:#18232f;
+    --line:#233244; --line2:#2e4157;
+    --txt:#e6edf3; --muted:#94a7ba; --dim:#6d8297;
+    --cyan:#4fd1c5; --blue:#5aa9ff; --green:#5fd39b;
+    --amber:#f6c56b; --red:#f2888b; --purple:#b69bf5;
+    --mono:ui-monospace,SFMono-Regular,Menlo,Consolas,"Liberation Mono",monospace;
+    --sans:Inter,"Segoe UI",Roboto,-apple-system,BlinkMacSystemFont,sans-serif;
+    --radius:14px;
+  }
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth;scroll-padding-top:76px}
+  body{margin:0;background:
+      radial-gradient(1100px 500px at 12% -10%,rgba(79,209,197,.09),transparent 60%),
+      radial-gradient(900px 460px at 92% 4%,rgba(90,169,255,.08),transparent 60%),
+      var(--bg);
+    color:var(--txt);font:15px/1.65 var(--sans);-webkit-font-smoothing:antialiased}
+  a{color:var(--cyan);text-decoration:none}
+  a:hover{text-decoration:underline}
+  code,.mono{font-family:var(--mono)}
+  code{background:#0d141c;border:1px solid var(--line);border-radius:5px;padding:1px 6px;font-size:.88em;color:#bfe9e3}
+
+  /* nav */
+  .topbar{position:sticky;top:0;z-index:50;backdrop-filter:blur(14px);
+    background:rgba(11,15,20,.86);border-bottom:1px solid var(--line)}
+  .topbar .inner{max-width:1180px;margin:auto;display:flex;align-items:center;gap:22px;
+    padding:12px 24px;flex-wrap:wrap}
+  .brand{font-weight:700;letter-spacing:.2px;color:var(--txt);white-space:nowrap}
+  .brand span{color:var(--cyan)}
+  .topbar nav{display:flex;gap:16px;flex-wrap:wrap;margin-left:auto}
+  .topbar nav a{color:var(--muted);font-size:13px;font-weight:600}
+  .topbar nav a:hover{color:var(--cyan);text-decoration:none}
+
+  /* layout */
+  .wrap{max-width:1180px;margin:auto;padding:0 24px}
+  header.hero{padding:64px 0 34px;border-bottom:1px solid var(--line)}
+  .eyebrow{font-family:var(--mono);font-size:12px;letter-spacing:.16em;text-transform:uppercase;
+    color:var(--cyan);margin-bottom:12px}
+  h1{font-size:clamp(30px,4.6vw,50px);line-height:1.12;margin:0 0 14px;letter-spacing:-.02em}
+  h1 .accent{background:linear-gradient(90deg,var(--cyan),var(--blue));-webkit-background-clip:text;
+    background-clip:text;color:transparent}
+  .lede{max-width:820px;color:var(--muted);font-size:17px;margin:0 0 26px}
+  .chips{display:flex;flex-wrap:wrap;gap:8px}
+  .chip{font-family:var(--mono);font-size:11.5px;color:var(--muted);background:var(--card);
+    border:1px solid var(--line);border-radius:999px;padding:6px 12px}
+  .chip b{color:var(--txt);font-weight:600}
+
+  section{padding:46px 0 8px}
+  h2{font-size:clamp(22px,2.6vw,30px);margin:0 0 6px;letter-spacing:-.01em}
+  h2 .num{font-family:var(--mono);color:var(--cyan);font-size:.62em;margin-right:10px;vertical-align:2px}
+  .sub{color:var(--muted);margin:0 0 22px;max-width:880px}
+  h3{font-size:17px;margin:26px 0 10px;color:var(--txt)}
+
+  .card{background:linear-gradient(180deg,var(--card),var(--card2));border:1px solid var(--line);
+    border-radius:var(--radius);padding:20px 22px}
+  .grid{display:grid;gap:16px}
+  .g2{grid-template-columns:repeat(2,minmax(0,1fr))}
+  .g3{grid-template-columns:repeat(3,minmax(0,1fr))}
+  .g4{grid-template-columns:repeat(4,minmax(0,1fr))}
+  @media(max-width:900px){.g2,.g3,.g4{grid-template-columns:1fr}}
+
+  .kpi .ico{font-size:22px;margin-bottom:8px}
+  .kpi h4{margin:0 0 6px;font-size:15px}
+  .kpi p{margin:0;color:var(--muted);font-size:13.5px}
+
+  .badge{display:inline-block;font-family:var(--mono);font-size:10px;font-weight:700;
+    letter-spacing:.06em;text-transform:uppercase;padding:3px 8px;border-radius:6px;
+    border:1px solid transparent;white-space:nowrap;vertical-align:middle}
+  .b-ok{color:var(--green);background:rgba(95,211,155,.1);border-color:rgba(95,211,155,.3)}
+  .b-impl{color:var(--blue);background:rgba(90,169,255,.1);border-color:rgba(90,169,255,.3)}
+  .b-dev{color:var(--amber);background:rgba(246,197,107,.1);border-color:rgba(246,197,107,.3)}
+  .b-cap{color:var(--purple);background:rgba(182,155,245,.1);border-color:rgba(182,155,245,.3)}
+  .b-res{color:var(--cyan);background:rgba(79,209,197,.1);border-color:rgba(79,209,197,.3)}
+  .b-hi{color:var(--red);background:rgba(242,136,139,.1);border-color:rgba(242,136,139,.3)}
+
+  /* tables */
+  .tw{overflow-x:auto;border:1px solid var(--line);border-radius:var(--radius)}
+  table{border-collapse:collapse;width:100%;font-size:13.5px;min-width:640px}
+  th,td{text-align:left;padding:11px 14px;border-bottom:1px solid var(--line);vertical-align:top}
+  th{background:#0e1620;color:var(--muted);font-size:11px;letter-spacing:.09em;text-transform:uppercase;
+    font-weight:700;position:sticky;top:0}
+  tr:last-child td{border-bottom:0}
+  tbody tr:hover{background:rgba(90,169,255,.045)}
+  td code{white-space:nowrap}
+  .yes{color:var(--green);font-weight:600}
+  .no{color:var(--red);font-weight:600}
+  .warn{color:var(--amber);font-weight:600}
+
+  /* byte strips */
+  .bytes{display:flex;flex-wrap:wrap;gap:4px;margin:12px 0 6px}
+  .byte{width:46px;text-align:center;border:1px solid var(--line2);border-radius:7px;
+    background:#0d151e;padding:5px 2px 6px}
+  .byte .i{display:block;font-family:var(--mono);font-size:9px;color:var(--dim)}
+  .byte .v{display:block;font-family:var(--mono);font-size:11.5px;color:var(--txt);margin-top:2px}
+  .byte.hl{border-color:var(--cyan);background:rgba(79,209,197,.12)}
+  .byte.hl .v{color:var(--cyan);font-weight:700}
+  .byte.a{border-color:var(--amber);background:rgba(246,197,107,.1)}
+  .byte.a .v{color:var(--amber)}
+  .byte.p{border-color:var(--purple);background:rgba(182,155,245,.1)}
+  .byte.p .v{color:var(--purple)}
+  .legend{font-size:11.5px;color:var(--dim);margin:4px 0 0;font-family:var(--mono)}
+  .frame{font-family:var(--mono);font-size:12.5px;color:#bfe9e3;background:#0d141c;
+    border:1px solid var(--line);border-radius:8px;padding:10px 12px;overflow-x:auto;margin:10px 0}
+
+  .note{border-left:3px solid var(--amber);background:rgba(246,197,107,.06);
+    padding:12px 16px;border-radius:0 10px 10px 0;margin:16px 0;color:var(--muted);font-size:13.5px}
+  .note b{color:var(--amber)}
+  .ok-note{border-left-color:var(--cyan);background:rgba(79,209,197,.06)}
+  .ok-note b{color:var(--cyan)}
+
+  /* change cards */
+  .chg{display:grid;grid-template-columns:46px 1fr;gap:14px;align-items:start}
+  .chg .id{font-family:var(--mono);font-size:14px;font-weight:700;color:var(--cyan);
+    border:1px solid var(--line2);border-radius:9px;padding:9px 0;text-align:center;background:#0d151e}
+  .chg h4{margin:0 0 4px;font-size:14.5px}
+  .chg .meta{font-family:var(--mono);font-size:11px;color:var(--dim);margin-bottom:7px}
+  .chg p{margin:0;color:var(--muted);font-size:13px}
+
+  ul.clean{margin:8px 0 0;padding-left:20px}
+  ul.clean li{margin:6px 0;color:var(--muted);font-size:13.5px}
+  ul.check{list-style:none;padding:0;margin:10px 0 0}
+  ul.check li{padding:9px 12px;border:1px solid var(--line);border-radius:9px;margin:7px 0;
+    background:var(--card);color:var(--muted);font-size:13.5px}
+  ul.check li::before{content:"☐";color:var(--cyan);margin-right:10px;font-size:16px}
+
+  footer{border-top:1px solid var(--line);margin-top:54px;padding:26px 0 50px;color:var(--dim);font-size:12px}
+  @media print{
+    body{background:#fff;color:#111}
+    .topbar{display:none}
+    .card,table,.byte,.note{background:#fff!important;border-color:#ccc!important;color:#111!important}
+    th{background:#f2f4f6!important;color:#333!important}
+    td,th,.lede,.sub,.kpi p,.chg p{color:#333!important}
+    code,.frame,.byte .v{color:#111!important;background:#f6f7f9!important}
+  }
+</style>
+</head>
+<body>
+
+<div class="topbar"><div class="inner">
+  <div class="brand">RE<span>//</span>TVS CONNECT <span style="color:var(--dim);font-weight:400">× JUPITER CONNECT</span></div>
+  <nav>
+    <a href="#summary">Summary</a><a href="#artifact">Artifact</a><a href="#ids">Data IDs</a>
+    <a href="#carbon">Carbon</a><a href="#caller">Caller / Messages</a>
+    <a href="#social">Social Counters</a><a href="#conflicts">Conflicts</a>
+    <a href="#changes">Change List</a><a href="#verify">Verify</a>
+  </nav>
+</div></div>
+
+<div class="wrap">
+
+<header class="hero">
+  <div class="eyebrow">First-party reverse engineering · 20 November 2026</div>
+  <h1>The Play Store app, <span class="accent">decompiled.</span><br>The companion app, compared.</h1>
+  <p class="lede">This report answers three questions with evidence taken directly from the genuine
+  TVS Connect APK — what the cluster really receives for <b>carbon</b>, <b>caller ID / messages</b>,
+  and <b>social counters</b> — and places each finding beside what Jupiter Connect currently implements.</p>
+  <div class="chips">
+    <span class="chip"><b>com.tvsm.connect</b> · v8.14.3 · code 339</span>
+    <span class="chip">SHA-256 <b>9F4367…D8E88</b></span>
+    <span class="chip">179.6 MB · <b>41,612 classes</b></span>
+    <span class="chip">jadx <b>1.5.7</b> · Java 21 · --no-res</span>
+    <span class="chip">static only · <b>never executed</b></span>
+  </div>
+</header>
+
+<!-- ============ SUMMARY ============ -->
+<section id="summary">
+  <h2><span class="num">01</span>Executive summary</h2>
+  <p class="sub">Four findings that change the project's direction. Every claim below is quoted from
+  decompiled bytecode of the APK you supplied.</p>
+  <div class="grid g4">
+    <div class="card kpi"><div class="ico">🍃</div><h4>Carbon <span class="badge b-ok">Confirmed</span></h4>
+      <p>No BLE frame writes the dash's carbon screen. TVS Connect formats CO₂ with a ×0.8 factor and
+      stores it per ride; Jupiter Connect's app-only estimate is the right architecture.</p></div>
+    <div class="card kpi"><div class="ico">📞</div><h4>Caller ID <span class="badge b-res">Resolved</span></h4>
+      <p>The Jupiter branch sends <b>one 20-byte <code>5B 43</code> frame</b>. The famous 3-packet
+      1/3/2 sequence belongs to other models in the same APK.</p></div>
+    <div class="card kpi"><div class="ico">💬</div><h4>Social counters <span class="badge b-ok">Confirmed</span></h4>
+      <p><code>5B 9C</code> is real: WhatsApp in 5 bits (≤31), Facebook in 4 bits (≤15), Instagram raw.
+      Missed calls live in keepalive byte 10, sourced from the call log, capped at 99.</p></div>
+    <div class="card kpi"><div class="ico">🧭</div><h4>Outcome <span class="badge b-ok">Implemented</span></h4>
+      <p>All nine changes applied and verified — 35 JVM tests, 0 failures, debug APK builds green.
+      Bluetooth connection behaviour was deliberately left untouched; traffic screens deferred.</p></div>
+  </div>
+  <div class="note ok-note"><b>Bottom line:</b> the earlier community notes were directionally right but
+  model-ambiguous. Decompiling the actual 8.14.3 APK resolved the caller-format conflict and turned the
+  previously "unverified" <code>0x9C</code> social frame into a confirmed feature.</div>
+</section>
+
+<!-- ============ ARTIFACT ============ -->
+<section id="artifact">
+  <h2><span class="num">02</span>Artifact &amp; method</h2>
+  <p class="sub">The source of truth is the Play Store application — not this repository's APK and not a
+  third-party open-source companion.</p>
+  <div class="grid g2">
+    <div class="card">
+      <h3 style="margin-top:0">Provenance</h3>
+      <div class="tw"><table style="min-width:0">
+        <tr><th style="width:38%">File</th><td class="mono">C:\Users\krish\Downloads\TVS Connect.apk</td></tr>
+        <tr><th>Package</th><td class="mono">com.tvsm.connect</td></tr>
+        <tr><th>Version</th><td class="mono">8.14.3 (versionCode 339)</td></tr>
+        <tr><th>SHA-256</th><td class="mono" style="word-break:break-all">9F436755473352C6523737AFD9295BA1A340B11EF44565984F9E7CAD1D3D8E88</td></tr>
+        <tr><th>Decompiler</th><td class="mono">jadx 1.5.7 · -j 4 --no-res</td></tr>
+        <tr><th>Result</th><td>41,612 classes · 593 decompiler errors (normal for obfuscated DEX)</td></tr>
+      </table></div>
+    </div>
+    <div class="card">
+      <h3 style="margin-top:0">Reading the evidence</h3>
+      <p style="color:var(--muted);font-size:13.5px;margin:0 0 10px">Two BLE stacks coexist in this build;
+      the scooter model selects which one runs. For the Jupiter 125 the relevant classes are:</p>
+      <ul class="clean">
+        <li><code>com/tvs/ble/feature/utils/TelephonyUtils.java</code> — model-specific caller branch</li>
+        <li><code>com/tvs/ble/feature/datasender/JupiterMobileToCluster.java</code> — Jupiter keepalive</li>
+        <li><code>com/tvs/bluetooth/core/utils/{BluetoothUtil,BlePacketsProvider}.java</code> — frame builders</li>
+        <li><code>com/tvsm/connect/bluetooth/sendreceive/N109U347N251DataSenderToCluster.java</code> — legacy sender</li>
+        <li><code>com/tvsm/connect/bluetooth/bluetoothlegatt/SampleGattAttributes.java</code> — data-ID table</li>
+      </ul>
+      <div class="legend" style="margin-top:14px">This build is newer than the community-referenced v8.14.1;
+      where they disagree, this APK wins.</div>
+    </div>
+  </div>
+  <h3>Legend</h3>
+  <div class="chips">
+    <span class="badge b-ok">Confirmed</span>
+    <span class="badge b-res">Resolved</span>
+    <span class="badge b-impl">Implemented</span>
+    <span class="badge b-dev">Deviation</span>
+    <span class="badge b-cap">Needs capture</span>
+    <span class="badge b-hi">High priority</span>
+  </div>
+</section>
+
+<!-- ============ IDS ============ -->
+<section id="ids">
+  <h2><span class="num">03</span>Outbound data-ID reference</h2>
+  <p class="sub"><code>SampleGattAttributes.java</code> declares every ID as a signed <code>byte</code>;
+  negative decimal values are the high-half hex IDs. This is the authoritative table for 8.14.3.</p>
+  <div class="tw"><table>
+    <thead><tr><th>Constant</th><th>Dec</th><th>Hex</th><th>Purpose</th><th>JupiterConnect</th></tr></thead>
+    <tbody>
+      <tr><td class="mono">DATA_ID_CALLER_ID</td><td>67</td><td class="mono">0x43</td><td>Caller ID</td><td class="yes">implemented</td></tr>
+      <tr><td class="mono">DATA_ID_MOBILEDATA</td><td>74</td><td class="mono">0x4A</td><td>Keepalive / mobile data</td><td class="yes">implemented</td></tr>
+      <tr><td class="mono">DATA_ID_MESSAGE1</td><td>76</td><td class="mono">0x4C</td><td>Message text row 1</td><td class="yes">implemented</td></tr>
+      <tr><td class="mono">DATA_ID_MESSAGE2</td><td>99</td><td class="mono">0x63</td><td>Message text row 2</td><td class="yes">implemented</td></tr>
+      <tr><td class="mono">DATA_ID_SMS</td><td>83</td><td class="mono">0x53</td><td>SMS card</td><td class="warn">implemented · rendering unverified</td></tr>
+      <tr><td class="mono">DATA_ID_NAME</td><td>82</td><td class="mono">0x52</td><td>Rider-name greeting</td><td class="warn">planned (roadmap)</td></tr>
+      <tr><td class="mono">DATA_ID_NAVIGATION_CONTROL</td><td>78</td><td class="mono">0x4E</td><td>Navigation control</td><td class="yes">implemented</td></tr>
+      <tr><td class="mono">DATA_ID_NAVIGATIONDATA1</td><td>79</td><td class="mono">0x4F</td><td>Navigation text</td><td class="yes">implemented</td></tr>
+      <tr><td class="mono">DATA_ID_NAVIGATIONDATA2</td><td>80</td><td class="mono">0x50</td><td>Nav row 2 / pictogram (model-dependent)</td><td class="warn">not used</td></tr>
+      <tr><td class="mono">DATA_ID_MESSAGE5</td><td>-100</td><td class="mono">0x9C</td><td><b>Social / notification counters</b></td><td class="yes">implemented (needs fixes)</td></tr>
+      <tr><td class="mono">DATA_ID_VEHICLE_CONTROL</td><td>-15</td><td class="mono">0xF1</td><td>Brightness</td><td class="yes">implemented</td></tr>
+      <tr><td class="mono">DATA_ID_WEATHER / CRICKET / FOOTBALL / NEWS</td><td>93 / -127 / -111 / -106</td><td class="mono">0x5D / 0x81 / 0x91 / 0x96</td><td>Traffic screens</td><td class="warn">removed from UI</td></tr>
+    </tbody>
+  </table></div>
+</section>
+
+<!-- ============ CARBON ============ -->
+<section id="carbon">
+  <h2><span class="num">04</span>Carbon</h2>
+  <p class="sub">The definitive answer: there is no carbon write on the wire. Both apps compute a local
+  figure; only the cluster's internal ISS-derived value appears on the dash.</p>
+  <div class="grid g2">
+    <div class="card">
+      <h3 style="margin-top:0">Found in TVS Connect <span class="badge b-ok">Confirmed</span></h3>
+      <div class="frame">convertCO2(double d) → String.valueOf(d * 0.8d)</div>
+      <p style="color:var(--muted);font-size:13.5px;margin:0">
+      <code>BluetoothUtil.java:127-129</code> — a display formatter, not a wire encoder.
+      <code>co2Image()</code> (lines 116-121) picks low/medium/high icons at ≤25 and ≤50.
+      Realm models persist <code>co2Saved</code> per ride and cumulatively; analytics logs
+      <code>CO2_saved</code>. No carbon data ID exists. The aptly misnamed
+      <code>carbonEmission(int)</code> actually sends the <code>0x9C</code> social frame.</p>
+    </div>
+    <div class="card">
+      <h3 style="margin-top:0">Implemented in JupiterConnect <span class="badge b-impl">Implemented</span></h3>
+      <div class="frame">issSeconds × 0.5/3600 × 2.31&nbsp; → preferred<br>
+        (km ÷ economy) × 0.10 × 2.31&nbsp; → fallback<br>
+        (km ÷ 3) × 25 × 0.5/3600 × 2.31 → distance-only</div>
+      <p style="color:var(--muted);font-size:13.5px;margin:0">
+      <code>RideStore.kt:210-251</code>. The lifetime ISS counter from inbound <code>0x19</code>
+      is adopted as a non-decreasing floor by <code>foldIssDuration()</code>. The result is shown
+      in the app only and synced to Supabase as <code>carbon_seconds</code>.</p>
+    </div>
+  </div>
+  <h3>Side-by-side</h3>
+  <div class="tw"><table>
+    <thead><tr><th>Aspect</th><th>TVS Connect 8.14.3</th><th>JupiterConnect</th><th>Verdict</th></tr></thead>
+    <tbody>
+      <tr><td>Wire frame to write carbon</td><td>None exists</td><td>None used</td><td class="yes">aligned</td></tr>
+      <tr><td>Value source</td><td>ISS data + stored ride/cumulative models</td><td>Lifetime ISS duration from 0x19, with fallbacks</td><td class="yes">aligned in spirit</td></tr>
+      <tr><td>Numeric formula</td><td>×0.8 display scaling; icon bands 25 / 50</td><td>0.5 L/h idle burn, 2.31 kg/L CO₂, 10% idle share</td><td class="warn">independent estimate — label it</td></tr>
+      <tr><td>Where it appears</td><td>App Carbon-Saved UI + dash's own figure</td><td>App More screen only</td><td class="yes">correct by design</td></tr>
+      <tr><td>Documentation</td><td>—</td><td><code>PLAN.md:18-20</code> still says "shown on the cluster"</td><td class="no">fix wording (C1)</td></tr>
+    </tbody>
+  </table></div>
+</section>
+
+<!-- ============ CALLER ============ -->
+<section id="caller">
+  <h2><span class="num">05</span>Caller ID &amp; message formats</h2>
+  <p class="sub">The conflict between "one frame" and "three packets" is resolved by model: the
+  Jupiter branch in this APK uses a single frame.</p>
+
+  <h3>Jupiter caller frame — 20 bytes <span class="badge b-res">Resolved</span></h3>
+  <div class="bytes" id="callerBytes"></div>
+  <div class="legend">0x5B · 0x43 · UTF-8 name (or number, +91 stripped) · 0x00 pad · 0xFF</div>
+  <p style="color:var(--muted);font-size:13.5px">
+  Built by <code>TelephonyUtils.writeJupiterCallerInformationToCluster()</code> (lines 315-326)
+  using <code>createMobileToClusterArray(name, (byte)67)</code>. The legacy
+  <code>createCallerNameArray()</code> produces the same 20-byte shape.</p>
+
+  <h3>Generic 3-packet sequence — 21 bytes <span class="badge b-cap">Other models</span></h3>
+  <div class="bytes" id="subBytes"></div>
+  <div class="legend">0x5B · 0x43 · subId (1 = number, 3 = country code, 2 = name) · text · 0xFF</div>
+  <p style="color:var(--muted);font-size:13.5px">
+  <code>TelephonyUtils.writeCallerInformationToCluster()</code> (lines 269-283) →
+  <code>BlePacketsProvider.returnContactInfoPacket()</code> (lines 437-455). Present in the APK,
+  but <b>not</b> on the Jupiter path.</p>
+
+  <h3>Text rows, SMS and sanitising</h3>
+  <div class="tw"><table>
+    <thead><tr><th>Frame</th><th>Genuine APK builder</th><th>JupiterConnect</th><th>Verdict</th></tr></thead>
+    <tbody>
+      <tr><td class="mono">5B 4C</td><td><code>sendMobileData5B4C()</code> — 20 B, 00-pad, FF</td><td><code>buildMessageRow()</code> — identical</td><td class="yes">aligned</td></tr>
+      <tr><td class="mono">5B 63</td><td><code>sendMobileData5B63()</code> — truncates to 16 chars</td><td>row 2 via same builder</td><td class="yes">aligned</td></tr>
+      <tr><td class="mono">5B 53</td><td><code>createSendSMSNameArray()</code> — genuine TVS ID</td><td>sent alongside 0x4C</td><td class="warn">keep; dash effect unverified (C5)</td></tr>
+      <tr><td>Sanitiser</td><td>emoji→<code>@</code>, non-alphanumeric→<code>X</code>, trim, 17 chars/bytes</td><td>punctuation → space</td><td class="dev">keep as readable deviation (C7)</td></tr>
+      <tr><td>Caller framing</td><td>Jupiter: single 20-byte frame</td><td>three 21-byte sub-ID packets</td><td class="no">switch to single frame (C4)</td></tr>
+    </tbody>
+  </table></div>
+</section>
+
+<!-- ============ SOCIAL ============ -->
+<section id="social">
+  <h2><span class="num">06</span>Social counters</h2>
+  <p class="sub">Both counter channels are confirmed in the APK. JupiterConnect has the right frame IDs
+  but needs corrections to the counter semantics.</p>
+
+  <h3>Keepalive <code>5B 4A</code> — missed calls at byte 10 <span class="badge b-ok">Confirmed</span></h3>
+  <div class="bytes" id="kaBytes"></div>
+  <div class="legend">2 = signal/battery · 4 = ambient+40 · 6-9 = 12-hour clock (AP = AM/PM) · <b style="color:var(--cyan)">10 = missed calls (MC)</b> · 11 = network type · 12-14 = date · 19 = FF</div>
+  <p style="color:var(--muted);font-size:13.5px">
+  <code>BluetoothUtil.getMissedCalls()</code> (698-731) reads the Android call log with
+  <code>type=3 AND is_read=0</code>, requires <code>READ_CALL_LOG</code>, and caps at <b>99</b>.
+  The Jupiter stack stores that value in the <code>TVSM / MISSED_CALL</code> preference and sends it
+  in byte 10 on every keepalive.</p>
+
+  <h3>Social frame <code>5B 9C</code> — three unread counters <span class="badge b-ok">Confirmed</span></h3>
+  <div class="bytes" id="socBytes"></div>
+  <div class="legend"><b style="color:var(--cyan)">2 = WhatsApp (low 5 bits, ≤31)</b> ·
+    <b style="color:var(--amber)">3 = Facebook (low 4 bits, ≤15)</b> ·
+    <b style="color:var(--purple)">4 = Instagram (raw byte)</b> · 5 = delivery alert · 10 = alert/carbon param · 19 = FF</div>
+  <p style="color:var(--muted);font-size:13.5px">
+  Built by <code>sendMobileDataNotificationAndAlert()</code> (1542-1568). Counts come from
+  <code>SocialMediaCountHelper</code>, which increments per notification, stores a JSON blob under
+  <code>SocialMediaCount</code>, and exposes <code>clearRecords()</code>.</p>
+
+  <h3>Side-by-side</h3>
+  <div class="tw"><table>
+    <thead><tr><th>Aspect</th><th>TVS Connect 8.14.3</th><th>JupiterConnect today</th><th>Action</th></tr></thead>
+    <tbody>
+      <tr><td>Missed-call channel</td><td>0x4A byte 10</td><td>0x4A byte 10</td><td class="yes">aligned</td></tr>
+      <tr><td>Missed-call source</td><td>Call log, unread missed, cap 99</td><td>Increments per call, never resets, cap 255</td><td class="no">C3 — read call log, cap 99</td></tr>
+      <tr><td>Social frame ID</td><td>0x9C (DATA_ID_MESSAGE5)</td><td>0x9C</td><td class="yes">aligned</td></tr>
+      <tr><td>Counter encoding</td><td>WA ≤31 (5 bits), FB ≤15 (4 bits), IG raw</td><td>all 0-255, no bit masking</td><td class="warn">C2 — clamp</td></tr>
+      <tr><td>Triggers</td><td>WhatsApp + Facebook + Instagram notifications</td><td>WhatsApp only</td><td class="warn">C2 — wire FB / IG</td></tr>
+      <tr><td>Reset</td><td><code>clearRecords()</code> → zero counts</td><td>none</td><td class="warn">C2 — add clear</td></tr>
+      <tr><td>Bytes 5 / 10</td><td>delivery alert / alert parameter</td><td>always zero</td><td class="warn">document or wire</td></tr>
+    </tbody>
+  </table></div>
+  <div class="note"><b>Correction to the earlier draft:</b> the previous version of this dossier called
+  <code>0x9C</code> "unverified / probably invented". Direct decompilation proved that wrong. The frame is
+  genuine and is now a keep-and-fix item, not a remove item.</div>
+</section>
+
+<!-- ============ CONFLICTS ============ -->
+<section id="conflicts">
+  <h2><span class="num">07</span>Cross-version conflicts — resolved vs open</h2>
+  <div class="tw"><table>
+    <thead><tr><th>Topic</th><th>8.14.3 APK (this artifact)</th><th>Older notes</th><th>Status</th></tr></thead>
+    <tbody>
+      <tr><td>Caller format</td><td>Jupiter = one 20-byte frame; 3-packet builder exists for other models</td><td>3-packet sequence presented as universal</td><td class="yes">resolved for Jupiter</td></tr>
+      <tr><td>Social <code>0x9C</code></td><td>fully implemented with WA/FB/IG encoding</td><td>not documented</td><td class="yes">resolved — trust APK</td></tr>
+      <tr><td>Sanitiser</td><td>emoji→@, other→X, 17-char/byte truncate</td><td>same rule reported</td><td class="yes">confirmed</td></tr>
+      <tr><td>Mobile-data checksum</td><td>byte 18 = 0; no checksum on 0x4A</td><td>Scoot spec says checksum at byte 18</td><td class="warn">keep zero until a frame is rejected</td></tr>
+      <tr><td><code>0x53</code> SMS on Jupiter</td><td>genuine builder present</td><td>model-gated to U388/iQube</td><td class="cap">needs dash capture (C5)</td></tr>
+      <tr><td>Text row width</td><td>17-byte wire payload</td><td>simulator models 10/12-char visual rows</td><td class="cap">needs dash capture</td></tr>
+    </tbody>
+  </table></div>
+</section>
+
+<!-- ============ CHANGES ============ -->
+<section id="changes">
+  <h2><span class="num">08</span>Change list <span class="badge b-ok" style="vertical-align:middle">Implemented</span></h2>
+  <p class="sub">Applied and verified with <code>:app:testDebugUnitTest</code> and <code>:app:assembleDebug</code>
+  (35 tests, 0 failures). C6 was deliberately skipped: Bluetooth connection behaviour is untouched.</p>
+  <div class="note ok-note"><b>C6 — intentionally not applied.</b> Keepalive bytes 3 (overspeed) and 11
+  (network type) remain at zero. Writing byte 3 previously correlated with link drops on this rider's
+  cluster, and you asked that connection-related behaviour not be changed.</div>
+  <div class="grid g2">
+
+    <div class="card chg"><div class="id">C1</div><div>
+      <h4>Fix the carbon documentation <span class="badge b-hi">High</span></h4>
+      <div class="meta">PLAN.md:18-20</div>
+      <p>Say the estimate is app-only; remove the claim that a value is sent to the dash.</p></div></div>
+
+    <div class="card chg"><div class="id">C2</div><div>
+      <h4>Keep <code>0x9C</code>, correct the counters <span class="badge b-hi">High</span></h4>
+      <div class="meta">JupiterProtocol.kt:204-214 · ClusterService.kt:156-161,880-883</div>
+      <p>Clamp WhatsApp to 31 in 5 bits, Facebook to 15 in 4 bits, Instagram to a byte; wire FB/IG triggers; add a zero-count reset.</p></div></div>
+
+    <div class="card chg"><div class="id">C3</div><div>
+      <h4>Missed calls from the call log <span class="badge b-hi">High</span></h4>
+      <div class="meta">ClusterService.kt:225-226,823 · JupiterProtocol.kt:147</div>
+      <p>Read <code>type=3 AND is_read=0</code>, cap 99, refresh each keepalive. Remove the unbounded in-memory increment.</p></div></div>
+
+    <div class="card chg"><div class="id">C4</div><div>
+      <h4>Jupiter caller = single frame <span class="badge b-hi">High</span></h4>
+      <div class="meta">JupiterProtocol.kt:241-262 · ClusterService.kt:834</div>
+      <p>Send one 20-byte <code>5B 43</code> frame. Keep the 3-packet builder only as a legacy/other-model fallback.</p></div></div>
+
+    <div class="card chg"><div class="id">C5</div><div>
+      <h4>Keep the <code>0x53</code> SMS frame <span class="badge b-impl">Medium</span></h4>
+      <div class="meta">JupiterProtocol.kt:264-276 · ClusterService.kt:845-846</div>
+      <p>It is a genuine TVS ID. Add a comment that the Jupiter card is unverified; do not remove it.</p></div></div>
+
+    <div class="card chg"><div class="id">C6</div><div>
+      <h4>Align keepalive bytes 3 and 11 <span class="badge b-impl">Medium</span></h4>
+      <div class="meta">ClusterService.kt:1148-1163</div>
+      <p>Use overspeed 120 and network type 4 (e.g. LTE) instead of 0; keep byte 18 at zero.</p></div></div>
+
+    <div class="card chg"><div class="id">C7</div><div>
+      <h4>Label local deviations honestly <span class="badge b-impl">Medium</span></h4>
+      <div class="meta">PhoneEventFormat.kt · RedesignScreens.kt:1577-1584</div>
+      <p>Document space-folding and the carbon formula as local choices, not stock behaviour.</p></div></div>
+
+    <div class="card chg"><div class="id">C8</div><div>
+      <h4>Catalogue <code>0x9C</code> <span class="badge b-cap">Low</span></h4>
+      <div class="meta">debug/FrameCatalog.kt:33-74</div>
+      <p>Add the label "social counts (out)" now that the ID is confirmed.</p></div></div>
+
+    <div class="card chg"><div class="id">C9</div><div>
+      <h4>Record provenance in-repo <span class="badge b-cap">Low</span></h4>
+      <div class="meta">docs/</div>
+      <p>Keep the APK version, hash and the caller cross-version conflict in the protocol notes.</p></div></div>
+
+  </div>
+
+  <h3>Decisions — resolved</h3>
+  <div class="card">
+    <ul class="clean">
+      <li><b>C3:</b> approved — <code>READ_CALL_LOG</code> added; missed calls read from the call log,
+          capped at 99.</li>
+      <li><b>C2:</b> approved — Facebook / Instagram triggers wired, counters clamped to 31 / 15, and a
+          "Clear social counters" control added.</li>
+      <li><b>C5:</b> keep sending <code>0x53</code> until a dash capture settles whether the card renders.</li>
+      <li><b>C6:</b> skipped — connection-related behaviour untouched.</li>
+    </ul>
+  </div>
+
+  <h3>Deferred — traffic screens</h3>
+  <div class="card">
+    <p style="color:var(--muted);font-size:13.5px;margin:0">
+    The APK contains the traffic-screen builders (weather <code>0x5D</code>, cricket <code>0x81</code>,
+    football <code>0x91</code>, news <code>0x96</code>), but their content is fetched from TVS cloud
+    APIs. Free-API replacement is feasible: a Nifty/Sensex screen should use the generic 17-byte text
+    rows (<code>0x4C</code>/<code>0x63</code>) rather than the football frame, which the cluster renders
+    as a sports scoreboard. Separate feature, pending a plan.</p>
+  </div>
+</section>
+
+<!-- ============ VERIFY ============ -->
+<section id="verify">
+  <h2><span class="num">09</span>Verification checklist — needs the scooter</h2>
+  <p class="sub">Static analysis can settle frame layout. Only bytes off the wire or a photograph of the
+  dash can settle rendering.</p>
+  <ul class="check">
+    <li>Capture an incoming call; confirm the Jupiter cluster renders the single <code>5B 43</code> frame
+        (keep the 3-packet sequence as A/B fallback).</li>
+    <li>Confirm keepalive byte 10 against a known number of unread missed calls (cap 99).</li>
+    <li>Send a <code>5B 9C</code> frame with known WhatsApp / Facebook / Instagram values and photograph
+        the Social screen; verify the 31 / 15 caps.</li>
+    <li>Check whether <code>0x53</code> produces any card on the Jupiter 125.</li>
+    <li>Verify that no outbound frame requires a checksum at byte 18.</li>
+    <li>Confirm how many of the 17 payload characters are actually visible on each text row.</li>
+  </ul>
+</section>
+
+<footer>
+  <b>Provenance.</b> Findings marked confirmed are quoted from the static decompilation of
+  <code>com.tvsm.connect</code> 8.14.3, SHA-256 <code>9F4367…D8E88</code>, using jadx 1.5.7.
+  Companion details are from <code>D:\JupiterConnect</code> source and JVM tests. This is an
+  independent, non-commercial interoperability report; TVS, Jupiter and SmartXonnect are trademarks
+  of their respective owners. Companion Markdown source: <code>docs/RE_TVS_CONNECT.md</code>.
+</footer>
+
+</div>
+
+<script>
+  // Byte-strip renderer: keeps the HTML readable while giving a precise visual byte map.
+  function strip(el, values, marks){
+    if(!el) return;
+    el.innerHTML = values.map((v,i)=>{
+      const cls = marks && marks[i] ? ' '+marks[i] : '';
+      return '<div class="byte'+cls+'"><span class="i">'+i+'</span><span class="v">'+v+'</span></div>';
+    }).join('');
+  }
+  // Jupiter caller: 5B 43 + 17-char text field + FF (20 bytes)
+  strip(document.getElementById('callerBytes'),
+    ['5B','43','M','o','m','','','','','','','','','','','','','','','FF'],
+    {0:'hl',1:'hl',19:'hl'});
+  // Legacy 3-packet sub-ID header example
+  strip(document.getElementById('subBytes'),
+    ['5B','43','01','9','8','7','6','5','4','3','2','1','0','','','','','','','FF'],
+    {0:'hl',1:'hl',2:'a',19:'hl'});
+  // Keepalive 0x4A (Jupiter layout)
+  strip(document.getElementById('kaBytes'),
+    ['5B','4A','SIG','120','AMB','00','hh','mm','ss','AP','MC','NET','day','mon','yr','0','0','0','0','FF'],
+    {0:'hl',1:'hl',10:'hl',19:'hl'});
+  // Social 0x9C
+  strip(document.getElementById('socBytes'),
+    ['5B','9C','WA','FB','IG','alert','00','00','00','00','param','00','00','00','00','00','00','00','00','FF'],
+    {0:'hl',1:'hl',2:'hl',3:'a',4:'p',19:'hl'});
+</script>
+</body>
+</html>

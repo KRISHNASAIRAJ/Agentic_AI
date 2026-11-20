@@ -8,12 +8,14 @@ import com.jupiterconnect.session.RideAnalytics
 import com.jupiterconnect.session.SpeedFusion
 import com.jupiterconnect.session.Ride
 import com.jupiterconnect.session.WarmupPhase
+import com.jupiterconnect.protocol.buildCallerFrame
 import com.jupiterconnect.protocol.buildCallerPackets
 import com.jupiterconnect.protocol.buildMessageFrame
 import com.jupiterconnect.protocol.buildMessageRow
 import com.jupiterconnect.protocol.buildKeepalive
 import com.jupiterconnect.protocol.buildNavControl
 import com.jupiterconnect.protocol.buildNavText
+import com.jupiterconnect.protocol.buildSocialCounts
 import com.jupiterconnect.protocol.decodeFrame
 import com.jupiterconnect.protocol.sanitize
 import com.jupiterconnect.protocol.Telemetry
@@ -62,6 +64,34 @@ class ProtocolTest {
         val b = buildKeepalive(missedCalls = 7)
         assertEquals(7, b[10].toInt() and 0xFF)
         assertEquals(0, buildKeepalive()[10].toInt() and 0xFF)
+        // TVS Connect caps the call-log-derived value at 99.
+        assertEquals(99, buildKeepalive(missedCalls = 200)[10].toInt() and 0xFF)
+    }
+
+    @Test
+    fun jupiter_caller_uses_single_20_byte_frame() {
+        // TVS Connect 8.14.3 writeJupiterCallerInformationToCluster: one 20-byte
+        // 5B 43 frame, text at byte 2, no sub-id. The 1/3/2 sequence is legacy.
+        val f = buildCallerFrame("Mom")
+        assertEquals(20, f.size)
+        assertEquals(0x5B, f[0].toInt() and 0xFF)
+        assertEquals(0x43, f[1].toInt() and 0xFF)
+        assertEquals("Mom", String(f, 2, 3, Charsets.US_ASCII))
+        assertEquals(0xFF, f[19].toInt() and 0xFF)
+    }
+
+    @Test
+    fun social_counts_use_apk_bit_widths() {
+        // 0x5B 0x9C: WhatsApp low 5 bits (<=31), Facebook low 4 bits (<=15),
+        // Instagram raw. Confirmed from the decompiled Play Store APK.
+        val b = buildSocialCounts(200, 200, 200)
+        assertEquals(20, b.size)
+        assertEquals(0x5B, b[0].toInt() and 0xFF)
+        assertEquals(0x9C, b[1].toInt() and 0xFF)
+        assertEquals(31, b[2].toInt() and 0xFF)
+        assertEquals(15, b[3].toInt() and 0xFF)
+        assertEquals(200, b[4].toInt() and 0xFF)
+        assertEquals(0xFF, b[19].toInt() and 0xFF)
     }
 
     @Test

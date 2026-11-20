@@ -15,9 +15,11 @@ what is deferred.
 - Ride recording with checkpoints; a brief link drop resumes the same ride
   instead of splitting it into several.
 - Fuel logs, cumulative stats, parked location, call/message cards.
-- Carbon saving shown on the cluster comes from an **estimate**, with no manual
-  entry: the cluster's lifetime ISS idle-seconds counter first, then distance +
-  fuel economy. A bare zero is never sent, so the dash no longer shows "0 g saved".
+- Carbon saving is an **app-only estimate** with no manual entry: the cluster's
+  lifetime ISS idle-seconds counter first, then distance + fuel economy. The dash
+  computes its own figure from ISS data; no BLE frame can write it. TVS Connect
+  8.14.3 formats its figure with a x0.8 factor — ours is an independent estimate
+  and is labelled as such in the UI.
 - Protocol discovery card and per-connection raw frame logs for passive decoding.
   The card is observation-only: test/probe buttons were removed because they
   produced no useful cluster response. Only real cluster frames are counted.
@@ -37,9 +39,12 @@ Known problems to solve before reintroducing:
   same bit is set by a deliberate voice/start button press. It is **not** a
   reliable intelliGO-armed signal, so fuel-saver state must not be inferred
   from it. Do not tie it to ISS either.
-- Weather, news, cricket, football and social counts need TVS cloud endpoints
-  (`iceApiService`); them not being available locally is expected and needs a
-  different data source if they are ever brought back.
+- Weather, news, cricket and football need TVS cloud endpoints (`iceApiService`);
+  their absence locally is expected and needs a different data source if they are
+  ever brought back. Social **unread counters** are different: reverse engineering
+  of TVS Connect 8.14.3 confirmed they are sent locally on `0x9C` and are mirrored
+  by Jupiter Connect; only the old Social *tab* was removed because its rendering
+  on this cluster was never verified.
 - Overview and Carbon tabs duplicate cards that already exist on Home/Rides.
 
 ### Other backlog

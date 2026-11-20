@@ -68,6 +68,7 @@ object FrameCatalog {
         Candidate(0x79, "screen cricket (out)"),
         Candidate(0x7D, "unknown 7D"),
         Candidate(0x80, "screen football (out)"),
+        Candidate(0x9C, "social counts (out)"),
         Candidate(0x9D, "unknown 9D"),
         Candidate(0xF1, "handshake / brightness"),
         Candidate(0xF2, "handshake challenge"),

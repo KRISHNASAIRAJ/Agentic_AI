@@ -11,6 +11,8 @@
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <!-- Saved contact names for callers/message senders shown on the cluster. -->
     <uses-permission android:name="android.permission.READ_CONTACTS" />
+    <!-- Unread missed calls are mirrored into 0x4A byte 10, as TVS Connect does. -->
+    <uses-permission android:name="android.permission.READ_CALL_LOG" />
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />

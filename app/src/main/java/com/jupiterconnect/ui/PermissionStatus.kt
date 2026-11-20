@@ -6,6 +6,7 @@ data class PermissionStatus(
     val location: Boolean = false,
     val notifications: Boolean = false,
     val contacts: Boolean = false,
+    val callLog: Boolean = false,
 ) {
     val bleReady: Boolean get() = bluetooth && location
     val allGranted: Boolean get() = bluetooth && location && notifications
