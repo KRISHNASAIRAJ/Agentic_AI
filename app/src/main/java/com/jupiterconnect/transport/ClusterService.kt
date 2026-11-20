@@ -63,6 +63,12 @@ import com.jupiterconnect.protocol.buildMessageFrame
 import com.jupiterconnect.protocol.buildMessageRow
 import com.jupiterconnect.protocol.decodeFrame
 import com.jupiterconnect.session.RideStore
+import com.jupiterconnect.traffic.TrafficClient
+import com.jupiterconnect.traffic.TrafficScreen
+import com.jupiterconnect.traffic.buildCricketFrame
+import com.jupiterconnect.traffic.buildMarketFrame
+import com.jupiterconnect.traffic.buildNewsFrame
+import com.jupiterconnect.traffic.buildWeatherFrameWithCode
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -150,6 +156,11 @@ object ClusterRepository {
      * what the cluster draws in the small symbol area above the arrow.
      */
     val debugRemainingMeters = MutableStateFlow(-1)
+
+    /** Traffic screens (weather / cricket / market / news) with free APIs. */
+    val trafficEnabled = MutableStateFlow(false)
+    val trafficStatus = MutableStateFlow("Off")
+    val trafficScreen = MutableStateFlow(-1)
 
     /** Show a short reply on the cluster, overriding the nav text briefly. */
     fun showText(text: String, holdMs: Long = 10_000L) {
@@ -244,6 +255,7 @@ class ClusterService : Service() {
     @Volatile private var lastAddress: String? = null
     private var keepaliveJob: Job? = null
     private var navJob: Job? = null
+    private var trafficJob: Job? = null
     private var phoneEventJob: Job? = null
     private var syncJob: Job? = null
     private var reconnectJob: Job? = null
@@ -541,6 +553,8 @@ class ClusterService : Service() {
         keepaliveJob = null
         navJob?.cancel()
         navJob = null
+        trafficJob?.cancel()
+        trafficJob = null
         ClusterRepository.telemetry.value = ClusterRepository.telemetry.value.copy(
             connected = false, error = "Link stalled - reconnecting")
         updateNotification()
@@ -988,6 +1002,8 @@ class ClusterService : Service() {
         keepaliveJob = null
         navJob?.cancel()
         navJob = null
+        trafficJob?.cancel()
+        trafficJob = null
         val g = gatt
         if (g != null) {
             writeChar = null
@@ -1091,6 +1107,8 @@ class ClusterService : Service() {
                     keepaliveJob = null
                     navJob?.cancel()
                     navJob = null
+                    trafficJob?.cancel()
+                    trafficJob = null
                     phoneEventJob?.cancel()
                     phoneEventJob = null
                     if (g === gatt) gatt = null
@@ -1141,6 +1159,7 @@ class ClusterService : Service() {
             }
             startKeepalive()
             startNavigationBridge()
+            startTrafficBridge()
         }
 
         override fun onCharacteristicChanged(
@@ -1327,6 +1346,89 @@ class ClusterService : Service() {
                     }
                 }
                 delay(1500)
+            }
+        }
+    }
+
+    /**
+     * Traffic screens need BOTH a screen-select frame (5B 4C 00 <id> ...) and the
+     * matching data frame. The previous build only sent the select on a manual
+     * button, which is why nothing ever appeared. Runs only while connected,
+     * enabled, and no navigation is being mirrored.
+     */
+    private fun startTrafficBridge() {
+        if (trafficJob?.isActive == true) return
+        trafficJob = scope.launch {
+            var weather: TrafficClient.Weather? = null
+            var cricket: TrafficClient.Cricket? = null
+            var market: TrafficClient.Market? = null
+            var news: TrafficClient.News? = null
+            var lastFetch = 0L
+            var index = 0
+            val screens = intArrayOf(
+                TrafficScreen.WEATHER, TrafficScreen.CRICKET,
+                TrafficScreen.MARKET, TrafficScreen.DEFAULT,
+            )
+            while (isActive) {
+                if (!ClusterRepository.trafficEnabled.value) {
+                    ClusterRepository.trafficStatus.value = "Off"
+                    delay(1000L)
+                    continue
+                }
+                // Navigation owns the cluster while a route is active.
+                if (ClusterRepository.mirroring.value &&
+                    ClusterRepository.navInstruction.value != null
+                ) {
+                    delay(2000L)
+                    continue
+                }
+                val now = System.currentTimeMillis()
+                if (now - lastFetch > 600_000L) {
+                    ClusterRepository.trafficStatus.value = "Fetching free data"
+                    val parked = RideStore.parkedLocation.value
+                    val lat = parked?.lat ?: 12.97
+                    val lon = parked?.lng ?: 77.59
+                    kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                        weather = runCatching { TrafficClient.weather(lat, lon) }.getOrNull()
+                        cricket = runCatching { TrafficClient.cricket() }.getOrNull()
+                        market = runCatching { TrafficClient.market() }.getOrNull()
+                        news = runCatching { TrafficClient.news() }.getOrNull()
+                    }
+                    lastFetch = now
+                    ClusterRepository.trafficStatus.value = when {
+                        weather != null || market != null || news != null -> "Live"
+                        else -> "No data - check connection"
+                    }
+                }
+                val id = screens[index % screens.size]
+                ClusterRepository.trafficScreen.value = id
+                // Select the screen first, then write its data frame.
+                write(buildScreenSwitch(id))
+                delay(300L)
+                when (id) {
+                    TrafficScreen.WEATHER -> weather?.let {
+                        write(buildWeatherFrameWithCode(it.code, it.tempC, it.desc, it.aqi, it.rainPct))
+                    }
+                    TrafficScreen.CRICKET -> cricket?.let {
+                        write(buildCricketFrame(
+                            it.team1, it.team2,
+                            it.runs1, it.wickets1, it.overs1,
+                            it.runs2, it.wickets2, it.overs2, it.state,
+                        ))
+                    }
+                    TrafficScreen.MARKET -> market?.let {
+                        write(buildMarketFrame(it.niftyPct, it.sensexPct))
+                        // Full values on text row 2 so the numbers are readable.
+                        write(buildNavText(
+                            "N %d %+.1f".format(it.nifty.toInt(), it.niftyPct), 0x63))
+                        delay(250L)
+                        write(buildNavText(
+                            "S %d %+.1f".format(it.sensex.toInt(), it.sensexPct), 0x63))
+                    }
+                    TrafficScreen.DEFAULT -> news?.let { write(buildNewsFrame(it.headline)) }
+                }
+                index++
+                delay(8000L)
             }
         }
     }

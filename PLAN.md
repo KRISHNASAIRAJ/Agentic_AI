@@ -26,26 +26,36 @@ what is deferred.
 
 ## Future development (deferred)
 
-### Cluster info / "traffic screens" — REMOVED from the shipped UI
+### Cluster info / "traffic screens" — IMPLEMENTED with free APIs
 
-The Ride screen previously had an eight-tab panel (ISS / Fuel Saver, Overview,
-Carbon, Weather, News, Cricket, Football, Social). **None of these produced
-working data on this cluster**, so the whole panel was removed rather than
-left showing dead controls. It is tracked here for a future release.
+The old eight-tab panel was removed because it only sent the screen-select
+frame (`5B 4C 00 <id> ...`) on a manual button and never the required data
+frame. Reverse engineering TVS Connect 8.14.3 recovered both halves:
 
-Known problems to solve before reintroducing:
+- screen select — `TrafficSequence`: Weather `0x78`, Cricket `0x79`,
+  Football `0x80`, verified in `com.tvs.ble.feature.utils.TrafficSequence`;
+- data frames — weather `0x5D` (`createClimateData`), cricket `0x81`
+  (`getCricketData`), football `0x91` (`getFootballData`), news `0x96`
+  (`sendNewsHeadline`).
 
-- The "Fuel Saver / intelliGO" tab was driven by bit 7 of `0x11` byte 6, but the
-  same bit is set by a deliberate voice/start button press. It is **not** a
-  reliable intelliGO-armed signal, so fuel-saver state must not be inferred
-  from it. Do not tie it to ISS either.
-- Weather, news, cricket and football need TVS cloud endpoints (`iceApiService`);
-  their absence locally is expected and needs a different data source if they are
-  ever brought back. Social **unread counters** are different: reverse engineering
-  of TVS Connect 8.14.3 confirmed they are sent locally on `0x9C` and are mirrored
-  by Jupiter Connect; only the old Social *tab* was removed because its rendering
-  on this cluster was never verified.
+The **TRAFFIC SCREENS** toggle in More → Settings now runs a bridge that cycles
+Weather → Cricket → Market → News while connected and no route is active,
+sending the select frame followed by the data frame. Data comes from keyless
+free APIs (Open-Meteo + US AQI, ESPN cricket, Yahoo Finance for Nifty/Sensex,
+Google News RSS) — no TVS cloud and no account.
+
+The Football screen is repurposed for **Nifty 50 vs BSE Sensex**, as requested:
+team names become `NIFTY` / `SENSE`, and the score bytes carry the signed
+change-percent ×10; the full values are also written on text row `0x63`.
+
+Still deliberately excluded:
+
+- **Fuel Saver / intelliGO** — no confirmed BLE toggle exists. The old tab
+  inferred state from bit 7 of `0x11` byte 6, but the same bit is set by a voice
+  button press, so it is unreliable. We do not drive it.
 - Overview and Carbon tabs duplicate cards that already exist on Home/Rides.
+- Social **unread counters** are mirrored on `0x9C` (confirmed by RE), but the
+  old Social tab is not restored until its rendering is verified on hardware.
 
 ### Other backlog
 

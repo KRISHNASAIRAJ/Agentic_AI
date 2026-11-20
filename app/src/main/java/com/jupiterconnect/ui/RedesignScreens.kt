@@ -1529,6 +1529,33 @@ private fun SettingsContent(
         }
     }
     Spacer(Modifier.height(10.dp))
+    RedCard(bar = true) {
+        Label("TRAFFIC SCREENS")
+        Spacer(Modifier.height(8.dp))
+        val enabled by ClusterRepository.trafficEnabled.collectAsState()
+        val status by ClusterRepository.trafficStatus.collectAsState()
+        val screen by ClusterRepository.trafficScreen.collectAsState()
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Column(Modifier.weight(1f)) {
+                Text("Weather / cricket / market / news", fontSize = 14.sp,
+                    color = JupiterColors.OnSurface)
+                Text("$status · screen 0x${"%02X".format(screen)}",
+                    fontSize = 11.sp, color = JupiterColors.OnSurfaceVariant)
+                Text("Free APIs only - no TVS cloud or account",
+                    fontSize = 10.sp, color = JupiterColors.OnSurfaceVariant)
+            }
+            Switch(
+                checked = enabled,
+                onCheckedChange = { ClusterRepository.trafficEnabled.value = it },
+                colors = SwitchDefaults.colors(
+                    checkedThumbColor = Color.White,
+                    checkedTrackColor = JupiterColors.Red,
+                    uncheckedTrackColor = JupiterColors.High,
+                ),
+            )
+        }
+    }
+    Spacer(Modifier.height(10.dp))
     RedCard {
         Label("NAV DIAGNOSTICS")
         Spacer(Modifier.height(8.dp))
