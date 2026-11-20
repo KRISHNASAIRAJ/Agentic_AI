@@ -85,6 +85,7 @@ private data class Tab(val label: String, val icon: androidx.compose.ui.graphics
 @Composable
 fun JupiterApp() {
     val context = LocalContext.current
+    ClusterRepository.initPrefs(context)
     val lifecycleOwner = LocalLifecycleOwner.current
     val telemetry by ClusterRepository.telemetry.collectAsState()
     val devices by ClusterRepository.devices.collectAsState()

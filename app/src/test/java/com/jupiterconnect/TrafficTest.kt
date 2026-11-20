@@ -1,6 +1,7 @@
 package com.jupiterconnect
 
 import com.jupiterconnect.protocol.buildScreenSwitch
+import com.jupiterconnect.traffic.Cities
 import com.jupiterconnect.traffic.TrafficScreen
 import com.jupiterconnect.traffic.buildCricketFrame
 import com.jupiterconnect.traffic.buildMarketFrame
@@ -61,6 +62,15 @@ class TrafficTest {
         assertEquals("NIFTY", String(f, 8, 5, Charsets.US_ASCII))
         assertEquals("SENSE", String(f, 13, 5, Charsets.US_ASCII))
         assertEquals(0xFF, u(f, 19))
+    }
+
+    @Test
+    fun city_lookup_defaults_to_auto() {
+        val bengaluru = Cities.byName("Bengaluru")
+        assertEquals("Bengaluru", bengaluru.name)
+        assertEquals(12.9716, bengaluru.lat, 0.0001)
+        assertEquals(Cities.AUTO, Cities.byName("Nowhere"))
+        assertEquals(Cities.AUTO, Cities.byName(null))
     }
 
     @Test

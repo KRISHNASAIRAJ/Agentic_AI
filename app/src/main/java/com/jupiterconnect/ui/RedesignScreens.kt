@@ -102,6 +102,7 @@ import com.jupiterconnect.session.Ride
 import com.jupiterconnect.session.RideAnalytics
 import com.jupiterconnect.session.RideStore
 import com.jupiterconnect.session.WarmupPhase
+import com.jupiterconnect.traffic.Cities
 import com.jupiterconnect.transport.ClusterRepository
 import com.jupiterconnect.ui.theme.JupiterColors
 import kotlinx.coroutines.launch
@@ -1535,6 +1536,7 @@ private fun SettingsContent(
         val enabled by ClusterRepository.trafficEnabled.collectAsState()
         val status by ClusterRepository.trafficStatus.collectAsState()
         val screen by ClusterRepository.trafficScreen.collectAsState()
+        val city by ClusterRepository.weatherCity.collectAsState()
         Row(verticalAlignment = Alignment.CenterVertically) {
             Column(Modifier.weight(1f)) {
                 Text("Weather / cricket / market / news", fontSize = 14.sp,
@@ -1547,6 +1549,47 @@ private fun SettingsContent(
             Switch(
                 checked = enabled,
                 onCheckedChange = { ClusterRepository.trafficEnabled.value = it },
+                colors = SwitchDefaults.colors(
+                    checkedThumbColor = Color.White,
+                    checkedTrackColor = JupiterColors.Red,
+                    uncheckedTrackColor = JupiterColors.High,
+                ),
+            )
+        }
+        Spacer(Modifier.height(12.dp))
+        Text("WEATHER LOCATION: $city", fontSize = 12.sp, color = JupiterColors.Accent)
+        Spacer(Modifier.height(6.dp))
+        Row(Modifier.horizontalScroll(rememberScrollState())) {
+            Cities.list.forEach { c ->
+                OutlinedButton(
+                    onClick = { ClusterRepository.setWeatherCity(c.name) },
+                    modifier = Modifier.padding(end = 6.dp),
+                ) { Text(if (c === Cities.AUTO) "AUTO" else c.name, fontSize = 11.sp) }
+            }
+        }
+        Text("AUTO uses device location, then last parked spot.",
+            fontSize = 10.sp, color = JupiterColors.OnSurfaceVariant)
+    }
+    Spacer(Modifier.height(10.dp))
+    RedCard(bar = true) {
+        Label("RIDER GREETING")
+        Spacer(Modifier.height(8.dp))
+        val name by ClusterRepository.riderName.collectAsState()
+        val showName by ClusterRepository.riderNameEnabled.collectAsState()
+        OutlinedTextField(
+            value = name,
+            onValueChange = { ClusterRepository.setRiderName(it) },
+            label = { Text("Name shown on the dash") },
+            singleLine = true,
+            modifier = Modifier.fillMaxWidth(),
+        )
+        Spacer(Modifier.height(8.dp))
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text("Send greeting on connect", Modifier.weight(1f), fontSize = 13.sp,
+                color = JupiterColors.OnSurface)
+            Switch(
+                checked = showName,
+                onCheckedChange = { ClusterRepository.setRiderNameEnabled(it) },
                 colors = SwitchDefaults.colors(
                     checkedThumbColor = Color.White,
                     checkedTrackColor = JupiterColors.Red,

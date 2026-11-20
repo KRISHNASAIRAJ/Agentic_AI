@@ -18,6 +18,7 @@ import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
+import android.content.SharedPreferences
 import android.annotation.SuppressLint
 import android.os.BatteryManager
 import android.telephony.TelephonyManager
@@ -26,13 +27,16 @@ import android.content.pm.ServiceInfo
 import android.location.Location
 import android.location.LocationListener
 import android.location.LocationManager
+import android.media.AudioManager
 import android.os.Build
 import android.provider.CallLog
 import android.os.Handler
 import android.os.HandlerThread
 import android.os.IBinder
 import android.os.Looper
+import android.os.PowerManager
 import android.util.Log
+import android.view.KeyEvent
 import androidx.core.app.NotificationCompat
 import androidx.core.app.ServiceCompat
 import androidx.core.content.ContextCompat
@@ -63,6 +67,7 @@ import com.jupiterconnect.protocol.buildMessageFrame
 import com.jupiterconnect.protocol.buildMessageRow
 import com.jupiterconnect.protocol.decodeFrame
 import com.jupiterconnect.session.RideStore
+import com.jupiterconnect.traffic.Cities
 import com.jupiterconnect.traffic.TrafficClient
 import com.jupiterconnect.traffic.TrafficScreen
 import com.jupiterconnect.traffic.buildCricketFrame
@@ -76,6 +81,7 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.collect
 import org.json.JSONObject
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.isActive
@@ -86,6 +92,40 @@ import java.util.UUID
 
 /** Shared state between the foreground service and Compose UI. */
 object ClusterRepository {
+    private const val PREFS = "jupiter_prefs"
+    private const val KEY_RIDER_NAME = "rider_name"
+    private const val KEY_RIDER_NAME_ON = "rider_name_on"
+    private const val KEY_WEATHER_CITY = "weather_city"
+    private var prefs: SharedPreferences? = null
+
+    /** One-time init from the app or the service; reads persisted settings. */
+    fun initPrefs(context: Context) {
+        if (prefs != null) return
+        prefs = context.applicationContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+        riderName.value = prefs?.getString(KEY_RIDER_NAME, "Rider") ?: "Rider"
+        riderNameEnabled.value = prefs?.getBoolean(KEY_RIDER_NAME_ON, true) ?: true
+        weatherCity.value = prefs?.getString(KEY_WEATHER_CITY, Cities.AUTO.name) ?: Cities.AUTO.name
+    }
+
+    val riderName = MutableStateFlow("Rider")
+    val riderNameEnabled = MutableStateFlow(true)
+    val weatherCity = MutableStateFlow(Cities.AUTO.name)
+
+    fun setRiderName(value: String) {
+        riderName.value = value.take(17)
+        prefs?.edit()?.putString(KEY_RIDER_NAME, riderName.value)?.apply()
+    }
+
+    fun setRiderNameEnabled(value: Boolean) {
+        riderNameEnabled.value = value
+        prefs?.edit()?.putBoolean(KEY_RIDER_NAME_ON, value)?.apply()
+    }
+
+    fun setWeatherCity(name: String) {
+        weatherCity.value = name
+        prefs?.edit()?.putString(KEY_WEATHER_CITY, name)?.apply()
+    }
+
     val telemetry = MutableStateFlow(Telemetry())
     val devices = MutableStateFlow<List<ScannedDevice>>(emptyList())
     val scanning = MutableStateFlow(false)
@@ -256,6 +296,7 @@ class ClusterService : Service() {
     private var keepaliveJob: Job? = null
     private var navJob: Job? = null
     private var trafficJob: Job? = null
+    private var mediaKeyJob: Job? = null
     private var phoneEventJob: Job? = null
     private var syncJob: Job? = null
     private var reconnectJob: Job? = null
@@ -318,6 +359,7 @@ class ClusterService : Service() {
     override fun onCreate() {
         super.onCreate()
         voiceBridge = VoiceAssistantBridge(this)
+        ClusterRepository.initPrefs(applicationContext)
         FrameLog.init(applicationContext)
         RideStore.init(applicationContext)
         SupabaseClient.init(applicationContext)
@@ -341,12 +383,49 @@ class ClusterService : Service() {
     /** Promote to foreground only with Bluetooth on; otherwise hide the row. */
     private fun updateForegroundForBluetooth() {
         if (adapter?.isEnabled == true) {
-            ServiceCompat.startForeground(
-                this, 1, buildNotification(), ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE)
+            startForegroundSafe(ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE)
         } else {
             ServiceCompat.stopForeground(this, ServiceCompat.STOP_FOREGROUND_REMOVE)
         }
         updateNotification()
+    }
+
+    /**
+     * TVS Connect falls back from a typed foreground service to connectedDevice
+     * only when an OEM rejects the requested type. We do the same so the link
+     * survives devices that enforce foreground-service types strictly.
+     */
+    private fun startForegroundSafe(types: Int) {
+        try {
+            ServiceCompat.startForeground(this, 1, buildNotification(), types)
+        } catch (e: SecurityException) {
+            FrameLog.note("FOREGROUND typed start denied - retrying connectedDevice")
+            runCatching {
+                ServiceCompat.startForeground(
+                    this, 1, buildNotification(),
+                    ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE)
+            }.onFailure { FrameLog.note("FOREGROUND fallback failed: ${it.message}") }
+        } catch (e: Exception) {
+            FrameLog.note("FOREGROUND start failed: ${e.message}")
+        }
+    }
+
+    /** Partial wake lock while linked, matching TVS Connect's BleClusterSync. */
+    private var wakeLock: PowerManager.WakeLock? = null
+
+    private fun acquireWakeLock() {
+        if (wakeLock == null) {
+            wakeLock = (getSystemService(Context.POWER_SERVICE) as? PowerManager)
+                ?.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "JupiterConnect::BleClusterSync")
+                ?.apply { setReferenceCounted(false) }
+        }
+        // Renewing the timeout each keepalive makes the lock self-healing.
+        runCatching { wakeLock?.acquire(300_000L) }
+    }
+
+    private fun releaseWakeLock() {
+        runCatching { if (wakeLock?.isHeld == true) wakeLock?.release() }
+        wakeLock = null
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -555,6 +634,9 @@ class ClusterService : Service() {
         navJob = null
         trafficJob?.cancel()
         trafficJob = null
+        mediaKeyJob?.cancel()
+        mediaKeyJob = null
+        releaseWakeLock()
         ClusterRepository.telemetry.value = ClusterRepository.telemetry.value.copy(
             connected = false, error = "Link stalled - reconnecting")
         updateNotification()
@@ -974,7 +1056,10 @@ class ClusterService : Service() {
             PackageManager.PERMISSION_GRANTED) return
         runCatching {
             ServiceCompat.startForeground(this, 1, buildNotification(), types)
-        }.onFailure { FrameLog.note("VOICE foreground type update failed: ${it.message}") }
+        }.onFailure {
+            FrameLog.note("VOICE foreground type update failed: ${it.message}")
+            startForegroundSafe(ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE)
+        }
     }
 
     fun disconnectNow(fromDestroy: Boolean = false) {
@@ -1004,6 +1089,9 @@ class ClusterService : Service() {
         navJob = null
         trafficJob?.cancel()
         trafficJob = null
+        mediaKeyJob?.cancel()
+        mediaKeyJob = null
+        releaseWakeLock()
         val g = gatt
         if (g != null) {
             writeChar = null
@@ -1109,6 +1197,9 @@ class ClusterService : Service() {
                     navJob = null
                     trafficJob?.cancel()
                     trafficJob = null
+                    mediaKeyJob?.cancel()
+                    mediaKeyJob = null
+                    releaseWakeLock()
                     phoneEventJob?.cancel()
                     phoneEventJob = null
                     if (g === gatt) gatt = null
@@ -1160,6 +1251,8 @@ class ClusterService : Service() {
             startKeepalive()
             startNavigationBridge()
             startTrafficBridge()
+            startMediaKeyBridge()
+            sendInitialClusterData()
         }
 
         override fun onCharacteristicChanged(
@@ -1227,6 +1320,7 @@ class ClusterService : Service() {
         if (keepaliveJob?.isActive == true) return
         keepaliveJob = scope.launch {
             while (isActive) {
+                acquireWakeLock()
                 // Real phone values stop the cluster flipping between
                 // "full signal / full battery" and "no signal / low battery"
                 // every time our keepalive arrived with zeros.
@@ -1350,6 +1444,72 @@ class ClusterService : Service() {
         }
     }
 
+    /** Cluster media buttons (0x6B byte 2) drive Android's media session. */
+    private fun startMediaKeyBridge() {
+        if (mediaKeyJob?.isActive == true) return
+        mediaKeyJob = scope.launch {
+            var last = 0
+            ClusterRepository.telemetry.collect { t ->
+                val key = t.mediaKey
+                if (key == 0) {
+                    last = 0
+                } else if (key != last) {
+                    last = key
+                    dispatchMediaKey(key)
+                }
+            }
+        }
+    }
+
+    private fun dispatchMediaKey(key: Int) {
+        val code = when (key) {
+            0 -> KeyEvent.KEYCODE_MEDIA_PLAY
+            1 -> KeyEvent.KEYCODE_MEDIA_PAUSE
+            2 -> KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE
+            3 -> KeyEvent.KEYCODE_MEDIA_NEXT
+            4 -> KeyEvent.KEYCODE_MEDIA_PREVIOUS
+            5 -> KeyEvent.KEYCODE_VOLUME_UP
+            6 -> KeyEvent.KEYCODE_VOLUME_DOWN
+            else -> return
+        }
+        val am = getSystemService(Context.AUDIO_SERVICE) as? AudioManager ?: return
+        am.dispatchMediaKeyEvent(KeyEvent(KeyEvent.ACTION_DOWN, code))
+        am.dispatchMediaKeyEvent(KeyEvent(KeyEvent.ACTION_UP, code))
+    }
+
+    /**
+     * City setting > last-known device location > parked spot > Bengaluru.
+     * No active GPS scan, so this costs no extra battery.
+     */
+    private fun resolveWeatherLocation(): Pair<Double, Double> {
+        val city = Cities.byName(ClusterRepository.weatherCity.value)
+        if (city !== Cities.AUTO) return city.lat to city.lon
+        if (ContextCompat.checkSelfPermission(
+                this, android.Manifest.permission.ACCESS_FINE_LOCATION
+            ) == PackageManager.PERMISSION_GRANTED
+        ) {
+            val lm = getSystemService(Context.LOCATION_SERVICE) as? LocationManager
+            val loc = lm?.getLastKnownLocation(LocationManager.GPS_PROVIDER)
+                ?: lm?.getLastKnownLocation(LocationManager.NETWORK_PROVIDER)
+            if (loc != null) return loc.latitude to loc.longitude
+        }
+        RideStore.parkedLocation.value?.let { return it.lat to it.lng }
+        return 12.97 to 77.59
+    }
+
+    /** Rider greeting and last-known place, sent once when the link comes up. */
+    private fun sendInitialClusterData() {
+        scope.launch {
+            val name = ClusterRepository.riderName.value.trim()
+            if (ClusterRepository.riderNameEnabled.value && name.isNotEmpty()) {
+                write(buildNavText(name, 0x52))
+            }
+            RideStore.parkedLocation.value?.let { p ->
+                write(buildLocationFrame("Near ${p.coordinates}"))
+            }
+        }
+    }
+
     /**
      * Traffic screens need BOTH a screen-select frame (5B 4C 00 <id> ...) and the
      * matching data frame. The previous build only sent the select on a manual
@@ -1385,9 +1545,7 @@ class ClusterService : Service() {
                 val now = System.currentTimeMillis()
                 if (now - lastFetch > 600_000L) {
                     ClusterRepository.trafficStatus.value = "Fetching free data"
-                    val parked = RideStore.parkedLocation.value
-                    val lat = parked?.lat ?: 12.97
-                    val lon = parked?.lng ?: 77.59
+                    val (lat, lon) = resolveWeatherLocation()
                     kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
                         weather = runCatching { TrafficClient.weather(lat, lon) }.getOrNull()
                         cricket = runCatching { TrafficClient.cricket() }.getOrNull()
@@ -1520,6 +1678,7 @@ class ClusterService : Service() {
         }
         phoneEventJob?.cancel()
         phoneEventJob = null
+        releaseWakeLock()
         disconnectNow(fromDestroy = true)
         voiceBridge.destroy()
         ClusterRepository.service = null
