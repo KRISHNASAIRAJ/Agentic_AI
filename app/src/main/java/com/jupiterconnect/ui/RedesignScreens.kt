@@ -1530,6 +1530,31 @@ private fun SettingsContent(
     }
     Spacer(Modifier.height(10.dp))
     RedCard {
+        Label("NAV DIAGNOSTICS")
+        Spacer(Modifier.height(8.dp))
+        val probe by ClusterRepository.debugRemainingMeters.collectAsState()
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Column(Modifier.weight(1f)) {
+                Text("Remaining-distance probe", fontSize = 14.sp,
+                    color = JupiterColors.OnSurface)
+                Text("Sends 1500 m in 0x4E bytes 6-8 to identify the arrow symbol",
+                    fontSize = 11.sp, color = JupiterColors.OnSurfaceVariant)
+            }
+            Switch(
+                checked = probe >= 0,
+                onCheckedChange = {
+                    ClusterRepository.debugRemainingMeters.value = if (it) 1500 else -1
+                },
+                colors = SwitchDefaults.colors(
+                    checkedThumbColor = Color.White,
+                    checkedTrackColor = JupiterColors.Red,
+                    uncheckedTrackColor = JupiterColors.High,
+                ),
+            )
+        }
+    }
+    Spacer(Modifier.height(10.dp))
+    RedCard {
         Label("VOICE")
         Spacer(Modifier.height(8.dp))
         Spacer(Modifier.height(10.dp))

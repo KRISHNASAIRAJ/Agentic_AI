@@ -144,6 +144,13 @@ object ClusterRepository {
      */
     val legacyCallerPackets = MutableStateFlow(false)
 
+    /**
+     * Diagnostic only: override the remaining-trip-distance field (0x4E bytes
+     * 6-8) with a known value. -1 = use the parsed Maps value. Used to find out
+     * what the cluster draws in the small symbol area above the arrow.
+     */
+    val debugRemainingMeters = MutableStateFlow(-1)
+
     /** Show a short reply on the cluster, overriding the nav text briefly. */
     fun showText(text: String, holdMs: Long = 10_000L) {
         replyText = text
@@ -1286,7 +1293,9 @@ class ClusterService : Service() {
                 if (ClusterRepository.mirroring.value) {
                     ClusterRepository.navInstruction.value?.let { step ->
                         val distance = step.distanceMeters.coerceAtLeast(0)
-                        val remaining = step.remainingMeters.coerceAtLeast(0)
+                        val probe = ClusterRepository.debugRemainingMeters.value
+                        val remaining = if (probe >= 0) probe
+                            else step.remainingMeters.coerceAtLeast(0)
                         val eta = if (step.etaMinutes > 0)
                             RideAnalytics.adjustedEta(step.etaMinutes, etaFactor)
                         else step.etaMinutes
