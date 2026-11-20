@@ -746,9 +746,6 @@ private fun RideHistoryChart(rides: List<Ride>) {
     val totalKm = buckets.sumOf { it.km }
     val avgSpeed = if (totalKm > 0)
         buckets.sumOf { it.speedWeighted } / totalKm else 0.0
-    val econSum = buckets.sumOf { it.econWeighted }
-    val econKm = buckets.filter { it.econKm > 0 }.sumOf { it.econKm }
-    val economy = if (econKm > 0) econSum / econKm else 0.0
 
     SectionHeading(
         "History",
@@ -800,10 +797,6 @@ private fun RideHistoryChart(rides: List<Ride>) {
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 RideMetric(Modifier.weight(1f), "KM", "%.1f".format(totalKm), "total")
                 RideMetric(Modifier.weight(1f), "AVG", "%.0f".format(avgSpeed), "km/h")
-                RideMetric(
-                    Modifier.weight(1f), "ECON",
-                    if (economy > 0) "%.1f".format(economy) else "—", "km/L",
-                )
             }
         }
     }
@@ -813,8 +806,6 @@ private data class HistoryBucket(
     val label: String,
     val km: Double,
     val speedWeighted: Double,
-    val econWeighted: Double,
-    val econKm: Double,
 )
 
 private fun buildHistoryBuckets(rides: List<Ride>, weekly: Boolean): List<HistoryBucket> {
@@ -845,7 +836,7 @@ private fun buildHistoryBuckets(rides: List<Ride>, weekly: Boolean): List<Histor
             keys += c.get(java.util.Calendar.YEAR) * 100 + c.get(java.util.Calendar.MONTH)
         }
     }
-    val buckets = labels.map { HistoryBucket(it, 0.0, 0.0, 0.0, 0.0) }.toMutableList()
+    val buckets = labels.map { HistoryBucket(it, 0.0, 0.0) }.toMutableList()
     rides.forEach { r ->
         val c = java.util.Calendar.getInstance().apply { timeInMillis = r.startedAt }
         val key = if (weekly)
@@ -855,29 +846,20 @@ private fun buildHistoryBuckets(rides: List<Ride>, weekly: Boolean): List<Histor
         val idx = keys.indexOf(key)
         if (idx < 0) return@forEach
         val b = buckets[idx]
-        val econ = r.economyKmPerL
         buckets[idx] = b.copy(
             km = b.km + r.distanceKm,
             speedWeighted = b.speedWeighted + r.avgSpeedKmh * r.distanceKm,
-            econWeighted = b.econWeighted + econ * r.distanceKm,
-            econKm = b.econKm + if (econ > 0) r.distanceKm else 0.0,
         )
     }
     return buckets
 }
 
-/** Expandable per-ride breakdown: idle, ISS, fuel and time in each speed band. */
+/** Expandable per-ride breakdown: idle time and time in each speed band. */
 @Composable
 private fun RideReportDetail(ride: Ride) {
     Column {
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             RideMetric(Modifier.weight(1f), "IDLE", "${ride.idleMin}", "min")
-            RideMetric(Modifier.weight(1f), "ISS", "${ride.issStops}", "stops")
-            val econ = ride.economyKmPerL
-            RideMetric(
-                Modifier.weight(1f), "ECON",
-                if (econ > 0) "%.1f".format(econ) else "—", "km/L",
-            )
         }
         Spacer(Modifier.height(12.dp))
         Caption("TIME IN SPEED BANDS")
@@ -910,15 +892,6 @@ private fun RideReportDetail(ride: Ride) {
                     modifier = Modifier.width(34.dp))
             }
         }
-        Spacer(Modifier.height(10.dp))
-        Text(
-            if (ride.fuelBarsUsed > 0)
-                "Fuel ${ride.fuelBarsStart} → ${ride.fuelBarsEnd} bars (%.1f L)".format(
-                    ride.fuelBarsUsed * (5.1 / 6.0))
-            else "Fuel: no net change recorded",
-            style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-        )
     }
 }
 

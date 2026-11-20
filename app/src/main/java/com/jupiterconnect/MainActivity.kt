@@ -67,6 +67,7 @@ import com.jupiterconnect.ui.PremiumDevicesScreen
 import com.jupiterconnect.ui.PremiumFindScreen
 import com.jupiterconnect.ui.PremiumHomeScreen
 import com.jupiterconnect.ui.PremiumNavigateScreen
+import com.jupiterconnect.profile.ClusterImageTransfer
 import com.jupiterconnect.ui.PremiumRidesScreen
 import com.jupiterconnect.ui.PremiumSettingsScreen
 import com.jupiterconnect.ui.theme.JupiterColors
@@ -86,6 +87,11 @@ private data class Tab(val label: String, val icon: androidx.compose.ui.graphics
 fun JupiterApp() {
     val context = LocalContext.current
     ClusterRepository.initPrefs(context)
+    val pickPhoto = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri ->
+        if (uri != null && ClusterImageTransfer.prepare(context, uri)) {
+            ClusterRepository.setRiderPhotoReady(true)
+        }
+    }
     val lifecycleOwner = LocalLifecycleOwner.current
     val telemetry by ClusterRepository.telemetry.collectAsState()
     val devices by ClusterRepository.devices.collectAsState()
@@ -357,6 +363,7 @@ fun JupiterApp() {
                     context.startActivity(Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS))
                 },
                 onSignOut = { com.jupiterconnect.sync.SupabaseClient.signOut() },
+                onPickPhoto = { pickPhoto.launch("image/*") },
                 onTab = selectTab,
             )
         }

@@ -30,6 +30,28 @@ them, because you asked that Bluetooth connection behaviour not be changed.
 | F5 | **Play/pause state** `0x60`. | `BlePacketsProvider.returnPlayPauseState` | Optional; needs state source. |
 | F6 | **Social unread counters** `0x9C`. | confirmed in 8.14.3 | **Already implemented** (WA/FB/IG clamped, triggers wired). |
 
+## 2b. Rider/caller photo on the dash
+
+TVS Connect does not "draw" the photo inside the name text frame — it runs a
+separate document-transfer handshake (`com.tvs.ble.feature.utils.BLEImageTransferUtils`):
+
+| Step | Frame | Detail |
+|---|---|---|
+| Phone announces image | `5A 53` | `picNo` (4 = rider profile, 5 = caller), total frames (u16 BE), frame No (u16 BE), state (1 transferring / 3 complete / 16 delete), picType (5 for profile), picName "Test", pad, `FF` — 20 bytes |
+| Cluster requests a chunk | `5A 54` | `picNo` at byte 2, frame No at bytes 5–6 (BE) |
+| Phone sends a chunk | `5A 55` | frame No (u16 BE) + **173 bytes** (JUPITER_U566) + `00 FF` — 179 bytes |
+| Phone marks complete | `5A 53` | state = 3, frame No = total |
+
+The APK resizes profile images to 80×80, JPEG quality 50, and splits into
+173-byte chunks (74 frames for their fixed image). Evidence:
+`BLEImageTransferUtils.java:208-222` (chunk), `:245-247` (173 for JUPITER_U566),
+`:320-366` (init), `:465-468` (picNo parse), `:508-574` (profile init).
+
+**Implemented** in `profile/ClusterImageTransfer.kt`: pick a photo in
+More → Rider greeting, it is resized/compressed, announced with `0x5A 53` on
+ignition, and chunks are served on `0x54` requests. `0x5A 54` is now handled in
+both `onCharacteristicChanged` overloads.
+
 ## 3. Discrepancies that need a hardware capture
 
 - **Call-switch byte:** legacy/local decode reads `0x10` byte **12** low 6 bits; the newer APK stack reads `receivedBytes[13]` (`TelephonyUtils.java:176`). Different stacks, different offsets — only a capture while pressing the dash call button settles it.

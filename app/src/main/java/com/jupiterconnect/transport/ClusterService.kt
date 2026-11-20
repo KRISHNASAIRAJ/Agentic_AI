@@ -54,6 +54,7 @@ import com.jupiterconnect.session.WarmupPhase
 import com.jupiterconnect.session.WarmupState
 import com.jupiterconnect.sync.SupabaseClient
 import com.jupiterconnect.nav.NavInstruction
+import com.jupiterconnect.profile.ClusterImageTransfer
 import com.jupiterconnect.protocol.buildKeepalive
 import com.jupiterconnect.protocol.buildBrightnessFrame
 import com.jupiterconnect.protocol.buildLocationFrame
@@ -106,11 +107,16 @@ object ClusterRepository {
         riderNameEnabled.value = prefs?.getBoolean(KEY_RIDER_NAME_ON, true) ?: true
         weatherCity.value = prefs?.getString(KEY_WEATHER_CITY, Cities.HYDERABAD.name)
             ?: Cities.HYDERABAD.name
+        ClusterImageTransfer.restore(context)
+        riderPhotoReady.value = ClusterImageTransfer.hasImage
     }
 
     val riderName = MutableStateFlow("Rider")
     val riderNameEnabled = MutableStateFlow(true)
     val weatherCity = MutableStateFlow(Cities.HYDERABAD.name)
+    val riderPhotoReady = MutableStateFlow(false)
+
+    fun setRiderPhotoReady(ready: Boolean) { riderPhotoReady.value = ready }
 
     fun setRiderName(value: String) {
         riderName.value = value.take(17)
@@ -1264,6 +1270,11 @@ class ClusterService : Service() {
             FrameLog.record("RX", value)
             FrameCatalog.observe(value, rx = true)
             lastFrameAtMs = System.currentTimeMillis()
+            if (value.size > 6 && (value[1].toInt() and 0xFF) == 0x54) {
+                ClusterImageTransfer.onRequest(value)?.let { chunk ->
+                    scope.launch { write(chunk) }
+                }
+            }
             decodeFrame(value, ClusterRepository.telemetry.value)?.let {
                 ClusterRepository.telemetry.value = it
                 onTelemetryFrame(it, primary = (value[1].toInt() and 0xFF) == 0x10, raw = value)
@@ -1277,6 +1288,11 @@ class ClusterService : Service() {
             FrameLog.record("RX", v)
             FrameCatalog.observe(v, rx = true)
             lastFrameAtMs = System.currentTimeMillis()
+            if (v.size > 6 && (v[1].toInt() and 0xFF) == 0x54) {
+                ClusterImageTransfer.onRequest(v)?.let { chunk ->
+                    scope.launch { write(chunk) }
+                }
+            }
             decodeFrame(v, ClusterRepository.telemetry.value)?.let {
                 ClusterRepository.telemetry.value = it
                 onTelemetryFrame(it, primary = (v[1].toInt() and 0xFF) == 0x10, raw = v)
@@ -1498,6 +1514,10 @@ class ClusterService : Service() {
             }
             RideStore.parkedLocation.value?.let { p ->
                 write(buildLocationFrame("Near ${p.coordinates}"))
+            }
+            // Announce the rider photo; chunks are sent when the cluster asks (0x54).
+            if (ClusterImageTransfer.hasImage) {
+                write(ClusterImageTransfer.initFrame())
             }
         }
     }

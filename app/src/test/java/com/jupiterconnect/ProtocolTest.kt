@@ -253,15 +253,13 @@ class ProtocolTest {
     }
 
     @Test
-    fun ride_report_math_uses_5_1_litre_tank() {
+    fun ride_report_band_math() {
         val ride = Ride(
             startedAt = 0L, endedAt = 600_000L, distanceKm = 5.1,
             avgSpeedKmh = 30.0, topSpeedKmh = 50, durationMin = 10L,
             bandMs = longArrayOf(1_000L, 2_000L, 3_000L, 4_000L),
-            idleMs = 500L, fuelBarsStart = 6, fuelBarsEnd = 5,
+            idleMs = 500L,
         )
-        assertEquals(1, ride.fuelBarsUsed)
-        assertEquals(6.0, ride.economyKmPerL, 0.01)
         assertEquals(10, ride.bandPct(0))
         assertEquals(40, ride.bandPct(3))
     }

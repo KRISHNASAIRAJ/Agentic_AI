@@ -22,10 +22,6 @@ data class Ride(
     val bandMs: LongArray = LongArray(4),
     /** Milliseconds at (near) zero speed. */
     val idleMs: Long = 0L,
-    /** ISS stop events reported by the cluster during this ride. */
-    val issStops: Int = 0,
-    val fuelBarsStart: Int = 0,
-    val fuelBarsEnd: Int = 0,
     val maxRpm: Int = 0,
     /** Speed (km/h) and throttle (%) sampled every 2 s during this ride. */
     val speedSamples: List<Int> = emptyList(),
@@ -42,18 +38,6 @@ data class Ride(
                 c.get(java.util.Calendar.HOUR_OF_DAY),
                 c.get(java.util.Calendar.MINUTE),
             )
-        }
-
-    /** Fuel bars used, clamped to zero so a refuel mid-ride cannot go negative. */
-    val fuelBarsUsed: Int get() = (fuelBarsStart - fuelBarsEnd).coerceAtLeast(0)
-
-    /** Rough economy from the 5.1 L tank across six bars. Only meaningful on long rides. */
-    val economyKmPerL: Double
-        get() {
-            val usedBars = fuelBarsUsed
-            return if (usedBars > 0 && distanceKm > 0.5)
-                distanceKm / (usedBars * (5.1 / 6.0))
-            else 0.0
         }
 
     val idleMin: Long get() = idleMs / 60_000L
@@ -309,10 +293,6 @@ object RideStore {
     private val bandMs = LongArray(4)
     private var idleMs = 0L
     private var lastPrimaryAtMs = 0L
-    private var startIssCount = -1
-    private var lastIssCount = 0
-    private var fuelStart = -1
-    private var fuelEnd = -1
     private var maxRpm = 0
     private val rideSpeeds = mutableListOf<Int>()
     private val rideThrottles = mutableListOf<Int>()
@@ -417,10 +397,6 @@ object RideStore {
         bandMs.fill(0)
         idleMs = 0L
         lastPrimaryAtMs = 0L
-        startIssCount = -1
-        lastIssCount = 0
-        fuelStart = -1
-        fuelEnd = -1
         maxRpm = 0
         active = true
     }
@@ -464,10 +440,6 @@ object RideStore {
             p.edit().putInt(KEY_ALL_TIME_TOP, t.speedKmh).apply()
         }
         if (t.rpm > maxRpm) maxRpm = t.rpm
-        if (t.issCount > 0) {
-            if (startIssCount < 0) startIssCount = t.issCount
-            lastIssCount = t.issCount
-        }
         // ISS duration is a lifetime cumulative counter on the cluster. Adopt
         // it as a floor (true "from day one" carbon) while keeping app-tracked
         // deltas as a fallback for clusters that reset it per ride.
@@ -479,10 +451,6 @@ object RideStore {
                 prefs?.edit()?.putLong(KEY_CARBON_SECONDS, totals.seconds)?.apply()
             }
             lastIssDuration = totals.lastObserved
-        }
-        if (t.fuelBars in 1..6) {
-            if (fuelStart < 0) fuelStart = t.fuelBars
-            fuelEnd = t.fuelBars
         }
         // Owner's manual: 6 bars above ~5 L, 3 bars at ~3.2 L, and the last
         // bar blinks at ~1.2 L with a "Low fuel" message and Trip F counting.
@@ -598,7 +566,6 @@ object RideStore {
         val durationMs = (System.currentTimeMillis() - rideStartMs).coerceAtLeast(1000)
         val durationMin = durationMs / 60_000L
         val avg = distance / (durationMs / 3_600_000.0)
-        val issStops = if (startIssCount >= 0) (lastIssCount - startIssCount).coerceAtLeast(0) else 0
         val ride = Ride(
             startedAt = rideStartMs,
             endedAt = System.currentTimeMillis(),
@@ -608,9 +575,6 @@ object RideStore {
             durationMin = durationMin,
             bandMs = bandMs.copyOf(),
             idleMs = idleMs,
-            issStops = issStops,
-            fuelBarsStart = fuelStart.coerceAtLeast(0),
-            fuelBarsEnd = fuelEnd.coerceAtLeast(0),
             maxRpm = maxRpm,
             speedSamples = rideSpeeds.toList(),
             throttleSamples = rideThrottles.toList(),
@@ -673,9 +637,7 @@ object RideStore {
             (r.distanceKm * 100).toLong(), (r.avgSpeedKmh * 10).toLong(),
             r.topSpeedKmh.toLong(), r.durationMin,
             r.bandMs[0], r.bandMs[1], r.bandMs[2], r.bandMs[3],
-            r.idleMs, r.issStops.toLong(),
-            r.fuelBarsStart.toLong(), r.fuelBarsEnd.toLong(), r.maxRpm.toLong(),
-            r.mapsEtaMinutes.toLong(),
+            r.idleMs, r.maxRpm.toLong(), r.mapsEtaMinutes.toLong(),
         ).joinToString(",")
     }
 
@@ -685,6 +647,7 @@ object RideStore {
             val f = part.split(",")
             runCatching {
                 when {
+                    // Legacy 16-field format: 11=ISS, 12/13=fuel bars, 14=maxRpm, 15=ETA.
                     f.size >= 16 -> Ride(
                         startedAt = f[0].toLong(),
                         endedAt = f[1].toLong(),
@@ -696,9 +659,6 @@ object RideStore {
                             f[6].toLong(), f[7].toLong(), f[8].toLong(), f[9].toLong(),
                         ),
                         idleMs = f[10].toLong(),
-                        issStops = f[11].toInt(),
-                        fuelBarsStart = f[12].toInt(),
-                        fuelBarsEnd = f[13].toInt(),
                         maxRpm = f[14].toInt(),
                         mapsEtaMinutes = f[15].toInt(),
                     )
@@ -712,10 +672,21 @@ object RideStore {
                         bandMs = longArrayOf(
                             f[6].toLong(), f[7].toLong(), f[8].toLong(), f[9].toLong()),
                         idleMs = f[10].toLong(),
-                        issStops = f[11].toInt(),
-                        fuelBarsStart = f[12].toInt(),
-                        fuelBarsEnd = f[13].toInt(),
                         maxRpm = f[14].toInt(),
+                    )
+                    // Current 13-field format: 11=maxRpm, 12=mapsEtaMinutes.
+                    f.size >= 13 -> Ride(
+                        startedAt = f[0].toLong(),
+                        endedAt = f[1].toLong(),
+                        distanceKm = f[2].toLong() / 100.0,
+                        avgSpeedKmh = f[3].toLong() / 10.0,
+                        topSpeedKmh = f[4].toInt(),
+                        durationMin = f[5].toLong(),
+                        bandMs = longArrayOf(
+                            f[6].toLong(), f[7].toLong(), f[8].toLong(), f[9].toLong()),
+                        idleMs = f[10].toLong(),
+                        maxRpm = f[11].toInt(),
+                        mapsEtaMinutes = f[12].toInt(),
                     )
                     f.size == 6 -> Ride(
                         startedAt = f[0].toLong(),

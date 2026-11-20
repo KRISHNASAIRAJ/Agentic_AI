@@ -823,8 +823,6 @@ fun RideScreenV2(
         Spacer(Modifier.height(10.dp))
         RedCard { VehicleDetailsRows(telemetry, lastReading) }
         Spacer(Modifier.height(10.dp))
-        RedCard { ProtocolDiscoveryCard() }
-        Spacer(Modifier.height(10.dp))
         RedCard {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 IconCircle(Icons.Rounded.Navigation, "Navigation mirroring")
@@ -978,9 +976,8 @@ fun RidesScreenV2(
                 }
                 if (expanded) {
                     Spacer(Modifier.height(12.dp))
-                    Text("Idle ${r.idleMin} min · ISS ${r.issStops} stops · " +
-                        "Fuel ${r.fuelBarsUsed} bars · Max ${r.topSpeedKmh} km/h", fontSize = 12.sp,
-                        color = JupiterColors.OnSurfaceVariant)
+                    Text("Idle ${r.idleMin} min · Max ${r.topSpeedKmh} km/h",
+                        fontSize = 12.sp, color = JupiterColors.OnSurfaceVariant)
                     Spacer(Modifier.height(12.dp))
                     val samples = r.speedSamples
                     val thr = r.throttleSamples
@@ -1051,9 +1048,8 @@ private fun RideCard(r: Ride, expanded: Boolean, onToggle: () -> Unit) {
         if (expanded) {
             Spacer(Modifier.height(12.dp))
             val eco = RideAnalytics.ecoScore(r)
-            Text("Idle ${r.idleMin} min · ISS ${r.issStops} stops · " +
-                "Fuel ${r.fuelBarsUsed} bars · Eco ${eco.score}/100", fontSize = 12.sp,
-                color = JupiterColors.OnSurfaceVariant)
+            Text("Idle ${r.idleMin} min · Eco ${eco.score}/100",
+                fontSize = 12.sp, color = JupiterColors.OnSurfaceVariant)
             Spacer(Modifier.height(12.dp))
             val samples = r.speedSamples
             val thr = r.throttleSamples
@@ -1416,6 +1412,7 @@ private fun SettingsContent(
     email: String?,
     onNotificationAccess: () -> Unit,
     onSignOut: () -> Unit,
+    onPickPhoto: () -> Unit,
 ) {
     RedCard {
         Label("PERMISSIONS")
@@ -1576,6 +1573,7 @@ private fun SettingsContent(
         Spacer(Modifier.height(8.dp))
         val name by ClusterRepository.riderName.collectAsState()
         val showName by ClusterRepository.riderNameEnabled.collectAsState()
+        val photoReady by ClusterRepository.riderPhotoReady.collectAsState()
         OutlinedTextField(
             value = name,
             onValueChange = { ClusterRepository.setRiderName(it) },
@@ -1583,6 +1581,12 @@ private fun SettingsContent(
             singleLine = true,
             modifier = Modifier.fillMaxWidth(),
         )
+        Spacer(Modifier.height(8.dp))
+        SecondaryButton(
+            if (photoReady) "Change rider photo" else "Add rider photo",
+            onPickPhoto, Modifier.fillMaxWidth())
+        Text("Photo is sent to the dash on ignition with your name.",
+            fontSize = 10.sp, color = JupiterColors.OnSurfaceVariant)
         Spacer(Modifier.height(8.dp))
         Row(verticalAlignment = Alignment.CenterVertically) {
             Text("Send greeting on connect", Modifier.weight(1f), fontSize = 13.sp,
@@ -1707,6 +1711,7 @@ fun MoreScreenV2(
     email: String?,
     onNotificationAccess: () -> Unit,
     onSignOut: () -> Unit,
+    onPickPhoto: () -> Unit,
     onTab: (Int) -> Unit,
 ) {
     JupiterShell("More", "DEVICES & SETTINGS", 4, onTab, {}) {
@@ -1717,8 +1722,10 @@ fun MoreScreenV2(
         Label("SETTINGS")
         Spacer(Modifier.height(10.dp))
         SettingsContent(notificationAccess, bleReady, contactsGranted, callLogGranted,
-            phoneMirroring, onPhoneMirroring, email, onNotificationAccess, onSignOut)
+            phoneMirroring, onPhoneMirroring, email, onNotificationAccess, onSignOut, onPickPhoto)
         Spacer(Modifier.height(18.dp))
+        RedCard { ProtocolDiscoveryCard() }
+        Spacer(Modifier.height(10.dp))
         PhoneFrameDebugCard()
     }
 }
