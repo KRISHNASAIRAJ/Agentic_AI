@@ -2,6 +2,7 @@ package com.jupiterconnect.ui
 
 import android.content.Intent
 import android.net.Uri
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.Image
 import androidx.compose.animation.core.RepeatMode
@@ -22,6 +23,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
@@ -1694,6 +1696,39 @@ private fun PhoneFrameDebugCard() {
 }
 
 /**
+ * Compact single-line option button. The previous bracket-in-label approach
+ * ("[2]") wrapped inside the narrow button and looked broken; selection is
+ * shown with border/background colour instead.
+ */
+@Composable
+private fun ChoiceChip(
+    label: String,
+    selected: Boolean,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    OutlinedButton(
+        onClick = onClick,
+        modifier = modifier.height(34.dp).background(
+            if (selected) JupiterColors.Accent.copy(alpha = 0.12f) else Color.Transparent,
+            RoundedCornerShape(8.dp),
+        ),
+        shape = RoundedCornerShape(8.dp),
+        contentPadding = PaddingValues(horizontal = 2.dp, vertical = 0.dp),
+        border = BorderStroke(
+            width = if (selected) 1.5.dp else 1.dp,
+            color = if (selected) JupiterColors.Accent
+                    else JupiterColors.OnSurfaceVariant.copy(alpha = 0.35f),
+        ),
+        colors = ButtonDefaults.outlinedButtonColors(
+            contentColor = if (selected) JupiterColors.Accent else JupiterColors.OnSurface,
+        ),
+    ) {
+        Text(label, fontSize = 10.sp, maxLines = 1, softWrap = false)
+    }
+}
+
+/**
  * Cluster-side controls recovered from TVS Connect 8.14.3. Everything here is
  * an explicit user action - nothing is sent automatically during connect, so
  * Bluetooth link behaviour is unchanged.
@@ -1718,40 +1753,32 @@ private fun ClusterControlsCard() {
         Text("Illumination / theme", fontSize = 12.sp, color = JupiterColors.OnSurfaceVariant)
         Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
             (1..5).forEach { level ->
-                OutlinedButton(
-                    onClick = { ClusterRepository.illumination.value = level },
-                    modifier = Modifier.weight(1f),
-                ) { Text(if (illumination == level) "[$level]" else "$level", fontSize = 11.sp) }
+                ChoiceChip("$level", illumination == level,
+                    { ClusterRepository.illumination.value = level }, Modifier.weight(1f))
             }
         }
         Spacer(Modifier.height(8.dp))
         Text("Turn signal lamp", fontSize = 12.sp, color = JupiterColors.OnSurfaceVariant)
         Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
             listOf("Off" to 0, "Left" to 26, "Right" to 27, "Hazard" to 0xAA).forEach { (name, code) ->
-                OutlinedButton(
-                    onClick = { ClusterRepository.tslSetting.value = code },
-                    modifier = Modifier.weight(1f),
-                ) { Text(if (tsl == code) "[$name]" else name, fontSize = 10.sp) }
+                ChoiceChip(name, tsl == code,
+                    { ClusterRepository.tslSetting.value = code }, Modifier.weight(1f))
             }
         }
         Spacer(Modifier.height(8.dp))
         Text("Regen level", fontSize = 12.sp, color = JupiterColors.OnSurfaceVariant)
         Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
             (0..3).forEach { level ->
-                OutlinedButton(
-                    onClick = { ClusterRepository.regenSetting.value = level },
-                    modifier = Modifier.weight(1f),
-                ) { Text(if (regen == level) "[$level]" else "$level", fontSize = 11.sp) }
+                ChoiceChip("$level", regen == level,
+                    { ClusterRepository.regenSetting.value = level }, Modifier.weight(1f))
             }
         }
         Spacer(Modifier.height(8.dp))
         Text("Ride mode", fontSize = 12.sp, color = JupiterColors.OnSurfaceVariant)
         Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-            listOf("Default" to 0, "Mode 6" to 6, "Mode 7" to 7, "Mode 10" to 10).forEach { (name, code) ->
-                OutlinedButton(
-                    onClick = { ClusterRepository.rideMode.value = code },
-                    modifier = Modifier.weight(1f),
-                ) { Text(if (mode == code) "[$name]" else name, fontSize = 10.sp) }
+            listOf("Auto" to 0, "M6" to 6, "M7" to 7, "M10" to 10).forEach { (name, code) ->
+                ChoiceChip(name, mode == code,
+                    { ClusterRepository.rideMode.value = code }, Modifier.weight(1f))
             }
         }
         Spacer(Modifier.height(10.dp))
@@ -1769,7 +1796,7 @@ private fun ClusterControlsCard() {
         }
         Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
             SecondaryButton("Calibrate", { ClusterRepository.sendCalibrationRequest() }, Modifier.weight(1f))
-            SecondaryButton("Follow-me 5m", { ClusterRepository.sendFollowMeTimer(5) }, Modifier.weight(1f))
+            SecondaryButton("Follow-me", { ClusterRepository.sendFollowMeTimer(5) }, Modifier.weight(1f))
         }
         InfoRow("Service reminder", if (reminder == 0) "none" else "code $reminder")
     }
