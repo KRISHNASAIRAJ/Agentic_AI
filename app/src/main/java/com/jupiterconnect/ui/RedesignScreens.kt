@@ -94,6 +94,8 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.jupiterconnect.R
+import com.jupiterconnect.debug.FeatureVerification
+import com.jupiterconnect.debug.FeatureVerification.Status
 import com.jupiterconnect.debug.FrameCatalog
 import com.jupiterconnect.debug.FrameLog
 import com.jupiterconnect.debug.PhoneFrameDebug
@@ -1695,6 +1697,48 @@ private fun PhoneFrameDebugCard() {
         fontSize = 10.sp, color = JupiterColors.OnSurfaceVariant)
 }
 
+/** Persisted record of which optional features produced a visible dash change. */
+@Composable
+private fun FeatureVerificationCard() {
+    val results by FeatureVerification.results.collectAsState()
+    val ok = Color(0xFF66D19E)
+    val warn = Color(0xFFFFC266)
+    RedCard {
+        Label("FEATURE VERIFICATION")
+        Spacer(Modifier.height(8.dp))
+        Text(
+            "Every command is checked against cluster telemetry. NO_FEEDBACK means " +
+                "the dash has no value we can compare, not that the command failed.",
+            fontSize = 10.sp, color = JupiterColors.OnSurfaceVariant,
+        )
+        Spacer(Modifier.height(8.dp))
+        if (results.isEmpty()) {
+            Text("Nothing logged yet. Tap a setting or command to test it.",
+                fontSize = 11.sp, color = JupiterColors.OnSurfaceVariant)
+        } else {
+            results.takeLast(12).reversed().forEach { r ->
+                val colour = when (r.status) {
+                    Status.WORKING -> ok
+                    Status.NO_CHANGE -> warn
+                    Status.NO_FEEDBACK -> JupiterColors.OnSurfaceVariant
+                    Status.APPLIED -> JupiterColors.Accent
+                }
+                Row(verticalAlignment = Alignment.Top) {
+                    Text("${r.time}  ", fontSize = 10.sp, color = JupiterColors.OnSurfaceVariant)
+                    Column(Modifier.weight(1f)) {
+                        Text("${r.feature}  ${r.status.name}", fontSize = 11.sp, color = colour)
+                        Text(r.detail, fontSize = 10.sp, color = JupiterColors.OnSurfaceVariant)
+                    }
+                }
+                Spacer(Modifier.height(6.dp))
+            }
+        }
+        Spacer(Modifier.height(6.dp))
+        SecondaryButton("Clear verification log", { FeatureVerification.clear() },
+            Modifier.fillMaxWidth())
+    }
+}
+
 /**
  * Compact single-line option button. The previous bracket-in-label approach
  * ("[2]") wrapped inside the narrow button and looked broken; selection is
@@ -1750,11 +1794,14 @@ private fun ClusterControlsCard() {
     RedCard {
         Label("CLUSTER SETTINGS")
         Spacer(Modifier.height(8.dp))
+        Text("Changes apply instantly. Saved values are resent each time the ignition comes on.",
+            fontSize = 10.sp, color = JupiterColors.OnSurfaceVariant)
+        Spacer(Modifier.height(8.dp))
         Text("Illumination / theme", fontSize = 12.sp, color = JupiterColors.OnSurfaceVariant)
         Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
             (1..5).forEach { level ->
                 ChoiceChip("$level", illumination == level,
-                    { ClusterRepository.illumination.value = level }, Modifier.weight(1f))
+                    { ClusterRepository.setIllumination(level) }, Modifier.weight(1f))
             }
         }
         Spacer(Modifier.height(8.dp))
@@ -1762,7 +1809,7 @@ private fun ClusterControlsCard() {
         Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
             listOf("Off" to 0, "Left" to 26, "Right" to 27, "Hazard" to 0xAA).forEach { (name, code) ->
                 ChoiceChip(name, tsl == code,
-                    { ClusterRepository.tslSetting.value = code }, Modifier.weight(1f))
+                    { ClusterRepository.setTsl(code) }, Modifier.weight(1f))
             }
         }
         Spacer(Modifier.height(8.dp))
@@ -1770,7 +1817,7 @@ private fun ClusterControlsCard() {
         Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
             (0..3).forEach { level ->
                 ChoiceChip("$level", regen == level,
-                    { ClusterRepository.regenSetting.value = level }, Modifier.weight(1f))
+                    { ClusterRepository.setRegen(level) }, Modifier.weight(1f))
             }
         }
         Spacer(Modifier.height(8.dp))
@@ -1778,7 +1825,7 @@ private fun ClusterControlsCard() {
         Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
             listOf("Auto" to 0, "M6" to 6, "M7" to 7, "M10" to 10).forEach { (name, code) ->
                 ChoiceChip(name, mode == code,
-                    { ClusterRepository.rideMode.value = code }, Modifier.weight(1f))
+                    { ClusterRepository.setRideMode(code) }, Modifier.weight(1f))
             }
         }
         Spacer(Modifier.height(10.dp))
@@ -1907,6 +1954,8 @@ fun MoreScreenV2(
             phoneMirroring, onPhoneMirroring, email, onNotificationAccess, onSignOut, onPickPhoto)
         Spacer(Modifier.height(18.dp))
         ClusterControlsCard()
+        Spacer(Modifier.height(18.dp))
+        FeatureVerificationCard()
         Spacer(Modifier.height(18.dp))
         RedCard { ProtocolDiscoveryCard() }
         Spacer(Modifier.height(10.dp))

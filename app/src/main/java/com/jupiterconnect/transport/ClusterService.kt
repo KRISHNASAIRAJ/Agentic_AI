@@ -41,6 +41,8 @@ import androidx.core.app.NotificationCompat
 import androidx.core.app.ServiceCompat
 import androidx.core.content.ContextCompat
 import com.jupiterconnect.R
+import com.jupiterconnect.debug.FeatureVerification
+import com.jupiterconnect.debug.FeatureVerification.Status
 import com.jupiterconnect.debug.FrameCatalog
 import com.jupiterconnect.debug.FrameLog
 import com.jupiterconnect.protocol.ClusterControlFrames
@@ -99,16 +101,25 @@ object ClusterRepository {
     private const val KEY_RIDER_NAME = "rider_name"
     private const val KEY_RIDER_NAME_ON = "rider_name_on"
     private const val KEY_WEATHER_CITY = "weather_city"
+    private const val KEY_ILLUMINATION = "cluster_illumination"
+    private const val KEY_TSL = "cluster_tsl"
+    private const val KEY_REGEN = "cluster_regen"
+    private const val KEY_RIDE_MODE = "cluster_ride_mode"
     private var prefs: SharedPreferences? = null
 
     /** One-time init from the app or the service; reads persisted settings. */
     fun initPrefs(context: Context) {
         if (prefs != null) return
         prefs = context.applicationContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+        FeatureVerification.init(context)
         riderName.value = prefs?.getString(KEY_RIDER_NAME, "Rider") ?: "Rider"
         riderNameEnabled.value = prefs?.getBoolean(KEY_RIDER_NAME_ON, true) ?: true
         weatherCity.value = prefs?.getString(KEY_WEATHER_CITY, Cities.HYDERABAD.name)
             ?: Cities.HYDERABAD.name
+        illumination.value = prefs?.getInt(KEY_ILLUMINATION, 2) ?: 2
+        tslSetting.value = prefs?.getInt(KEY_TSL, 0) ?: 0
+        regenSetting.value = prefs?.getInt(KEY_REGEN, 0) ?: 0
+        rideMode.value = prefs?.getInt(KEY_RIDE_MODE, 0) ?: 0
         ClusterImageTransfer.restore(context)
         riderPhotoReady.value = ClusterImageTransfer.hasImage
     }
@@ -189,6 +200,31 @@ object ClusterRepository {
     }
 
     fun clearSocialSplit() { socialSplit.value = SocialSplit() }
+
+    /** Each setter applies the change to the dash immediately, with no Apply button. */
+    fun setIllumination(level: Int) {
+        illumination.value = level.coerceIn(1, 5)
+        prefs?.edit()?.putInt(KEY_ILLUMINATION, illumination.value)?.apply()
+        service?.sendIlluminationSetting(illumination.value)
+    }
+
+    fun setTsl(code: Int) {
+        tslSetting.value = code
+        prefs?.edit()?.putInt(KEY_TSL, code)?.apply()
+        service?.sendTslSetting(code)
+    }
+
+    fun setRegen(level: Int) {
+        regenSetting.value = level.coerceIn(0, 3)
+        prefs?.edit()?.putInt(KEY_REGEN, regenSetting.value)?.apply()
+        service?.sendRegenSetting(regenSetting.value)
+    }
+
+    fun setRideMode(code: Int) {
+        rideMode.value = code
+        prefs?.edit()?.putInt(KEY_RIDE_MODE, code)?.apply()
+        service?.sendRideModeSetting(code)
+    }
 
     // Experimental: send text frames with a response. The stock app uses
     // WRITE_NO_RESPONSE, but some clusters latch the first text of a burst;
@@ -328,6 +364,10 @@ class ClusterService : Service() {
     private val coldStartTracker = ColdStartTracker()
     private val writeLock = Mutex()
     private val main = Handler(Looper.getMainLooper())
+    // Saved settings are written once when the ignition comes on, then again
+    // whenever the rider changes a chip. Reset on every ignition-off edge.
+    @Volatile private var lastIgnitionOn = false
+    @Volatile private var settingsAppliedThisIgnition = false
     // The foreground notification is only meaningful while Bluetooth is on.
     private val bluetoothStateReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context?, intent: Intent?) {
@@ -847,8 +887,32 @@ class ClusterService : Service() {
         }
     }
 
+    /**
+     * Write the saved settings once per ignition cycle. Keyless commands, trip
+     * resets and one-shot setup frames are deliberately NOT part of this - only
+     * persistent display settings are safe to apply automatically.
+     */
+    private fun applySavedSettingsOnIgnition() {
+        settingsAppliedThisIgnition = true
+        val r = ClusterRepository
+        sendIlluminationSetting(r.illumination.value)
+        sendTslSetting(r.tslSetting.value)
+        sendRegenSetting(r.regenSetting.value)
+        if (r.rideMode.value != 0) sendRideModeSetting(r.rideMode.value)
+        FeatureVerification.log(
+            "Ignition auto-apply", Status.APPLIED,
+            "illumination ${r.illumination.value}, TSL ${r.tslSetting.value}, " +
+                "regen ${r.regenSetting.value}, mode ${r.rideMode.value}")
+    }
+
     /** Fan out one decoded frame to rides, voice, speed graph and warm-up. */
     private fun onTelemetryFrame(t: Telemetry, primary: Boolean, raw: ByteArray) {
+        if (t.ignitionOn && !lastIgnitionOn && !settingsAppliedThisIgnition) {
+            FrameLog.note("IGNITION ON - applying saved cluster settings")
+            applySavedSettingsOnIgnition()
+        }
+        if (!t.ignitionOn) settingsAppliedThisIgnition = false
+        lastIgnitionOn = t.ignitionOn
         if ((raw[1].toInt() and 0xFF) == 0x18) {
             val hex = raw.joinToString(" ") { "%02X".format(it) }
             ClusterRepository.engineDebug.value =
@@ -862,7 +926,14 @@ class ClusterService : Service() {
             voiceBridge.onSwitchAction(raw[12].toInt() and 0x3F)
         }
         if ((raw[1].toInt() and 0xFF) == InboundId.SERVICE) {
+            val previous = ClusterRepository.serviceReminderCode.value
             ClusterRepository.serviceReminderCode.value = t.serviceReminderCode
+            if (t.serviceReminderCode != previous) {
+                FeatureVerification.log(
+                    "Service reminder RX", Status.WORKING,
+                    if (t.serviceReminderCode == 0) "cleared by cluster"
+                    else "cluster reports code ${t.serviceReminderCode}")
+            }
         }
         checkSpeedAlert(t)
         val fused = speedFusion.update(
@@ -1109,6 +1180,92 @@ class ClusterService : Service() {
         }
     }
 
+    private fun hex(bytes: ByteArray) = bytes.joinToString(" ") { "%02X".format(it) }
+
+    /** Cluster-reported values that can confirm a setting actually took effect. */
+    private fun clusterLookValue(): Int? {
+        val t = ClusterRepository.telemetry.value
+        return if (t.frameCount == 0L) null else t.backlightMode * 100 + t.clusterTheme
+    }
+
+    private fun clusterTurnValue(): Int? {
+        val t = ClusterRepository.telemetry.value
+        return if (t.frameCount == 0L) null else t.turnIndicator
+    }
+
+    private fun clusterTripValue(): Int? {
+        val t = ClusterRepository.telemetry.value
+        return if (t.frameCount == 0L) null else t.tripMeterKm.toInt()
+    }
+
+    private fun nowLabel(): String {
+        val c = java.util.Calendar.getInstance()
+        return "%02d:%02d".format(c.get(java.util.Calendar.HOUR_OF_DAY),
+            c.get(java.util.Calendar.MINUTE))
+    }
+
+    /**
+     * Writes a setting and records whether the cluster reported a matching
+     * change. Features with no telemetry counterpart are marked NO_FEEDBACK so
+     * we can later tell "not supported" from "not verifiable".
+     */
+    private fun verifySetting(
+        feature: String,
+        frame: ByteArray,
+        observable: (() -> Int?)? = null,
+    ) {
+        scope.launch {
+            val before = observable?.invoke()
+            write(frame)
+            FrameLog.note("$feature sent: ${hex(frame)}")
+            if (observable == null || before == null) {
+                FeatureVerification.unverifiable(
+                    feature, "cluster has no reported value for this setting", hex(frame))
+            } else {
+                delay(1500L)
+                val after = observable()
+                when {
+                    after == null -> FeatureVerification.log(
+                        feature, Status.NO_CHANGE, "cluster stopped reporting", hex(frame))
+                    after != before -> FeatureVerification.log(
+                        feature, Status.WORKING, "cluster value $before -> $after", hex(frame))
+                    else -> FeatureVerification.log(
+                        feature, Status.NO_CHANGE, "cluster value stayed $before", hex(frame))
+                }
+            }
+            ClusterRepository.settingsStatus.value = "$feature sent at ${nowLabel()}"
+        }
+    }
+
+    /** Auto-applied when the illumination chip changes. */
+    fun sendIlluminationSetting(level: Int) {
+        verifySetting("Illumination $level", ClusterControlFrames.buildVehicleControlFrame(
+            illumination = level, tsl = ClusterRepository.tslSetting.value), ::clusterLookValue)
+    }
+
+    /** Auto-applied when the turn-signal chip changes. */
+    fun sendTslSetting(code: Int) {
+        val name = when (code) { 0 -> "Off"; 26 -> "Left"; 27 -> "Right"; else -> "Hazard" }
+        verifySetting("Turn signal $name", ClusterControlFrames.buildVehicleControlFrame(
+            illumination = ClusterRepository.illumination.value, tsl = code), ::clusterTurnValue)
+    }
+
+    /** Auto-applied when the regen chip changes. EV-only: no cluster feedback. */
+    fun sendRegenSetting(level: Int) {
+        verifySetting("Regen $level", ClusterControlFrames.buildRegenFrame(level))
+    }
+
+    /** Auto-applied when the ride-mode chip changes. */
+    fun sendRideModeSetting(mode: Int) {
+        if (mode == 0) {
+            FeatureVerification.unverifiable("Ride mode Auto", "no mode frame sent by design")
+            ClusterRepository.settingsStatus.value = "Ride mode Auto at ${nowLabel()}"
+            return
+        }
+        verifySetting("Ride mode $mode", ClusterControlFrames.buildRideModeFrame(
+            mode, ClusterRepository.illumination.value, ClusterRepository.tslSetting.value))
+    }
+
     /** Apply the More -> Cluster settings values. Does not touch the link setup. */
     fun applyClusterSettings() {
         scope.launch {
@@ -1127,40 +1284,51 @@ class ClusterService : Service() {
     }
 
     fun sendTrip(trip: Int, reset: Boolean) {
-        scope.launch {
-            write(ClusterControlFrames.buildTripFrame(trip, reset))
-            ClusterRepository.selectedTrip.value = trip
-            ClusterRepository.settingsStatus.value =
-                if (reset) "Trip ${if (trip == 0) "A" else "B"} reset" else
-                    "Trip ${if (trip == 0) "A" else "B"} selected"
-        }
+        val name = "Trip ${if (trip == 0) "A" else "B"} ${if (reset) "reset" else "select"}"
+        verifySetting(name, ClusterControlFrames.buildTripFrame(trip, reset), ::clusterTripValue)
+        ClusterRepository.selectedTrip.value = trip
     }
 
     fun sendCalibrationRequest() {
+        val frame = ClusterControlFrames.buildCalibrationRequest()
         scope.launch {
-            write(ClusterControlFrames.buildCalibrationRequest())
-            ClusterRepository.settingsStatus.value = "Calibration request sent"
+            write(frame)
+            FeatureVerification.unverifiable(
+                "Calibration request", "cluster does not report calibration state", hex(frame))
+            ClusterRepository.settingsStatus.value = "Calibration request sent at ${nowLabel()}"
         }
     }
 
     fun sendFollowMeTimer(minutes: Int) {
+        val frame = ClusterControlFrames.buildFollowMeHeadlampFrame(minutes)
         scope.launch {
-            write(ClusterControlFrames.buildFollowMeHeadlampFrame(minutes))
-            ClusterRepository.settingsStatus.value = "Follow-me timer $minutes min sent"
+            write(frame)
+            FeatureVerification.unverifiable(
+                "Follow-me $minutes min", "cluster does not report this timer", hex(frame))
+            ClusterRepository.settingsStatus.value = "Follow-me timer $minutes min sent at ${nowLabel()}"
         }
     }
 
     fun sendRoadName(name: String, arrived: Boolean = false) {
-        scope.launch { write(ClusterControlFrames.buildRoadNameFrame(name, arrived)) }
+        val frame = ClusterControlFrames.buildRoadNameFrame(name, arrived)
+        scope.launch {
+            write(frame)
+            FeatureVerification.unverifiable("Road name", "cluster does not echo text rows", hex(frame))
+        }
     }
 
     /** 5B 22 / 5A 7D / 5B 80 setup frames - manual, never sent automatically. */
     fun sendSetupData() {
         scope.launch {
-            write(ClusterControlFrames.buildUserIdFrame(1))
-            write(ClusterControlFrames.buildVinFrame())
-            write(ClusterControlFrames.buildDobFrame(1, 1, 1900))
-            ClusterRepository.handshakeStatus.value = "Setup data sent"
+            val frames = listOf(
+                ClusterControlFrames.buildUserIdFrame(1),
+                ClusterControlFrames.buildVinFrame(),
+                ClusterControlFrames.buildDobFrame(1, 1, 1900),
+            )
+            frames.forEach { write(it) }
+            FeatureVerification.unverifiable(
+                "Setup data", "user ID / VIN / DOB are write-only", frames.joinToString(" | ", transform = ::hex))
+            ClusterRepository.handshakeStatus.value = "Setup data sent at ${nowLabel()}"
         }
     }
 
@@ -1171,8 +1339,11 @@ class ClusterService : Service() {
             return
         }
         scope.launch {
-            write(ClusterControlFrames.buildKeylessRequest(command))
-            ClusterRepository.keylessStatus.value = "${command.name} request sent"
+            val frame = ClusterControlFrames.buildKeylessRequest(command)
+            write(frame)
+            FeatureVerification.unverifiable(
+                "Keyless ${command.name}", "verify physically on the bike", hex(frame))
+            ClusterRepository.keylessStatus.value = "${command.name} request sent at ${nowLabel()}"
         }
     }
 
