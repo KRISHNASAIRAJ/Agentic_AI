@@ -96,6 +96,7 @@ import com.jupiterconnect.debug.FrameCatalog
 import com.jupiterconnect.debug.FrameLog
 import com.jupiterconnect.debug.PhoneFrameDebug
 import com.jupiterconnect.nav.NavInstruction
+import com.jupiterconnect.protocol.ClusterControlFrames
 import com.jupiterconnect.protocol.ScannedDevice
 import com.jupiterconnect.protocol.Telemetry
 import com.jupiterconnect.session.Ride
@@ -1692,6 +1693,160 @@ private fun PhoneFrameDebugCard() {
         fontSize = 10.sp, color = JupiterColors.OnSurfaceVariant)
 }
 
+/**
+ * Cluster-side controls recovered from TVS Connect 8.14.3. Everything here is
+ * an explicit user action - nothing is sent automatically during connect, so
+ * Bluetooth link behaviour is unchanged.
+ */
+@Composable
+private fun ClusterControlsCard() {
+    val illumination by ClusterRepository.illumination.collectAsState()
+    val tsl by ClusterRepository.tslSetting.collectAsState()
+    val regen by ClusterRepository.regenSetting.collectAsState()
+    val mode by ClusterRepository.rideMode.collectAsState()
+    val status by ClusterRepository.settingsStatus.collectAsState()
+    val handshake by ClusterRepository.handshakeStatus.collectAsState()
+    val reminder by ClusterRepository.serviceReminderCode.collectAsState()
+    val keylessOn by ClusterRepository.keylessEnabled.collectAsState()
+    val keylessStatus by ClusterRepository.keylessStatus.collectAsState()
+    var confirm by remember { mutableStateOf<ClusterControlFrames.KeylessCommand?>(null) }
+    var roadName by remember { mutableStateOf("") }
+
+    RedCard {
+        Label("CLUSTER SETTINGS")
+        Spacer(Modifier.height(8.dp))
+        Text("Illumination / theme", fontSize = 12.sp, color = JupiterColors.OnSurfaceVariant)
+        Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+            (1..5).forEach { level ->
+                OutlinedButton(
+                    onClick = { ClusterRepository.illumination.value = level },
+                    modifier = Modifier.weight(1f),
+                ) { Text(if (illumination == level) "[$level]" else "$level", fontSize = 11.sp) }
+            }
+        }
+        Spacer(Modifier.height(8.dp))
+        Text("Turn signal lamp", fontSize = 12.sp, color = JupiterColors.OnSurfaceVariant)
+        Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+            listOf("Off" to 0, "Left" to 26, "Right" to 27, "Hazard" to 0xAA).forEach { (name, code) ->
+                OutlinedButton(
+                    onClick = { ClusterRepository.tslSetting.value = code },
+                    modifier = Modifier.weight(1f),
+                ) { Text(if (tsl == code) "[$name]" else name, fontSize = 10.sp) }
+            }
+        }
+        Spacer(Modifier.height(8.dp))
+        Text("Regen level", fontSize = 12.sp, color = JupiterColors.OnSurfaceVariant)
+        Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+            (0..3).forEach { level ->
+                OutlinedButton(
+                    onClick = { ClusterRepository.regenSetting.value = level },
+                    modifier = Modifier.weight(1f),
+                ) { Text(if (regen == level) "[$level]" else "$level", fontSize = 11.sp) }
+            }
+        }
+        Spacer(Modifier.height(8.dp))
+        Text("Ride mode", fontSize = 12.sp, color = JupiterColors.OnSurfaceVariant)
+        Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+            listOf("Default" to 0, "Mode 6" to 6, "Mode 7" to 7, "Mode 10" to 10).forEach { (name, code) ->
+                OutlinedButton(
+                    onClick = { ClusterRepository.rideMode.value = code },
+                    modifier = Modifier.weight(1f),
+                ) { Text(if (mode == code) "[$name]" else name, fontSize = 10.sp) }
+            }
+        }
+        Spacer(Modifier.height(10.dp))
+        SecondaryButton("Apply settings to cluster", { ClusterRepository.applyClusterSettings() },
+            Modifier.fillMaxWidth())
+        Text(status, fontSize = 10.sp, color = JupiterColors.OnSurfaceVariant)
+        Spacer(Modifier.height(6.dp))
+        Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+            SecondaryButton("Trip A", { ClusterRepository.sendTrip(0, false) }, Modifier.weight(1f))
+            SecondaryButton("Trip B", { ClusterRepository.sendTrip(1, false) }, Modifier.weight(1f))
+        }
+        Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+            SecondaryButton("Reset A", { ClusterRepository.sendTrip(0, true) }, Modifier.weight(1f))
+            SecondaryButton("Reset B", { ClusterRepository.sendTrip(1, true) }, Modifier.weight(1f))
+        }
+        Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+            SecondaryButton("Calibrate", { ClusterRepository.sendCalibrationRequest() }, Modifier.weight(1f))
+            SecondaryButton("Follow-me 5m", { ClusterRepository.sendFollowMeTimer(5) }, Modifier.weight(1f))
+        }
+        InfoRow("Service reminder", if (reminder == 0) "none" else "code $reminder")
+    }
+
+    Spacer(Modifier.height(10.dp))
+    RedCard {
+        Label("NAVIGATION EXTRAS")
+        Spacer(Modifier.height(8.dp))
+        OutlinedTextField(
+            value = roadName,
+            onValueChange = { roadName = it },
+            label = { Text("Road name on dash") },
+            singleLine = true,
+            modifier = Modifier.fillMaxWidth(),
+        )
+        Spacer(Modifier.height(6.dp))
+        SecondaryButton("Send road name", { ClusterRepository.sendRoadName(roadName) },
+            Modifier.fillMaxWidth())
+    }
+
+    Spacer(Modifier.height(10.dp))
+    RedCard {
+        Label("SETUP DATA")
+        Spacer(Modifier.height(8.dp))
+        Text("Sends user ID, VIN and DOB frames exactly as TVS Connect does at setup.",
+            fontSize = 11.sp, color = JupiterColors.OnSurfaceVariant)
+        Spacer(Modifier.height(6.dp))
+        SecondaryButton("Send setup data", { ClusterRepository.sendSetupData() },
+            Modifier.fillMaxWidth())
+        Text(handshake, fontSize = 10.sp, color = JupiterColors.OnSurfaceVariant)
+    }
+
+    Spacer(Modifier.height(10.dp))
+    RedCard {
+        Label("KEYLESS ENTRY")
+        Spacer(Modifier.height(8.dp))
+        Text("Experimental. These frames can lock/unlock the bike. Disabled by default.",
+            fontSize = 11.sp, color = JupiterColors.OnSurfaceVariant)
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text("Enable keyless controls", Modifier.weight(1f), fontSize = 13.sp,
+                color = JupiterColors.OnSurface)
+            Switch(
+                checked = keylessOn,
+                onCheckedChange = {
+                    ClusterRepository.keylessEnabled.value = it
+                    ClusterRepository.keylessStatus.value =
+                        if (it) "Enabled - commands need confirmation" else "Keyless controls disabled"
+                },
+                colors = SwitchDefaults.colors(
+                    checkedThumbColor = Color.White,
+                    checkedTrackColor = JupiterColors.Accent,
+                ),
+            )
+        }
+        Spacer(Modifier.height(8.dp))
+        listOf(
+            "Unlock" to ClusterControlFrames.KeylessCommand.UNLOCK,
+            "Lock" to ClusterControlFrames.KeylessCommand.LOCK,
+            "Open trunk" to ClusterControlFrames.KeylessCommand.OPEN_TRUNK,
+            "Find vehicle" to ClusterControlFrames.KeylessCommand.FIND_VEHICLE,
+        ).forEach { (name, command) ->
+            SecondaryButton(
+                if (confirm == command) "Confirm $name?" else name,
+                {
+                    if (confirm == command) {
+                        ClusterRepository.sendKeyless(command)
+                        confirm = null
+                    } else confirm = command
+                },
+                Modifier.fillMaxWidth(),
+            )
+            Spacer(Modifier.height(4.dp))
+        }
+        Text(keylessStatus, fontSize = 10.sp, color = JupiterColors.OnSurfaceVariant)
+    }
+}
+
 /** Devices at the top, all settings below, in one scrollable "More" tab. */
 @Composable
 fun MoreScreenV2(
@@ -1723,6 +1878,8 @@ fun MoreScreenV2(
         Spacer(Modifier.height(10.dp))
         SettingsContent(notificationAccess, bleReady, contactsGranted, callLogGranted,
             phoneMirroring, onPhoneMirroring, email, onNotificationAccess, onSignOut, onPickPhoto)
+        Spacer(Modifier.height(18.dp))
+        ClusterControlsCard()
         Spacer(Modifier.height(18.dp))
         RedCard { ProtocolDiscoveryCard() }
         Spacer(Modifier.height(10.dp))

@@ -42,6 +42,7 @@ fun decodeFrame(raw: ByteArray, current: Telemetry): Telemetry? {
             fuelSensorFault = u8(raw[2]) != 0,
             vehicleState = u8(raw[3]),
             serviceDue = u8(raw[4]) != 0,
+            serviceReminderCode = u8(raw[4]),
             issMode = u8(raw[6]),
             softwareVersion = u8(raw[7]),
             milBlinkCode = u8(raw[8]),

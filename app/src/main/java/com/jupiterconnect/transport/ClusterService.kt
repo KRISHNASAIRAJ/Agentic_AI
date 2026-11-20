@@ -43,7 +43,9 @@ import androidx.core.content.ContextCompat
 import com.jupiterconnect.R
 import com.jupiterconnect.debug.FrameCatalog
 import com.jupiterconnect.debug.FrameLog
+import com.jupiterconnect.protocol.ClusterControlFrames
 import com.jupiterconnect.protocol.Gatt
+import com.jupiterconnect.protocol.InboundId
 import com.jupiterconnect.protocol.ScannedDevice
 import com.jupiterconnect.protocol.Telemetry
 import com.jupiterconnect.session.ColdStartTracker
@@ -150,6 +152,44 @@ object ClusterRepository {
     val highSpeedAlert = MutableStateFlow(false)
     val highSpeedAlertSpeed = MutableStateFlow(60)
     val socialCounts = MutableStateFlow(Triple(0, 0, 0))
+    // Genuine APK packs WhatsApp/Facebook as chats + messages (5).
+    data class SocialSplit(
+        val waChats: Int = 0, val waMsgs: Int = 0,
+        val fbChats: Int = 0, val fbMsgs: Int = 0, val instagram: Int = 0,
+    )
+    val socialSplit = MutableStateFlow(SocialSplit())
+
+    /** Last raw service-reminder byte from the 0x11 frame. */
+    val serviceReminderCode = MutableStateFlow(0)
+
+    /** Persisted cluster settings, applied only when the user taps Apply. */
+    val illumination = MutableStateFlow(2)
+    val tslSetting = MutableStateFlow(0)
+    val regenSetting = MutableStateFlow(0)
+    val rideMode = MutableStateFlow(0)
+    val selectedTrip = MutableStateFlow(0)
+    val settingsStatus = MutableStateFlow("Settings not sent yet")
+    val handshakeStatus = MutableStateFlow("Setup data not sent yet")
+    /**
+     * Keyless control is OFF by default. Enabling it only exposes the buttons;
+     * every command still needs a second confirmation in the UI.
+     */
+    val keylessEnabled = MutableStateFlow(false)
+    val keylessStatus = MutableStateFlow("Keyless controls disabled")
+
+    fun addSocialSplit(pkg: String) {
+        val s = socialSplit.value
+        socialSplit.value = when {
+            pkg.startsWith("com.whatsapp") -> s.copy(waMsgs = s.waMsgs + 1)
+            pkg.startsWith("com.facebook") || pkg == "com.facebook.orca" ->
+                s.copy(fbMsgs = s.fbMsgs + 1)
+            pkg.startsWith("com.instagram") -> s.copy(instagram = s.instagram + 1)
+            else -> return
+        }
+    }
+
+    fun clearSocialSplit() { socialSplit.value = SocialSplit() }
+
     // Experimental: send text frames with a response. The stock app uses
     // WRITE_NO_RESPONSE, but some clusters latch the first text of a burst;
     // a confirmed write serialises them and may let every page render.
@@ -247,12 +287,16 @@ object ClusterRepository {
             else -> return
         }
         service?.sendSocialCounts(next.first, next.second, next.third)
+        addSocialSplit(pkg)
+        service?.sendSocialSplit(socialSplit.value)
     }
 
     /** Clear all social unread counters (the APK's clearRecords() equivalent). */
     fun clearSocialCounts() {
         socialCounts.value = Triple(0, 0, 0)
+        clearSocialSplit()
         service?.sendSocialCounts(0, 0, 0)
+        service?.sendSocialSplit(SocialSplit())
     }
 
     @Volatile private var replyText: String? = null
@@ -261,6 +305,16 @@ object ClusterRepository {
     /** Reply text to show in the nav row while the override is active. */
     fun currentReplyText(): String? =
         if (System.currentTimeMillis() < replyUntilMs) replyText else null
+
+    // UI delegates. All are explicit user actions; none run automatically on
+    // connect, so the Bluetooth link setup is unchanged.
+    fun applyClusterSettings() = service?.applyClusterSettings()
+    fun sendTrip(trip: Int, reset: Boolean) = service?.sendTrip(trip, reset)
+    fun sendCalibrationRequest() = service?.sendCalibrationRequest()
+    fun sendFollowMeTimer(minutes: Int) = service?.sendFollowMeTimer(minutes)
+    fun sendSetupData() = service?.sendSetupData()
+    fun sendKeyless(command: ClusterControlFrames.KeylessCommand) = service?.sendKeyless(command)
+    fun sendRoadName(name: String) = service?.sendRoadName(name)
 }
 
 /** All BLE entry points are guarded by [hasBluetoothPermission] at runtime. */
@@ -807,6 +861,9 @@ class ClusterService : Service() {
         if ((raw[1].toInt() and 0xFF) == 0x10) {
             voiceBridge.onSwitchAction(raw[12].toInt() and 0x3F)
         }
+        if ((raw[1].toInt() and 0xFF) == InboundId.SERVICE) {
+            ClusterRepository.serviceReminderCode.value = t.serviceReminderCode
+        }
         checkSpeedAlert(t)
         val fused = speedFusion.update(
             t.speedKmh.toDouble(),
@@ -1044,6 +1101,81 @@ class ClusterService : Service() {
         scope.launch { write(buildSocialCounts(wa, fb, ig)) }
     }
 
+    /** 5B 9C with the APK's real chats+messages bit packing. */
+    fun sendSocialSplit(s: ClusterRepository.SocialSplit) {
+        scope.launch {
+            write(ClusterControlFrames.buildSocialCountsV2(
+                s.waChats, s.waMsgs, s.fbChats, s.fbMsgs, s.instagram))
+        }
+    }
+
+    /** Apply the More -> Cluster settings values. Does not touch the link setup. */
+    fun applyClusterSettings() {
+        scope.launch {
+            val r = ClusterRepository
+            write(ClusterControlFrames.buildVehicleControlFrame(
+                illumination = r.illumination.value, tsl = r.tslSetting.value))
+            write(ClusterControlFrames.buildRegenFrame(r.regenSetting.value))
+            if (r.rideMode.value != 0) {
+                write(ClusterControlFrames.buildRideModeFrame(
+                    r.rideMode.value, r.illumination.value, r.tslSetting.value))
+            }
+            r.settingsStatus.value = "Applied at ${"%02d:%02d".format(
+                java.util.Calendar.getInstance().get(java.util.Calendar.HOUR_OF_DAY),
+                java.util.Calendar.getInstance().get(java.util.Calendar.MINUTE))}"
+        }
+    }
+
+    fun sendTrip(trip: Int, reset: Boolean) {
+        scope.launch {
+            write(ClusterControlFrames.buildTripFrame(trip, reset))
+            ClusterRepository.selectedTrip.value = trip
+            ClusterRepository.settingsStatus.value =
+                if (reset) "Trip ${if (trip == 0) "A" else "B"} reset" else
+                    "Trip ${if (trip == 0) "A" else "B"} selected"
+        }
+    }
+
+    fun sendCalibrationRequest() {
+        scope.launch {
+            write(ClusterControlFrames.buildCalibrationRequest())
+            ClusterRepository.settingsStatus.value = "Calibration request sent"
+        }
+    }
+
+    fun sendFollowMeTimer(minutes: Int) {
+        scope.launch {
+            write(ClusterControlFrames.buildFollowMeHeadlampFrame(minutes))
+            ClusterRepository.settingsStatus.value = "Follow-me timer $minutes min sent"
+        }
+    }
+
+    fun sendRoadName(name: String, arrived: Boolean = false) {
+        scope.launch { write(ClusterControlFrames.buildRoadNameFrame(name, arrived)) }
+    }
+
+    /** 5B 22 / 5A 7D / 5B 80 setup frames - manual, never sent automatically. */
+    fun sendSetupData() {
+        scope.launch {
+            write(ClusterControlFrames.buildUserIdFrame(1))
+            write(ClusterControlFrames.buildVinFrame())
+            write(ClusterControlFrames.buildDobFrame(1, 1, 1900))
+            ClusterRepository.handshakeStatus.value = "Setup data sent"
+        }
+    }
+
+    /** Keyless command. The UI asks for a second confirmation before calling. */
+    fun sendKeyless(command: ClusterControlFrames.KeylessCommand) {
+        if (!ClusterRepository.keylessEnabled.value) {
+            ClusterRepository.keylessStatus.value = "Keyless controls disabled"
+            return
+        }
+        scope.launch {
+            write(ClusterControlFrames.buildKeylessRequest(command))
+            ClusterRepository.keylessStatus.value = "${command.name} request sent"
+        }
+    }
+
     /** Manual trigger so the voice flow can be tested without the bike. */
     fun simulateVoiceTrigger() {
         voiceBridge.simulate()
@@ -1275,6 +1407,14 @@ class ClusterService : Service() {
                     scope.launch { write(chunk) }
                 }
             }
+            if (ClusterControlFrames.isKeylessChallenge(value) &&
+                ClusterRepository.keylessEnabled.value
+            ) {
+                scope.launch {
+                    write(ClusterControlFrames.buildKeylessResponse(value))
+                    ClusterRepository.keylessStatus.value = "Challenge answered"
+                }
+            }
             decodeFrame(value, ClusterRepository.telemetry.value)?.let {
                 ClusterRepository.telemetry.value = it
                 onTelemetryFrame(it, primary = (value[1].toInt() and 0xFF) == 0x10, raw = value)
@@ -1291,6 +1431,14 @@ class ClusterService : Service() {
             if (v.size > 6 && (v[1].toInt() and 0xFF) == 0x54) {
                 ClusterImageTransfer.onRequest(v)?.let { chunk ->
                     scope.launch { write(chunk) }
+                }
+            }
+            if (ClusterControlFrames.isKeylessChallenge(v) &&
+                ClusterRepository.keylessEnabled.value
+            ) {
+                scope.launch {
+                    write(ClusterControlFrames.buildKeylessResponse(v))
+                    ClusterRepository.keylessStatus.value = "Challenge answered"
                 }
             }
             decodeFrame(v, ClusterRepository.telemetry.value)?.let {

@@ -28,6 +28,8 @@ object InboundId {
     const val ECONOMY = 0x19
     const val CLUSTER_ADDRESS = 0x42
     const val MUSIC = 0x6B
+    /** 5A F2 - keyless-entry challenge from the cluster (CHALLENGE_FRAME). */
+    const val KEYLESS_CHALLENGE = 0xF2
 }
 
 /** A device seen during a BLE scan. Clusters are flagged but never hidden. */
@@ -65,6 +67,8 @@ data class Telemetry(
     val fuelSensorFault: Boolean = false,
     val vehicleState: Int = 0,
     val serviceDue: Boolean = false,
+    /** Raw 0x11 byte 4 (1-based position 5 in JupiterSpeedOMeter2). */
+    val serviceReminderCode: Int = 0,
     val issMode: Int = 0,
     val softwareVersion: Int = 0,
     val milBlinkCode: Int = 0,
