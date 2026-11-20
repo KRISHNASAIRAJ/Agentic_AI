@@ -1564,10 +1564,10 @@ private fun SettingsContent(
                 OutlinedButton(
                     onClick = { ClusterRepository.setWeatherCity(c.name) },
                     modifier = Modifier.padding(end = 6.dp),
-                ) { Text(if (c === Cities.AUTO) "AUTO" else c.name, fontSize = 11.sp) }
+                ) { Text(c.name, fontSize = 11.sp) }
             }
         }
-        Text("AUTO uses device location, then last parked spot.",
+        Text("Weather uses last-parked coordinates; Hyderabad is the fallback.",
             fontSize = 10.sp, color = JupiterColors.OnSurfaceVariant)
     }
     Spacer(Modifier.height(10.dp))

@@ -42,14 +42,12 @@ Current bridge (`ClusterService.startTrafficBridge`):
 1. `RideStore.parkedLocation` (saved on BLE disconnect) — **can be stale** if you rode elsewhere.
 2. Fallback Bengaluru `12.97, 77.59` — arbitrary if nothing saved yet.
 
-**Implemented** layered resolution (`resolveWeatherLocation()`, no extra permission):
+**Implemented** resolution (`resolveWeatherLocation()`, no extra permission):
 
-1. **City chips** in More → Traffic screens — built-in list of 11 Indian cities plus `AUTO`, stored as lat/lon. Deterministic, battery-free.
-2. Otherwise **`LocationManager.getLastKnownLocation()`** (we already hold `ACCESS_FINE_LOCATION`) — fresher than a parked spot, no active scan.
-3. Otherwise **parked location**.
-4. Otherwise **Bengaluru default**.
+1. **Last-parked coordinates** (`RideStore.parkedLocation`) — weather follows where the scooter was left.
+2. Otherwise **Hyderabad** `17.3850, 78.4867` — the only fixed city kept in the UI.
 
-Open-Meteo takes raw lat/lon, so no geocoding API is needed.
+Open-Meteo takes raw lat/lon, so no geocoding API is needed. No active GPS scan is performed, so this costs no extra battery.
 
 ## 5. Status
 

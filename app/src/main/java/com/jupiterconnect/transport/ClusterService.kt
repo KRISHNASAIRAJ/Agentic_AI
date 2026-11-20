@@ -104,12 +104,13 @@ object ClusterRepository {
         prefs = context.applicationContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
         riderName.value = prefs?.getString(KEY_RIDER_NAME, "Rider") ?: "Rider"
         riderNameEnabled.value = prefs?.getBoolean(KEY_RIDER_NAME_ON, true) ?: true
-        weatherCity.value = prefs?.getString(KEY_WEATHER_CITY, Cities.AUTO.name) ?: Cities.AUTO.name
+        weatherCity.value = prefs?.getString(KEY_WEATHER_CITY, Cities.HYDERABAD.name)
+            ?: Cities.HYDERABAD.name
     }
 
     val riderName = MutableStateFlow("Rider")
     val riderNameEnabled = MutableStateFlow(true)
-    val weatherCity = MutableStateFlow(Cities.AUTO.name)
+    val weatherCity = MutableStateFlow(Cities.HYDERABAD.name)
 
     fun setRiderName(value: String) {
         riderName.value = value.take(17)
@@ -1478,23 +1479,14 @@ class ClusterService : Service() {
     }
 
     /**
-     * City setting > last-known device location > parked spot > Bengaluru.
+     * Weather follows the scooter's last-parked coordinates. Hyderabad is the
+     * only fixed fallback city, used when no parked spot has been saved yet.
      * No active GPS scan, so this costs no extra battery.
      */
     private fun resolveWeatherLocation(): Pair<Double, Double> {
-        val city = Cities.byName(ClusterRepository.weatherCity.value)
-        if (city !== Cities.AUTO) return city.lat to city.lon
-        if (ContextCompat.checkSelfPermission(
-                this, android.Manifest.permission.ACCESS_FINE_LOCATION
-            ) == PackageManager.PERMISSION_GRANTED
-        ) {
-            val lm = getSystemService(Context.LOCATION_SERVICE) as? LocationManager
-            val loc = lm?.getLastKnownLocation(LocationManager.GPS_PROVIDER)
-                ?: lm?.getLastKnownLocation(LocationManager.NETWORK_PROVIDER)
-            if (loc != null) return loc.latitude to loc.longitude
-        }
         RideStore.parkedLocation.value?.let { return it.lat to it.lng }
-        return 12.97 to 77.59
+        val city = Cities.byName(ClusterRepository.weatherCity.value)
+        return city.lat to city.lon
     }
 
     /** Rider greeting and last-known place, sent once when the link comes up. */

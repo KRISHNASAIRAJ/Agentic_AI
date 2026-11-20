@@ -65,12 +65,13 @@ class TrafficTest {
     }
 
     @Test
-    fun city_lookup_defaults_to_auto() {
-        val bengaluru = Cities.byName("Bengaluru")
-        assertEquals("Bengaluru", bengaluru.name)
-        assertEquals(12.9716, bengaluru.lat, 0.0001)
-        assertEquals(Cities.AUTO, Cities.byName("Nowhere"))
-        assertEquals(Cities.AUTO, Cities.byName(null))
+    fun only_hyderabad_is_kept_as_fallback_city() {
+        assertEquals(1, Cities.list.size)
+        assertEquals("Hyderabad", Cities.list[0].name)
+        assertEquals(17.3850, Cities.HYDERABAD.lat, 0.0001)
+        assertEquals(78.4867, Cities.HYDERABAD.lon, 0.0001)
+        assertEquals(Cities.HYDERABAD, Cities.byName("Nowhere"))
+        assertEquals(Cities.HYDERABAD, Cities.byName(null))
     }
 
     @Test
