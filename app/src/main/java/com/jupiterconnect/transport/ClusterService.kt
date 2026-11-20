@@ -258,6 +258,9 @@ class ClusterService : Service() {
      */
     @SuppressLint("MissingPermission")
     private fun currentMissedCalls(): Int {
+        // Never touch the call-log provider without a live link. This keeps the
+        // Bluetooth-off path byte-for-byte identical to the previous build.
+        if (gatt == null) return 0
         if (ContextCompat.checkSelfPermission(
                 this, android.Manifest.permission.READ_CALL_LOG
             ) != PackageManager.PERMISSION_GRANTED
