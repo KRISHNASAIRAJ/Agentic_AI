@@ -55,8 +55,13 @@ class VoiceCommandProcessor(private val context: Context) {
                 "Auto SMS reply enabled", "Auto SMS reply disabled")
             isDnd(text) -> toggleReply(text, "dnd", ClusterRepository.dnd,
                 "Do not disturb enabled", "Do not disturb disabled")
-            isSpeedAlert(text) -> toggleReply(text, "alert", ClusterRepository.highSpeedAlert,
-                "High speed alert enabled", "High speed alert disabled")
+            isSpeedAlert(text) -> {
+                // Go through the setter so the switch is persisted and a disabled
+                // alert clears its one-shot flag and status-bar notification.
+                val disable = text.contains("disable") || text.contains("off") || text.contains("stop")
+                ClusterRepository.setHighSpeedAlert(!disable)
+                if (disable) "High speed alert disabled" else "High speed alert enabled"
+            }
             isEta(text) -> etaReply()
             isWeather(text) -> weatherReply()
             isNews(text) -> newsReply()

@@ -947,11 +947,12 @@ class ClusterService : Service() {
             return
         }
         if (t.speedKmh <= 0 || t.speedKmh < limit) return
-        speedAlertActive = true
-        // A brief debounce stops a jittery sensor at the limit from firing
-        // twice in the same crossing. The one-shot flag above handles the rest.
+        // Debounce BEFORE latching: a skipped frame must stay un-fired so the
+        // next frame can alert. Latching first silently swallowed a real
+        // re-crossing that happened within 2 s of the previous alert.
         val now = System.currentTimeMillis()
         if (now - lastSpeedAlertMs < 2_000L) return
+        speedAlertActive = true
         lastSpeedAlertMs = now
         fireSpeedAlert(t.speedKmh, limit)
     }
