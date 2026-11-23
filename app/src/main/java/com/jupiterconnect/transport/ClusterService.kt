@@ -269,12 +269,6 @@ object ClusterRepository {
     /** Feedback for the Find-tab Refresh location button. */
     val parkedStatus = MutableStateFlow("")
     val handshakeStatus = MutableStateFlow("Setup data not sent yet")
-    /**
-     * Keyless control is OFF by default. Enabling it only exposes the buttons;
-     * every command still needs a second confirmation in the UI.
-     */
-    val keylessEnabled = MutableStateFlow(false)
-    val keylessStatus = MutableStateFlow("Keyless controls disabled")
 
     fun addSocialSplit(pkg: String) {
         val s = socialSplit.value
@@ -443,7 +437,6 @@ object ClusterRepository {
     fun sendCalibrationRequest() = service?.sendCalibrationRequest()
     fun sendFollowMeTimer(minutes: Int) = service?.sendFollowMeTimer(minutes)
     fun sendSetupData() = service?.sendSetupData()
-    fun sendKeyless(command: ClusterControlFrames.KeylessCommand) = service?.sendKeyless(command)
     fun sendRoadName(name: String) = service?.sendRoadName(name)
 }
 
@@ -1168,9 +1161,9 @@ class ClusterService : Service() {
     }
 
     /**
-     * Re-send the values from the last Apply once per ignition cycle. Keyless
-     * commands, trip resets and one-shot setup frames are deliberately NOT part
-     * of this. Unapplied chip selections are ignored here by design.
+     * Re-send the values from the last Apply once per ignition cycle. Trip
+     * resets and one-shot setup frames are deliberately NOT part of this.
+     * Unapplied chip selections are ignored here by design.
      */
     private fun applySavedSettingsOnIgnition() {
         settingsAppliedThisIgnition = true
@@ -1586,21 +1579,6 @@ class ClusterService : Service() {
         }
     }
 
-    /** Keyless command. The UI asks for a second confirmation before calling. */
-    fun sendKeyless(command: ClusterControlFrames.KeylessCommand) {
-        if (!ClusterRepository.keylessEnabled.value) {
-            ClusterRepository.keylessStatus.value = "Keyless controls disabled"
-            return
-        }
-        scope.launch {
-            val frame = ClusterControlFrames.buildKeylessRequest(command)
-            write(frame)
-            FeatureVerification.unverifiable(
-                "Keyless ${command.name}", "verify physically on the bike", hex(frame))
-            ClusterRepository.keylessStatus.value = "${command.name} request sent at ${nowLabel()}"
-        }
-    }
-
     /** Manual trigger so the voice flow can be tested without the bike. */
     fun simulateVoiceTrigger() {
         voiceBridge.simulate()
@@ -1836,14 +1814,6 @@ class ClusterService : Service() {
                     scope.launch { write(chunk) }
                 }
             }
-            if (ClusterControlFrames.isKeylessChallenge(value) &&
-                ClusterRepository.keylessEnabled.value
-            ) {
-                scope.launch {
-                    write(ClusterControlFrames.buildKeylessResponse(value))
-                    ClusterRepository.keylessStatus.value = "Challenge answered"
-                }
-            }
             decodeFrame(value, ClusterRepository.telemetry.value)?.let {
                 ClusterRepository.telemetry.value = it
                 onTelemetryFrame(it, primary = (value[1].toInt() and 0xFF) == 0x10, raw = value)
@@ -1860,14 +1830,6 @@ class ClusterService : Service() {
             if (v.size > 6 && (v[1].toInt() and 0xFF) == 0x54) {
                 ClusterImageTransfer.onRequest(v)?.let { chunk ->
                     scope.launch { write(chunk) }
-                }
-            }
-            if (ClusterControlFrames.isKeylessChallenge(v) &&
-                ClusterRepository.keylessEnabled.value
-            ) {
-                scope.launch {
-                    write(ClusterControlFrames.buildKeylessResponse(v))
-                    ClusterRepository.keylessStatus.value = "Challenge answered"
                 }
             }
             decodeFrame(v, ClusterRepository.telemetry.value)?.let {

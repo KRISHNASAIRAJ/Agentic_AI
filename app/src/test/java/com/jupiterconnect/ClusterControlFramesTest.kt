@@ -3,7 +3,6 @@ package com.jupiterconnect
 import com.jupiterconnect.nav.Pictograms
 import com.jupiterconnect.protocol.ClusterControlFrames
 import org.junit.Assert.assertEquals
-import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -110,33 +109,6 @@ class ClusterControlFramesTest {
         assertEquals(0xFF, u(clamped, 2)) // 7 chats + 31 msgs
         assertEquals(0xFF, u(clamped, 3)) // 15 + 15
         assertEquals(44, u(clamped, 4))   // 300 truncated to a byte
-    }
-
-    @Test
-    fun keyless_request_uses_random_command_slice() {
-        val f = ClusterControlFrames.buildKeylessRequest(
-            ClusterControlFrames.KeylessCommand.UNLOCK, randomStart = 1, length = 4)
-        assertEquals(20, f.size)
-        assertEquals(0x9A, u(f, 0)); assertEquals(0xF1, u(f, 1))
-        assertEquals(64, u(f, 2)); assertEquals(1, u(f, 3)); assertEquals(4, u(f, 4))
-        assertEquals(0x7C, u(f, 6)); assertEquals(0x26, u(f, 7))
-        assertEquals(0x9A, u(f, 8)); assertEquals(0x16, u(f, 9))
-        assertEquals(0xFF, u(f, 19))
-    }
-
-    @Test
-    fun keyless_challenge_is_encrypted_with_apk_cipher() {
-        val challenge = ByteArray(20) { (it * 7).toByte() }
-        assertTrue(ClusterControlFrames.isKeylessChallenge(challenge.copyOf().also {
-            it[0] = 0x5A; it[1] = 0xF2.toByte()
-        }))
-        assertFalse(ClusterControlFrames.isKeylessChallenge(ByteArray(20)))
-        val cipher = ClusterControlFrames.encryptChallenge(challenge)
-        assertEquals(16, cipher.size)
-        val response = ClusterControlFrames.buildKeylessResponse(challenge)
-        assertEquals(80, u(response, 2))
-        assertEquals(cipher[1], response[6]) // slice starts at random index 1
-        assertEquals(cipher[4], response[9])
     }
 
     @Test

@@ -1821,9 +1821,6 @@ private fun ClusterControlsCard() {
     val status by ClusterRepository.settingsStatus.collectAsState()
     val handshake by ClusterRepository.handshakeStatus.collectAsState()
     val reminder by ClusterRepository.serviceReminderCode.collectAsState()
-    val keylessOn by ClusterRepository.keylessEnabled.collectAsState()
-    val keylessStatus by ClusterRepository.keylessStatus.collectAsState()
-    var confirm by remember { mutableStateOf<ClusterControlFrames.KeylessCommand?>(null) }
     var roadName by remember { mutableStateOf("") }
 
     RedCard {
@@ -1918,49 +1915,6 @@ private fun ClusterControlsCard() {
         Text(handshake, fontSize = 10.sp, color = JupiterColors.OnSurfaceVariant)
     }
 
-    Spacer(Modifier.height(10.dp))
-    RedCard {
-        Label("KEYLESS ENTRY")
-        Spacer(Modifier.height(8.dp))
-        Text("Experimental. These frames can lock/unlock the bike. Disabled by default.",
-            fontSize = 11.sp, color = JupiterColors.OnSurfaceVariant)
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Text("Enable keyless controls", Modifier.weight(1f), fontSize = 13.sp,
-                color = JupiterColors.OnSurface)
-            Switch(
-                checked = keylessOn,
-                onCheckedChange = {
-                    ClusterRepository.keylessEnabled.value = it
-                    ClusterRepository.keylessStatus.value =
-                        if (it) "Enabled - commands need confirmation" else "Keyless controls disabled"
-                },
-                colors = SwitchDefaults.colors(
-                    checkedThumbColor = Color.White,
-                    checkedTrackColor = JupiterColors.Accent,
-                ),
-            )
-        }
-        Spacer(Modifier.height(8.dp))
-        listOf(
-            "Unlock" to ClusterControlFrames.KeylessCommand.UNLOCK,
-            "Lock" to ClusterControlFrames.KeylessCommand.LOCK,
-            "Open trunk" to ClusterControlFrames.KeylessCommand.OPEN_TRUNK,
-            "Find vehicle" to ClusterControlFrames.KeylessCommand.FIND_VEHICLE,
-        ).forEach { (name, command) ->
-            SecondaryButton(
-                if (confirm == command) "Confirm $name?" else name,
-                {
-                    if (confirm == command) {
-                        ClusterRepository.sendKeyless(command)
-                        confirm = null
-                    } else confirm = command
-                },
-                Modifier.fillMaxWidth(),
-            )
-            Spacer(Modifier.height(4.dp))
-        }
-        Text(keylessStatus, fontSize = 10.sp, color = JupiterColors.OnSurfaceVariant)
-    }
 }
 
 /** Devices at the top, all settings below, in one scrollable "More" tab. */

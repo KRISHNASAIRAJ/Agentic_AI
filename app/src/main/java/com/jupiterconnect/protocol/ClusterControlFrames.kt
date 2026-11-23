@@ -1,9 +1,6 @@
 package com.jupiterconnect.protocol
 
 import java.util.Calendar
-import javax.crypto.Cipher
-import javax.crypto.spec.IvParameterSpec
-import javax.crypto.spec.SecretKeySpec
 
 /**
  * Additional phone -> cluster frames recovered from the genuine TVS Connect
@@ -277,78 +274,6 @@ object ClusterControlFrames {
         this[3] = b(((facebookChats.coerceIn(0, 15) shl 4) or (facebookMsgs.coerceIn(0, 15))))
         this[4] = b(instagram)
     }
-
-    // ------------------------------------------------------ keyless (6)
-
-    enum class KeylessCommand(val bytes: ByteArray) {
-        // KeylessEntryUtils.java:14-18. Values resolved from the referring
-        // constants in BluetoothConstants / SampleGattAttributes.
-        UNLOCK(bytes(58, 124, 38, 0x9A, 22, 0xDB, 0x57, 0xF5, 0x42, 111, 122, 51, 0x85, 56, 0xFE, 0xAC)),
-        LOCK(bytes(28, 0xF0, 64, 37, 23, 5, 91, 25, 0, 0xD1, 0xBC, 0xE7, 98, 0xB1, 0xC5, 0xDA)),
-        OPEN_TRUNK(bytes(80, 0xB2, 0xC9, 50, 0x9B, 0x88, 33, 0xCB, 0x8C, 97, 59, 0x96, 0xCB, 0xEC, 0xF8, 114)),
-        FIND_VEHICLE(bytes(95, 31, 116, 0x8A, 101, 0x57, 0x94, 0xD2, 110, 38, 0xEF, 73, 0xFC, 0xA6, 0x8F, 60)),
-    }
-
-    const val KEYLESS_INITIATE = 64
-    const val KEYLESS_RESPONSE = 80
-    private val AES_KEY = bytes(
-        122, 0xA3, 32, 77, 22, 29, 0xB5, 37, 0xF4, 0xEB, 32, 79, 0xBC, 0xD7, 0x3D, 0xD4
-    )
-
-    /**
-     * 9A F1 <requestType> <randomStart> <length> 00 <slice of command UUID> ... FF.
-     * BlePacketsProvider.byteArrayForUnLock (401-418) - the phone sends a
-     * random slice of the 16-byte command token, not the whole token.
-     */
-    fun buildKeylessFrame(
-        payload: ByteArray,
-        requestType: Int = KEYLESS_INITIATE,
-        randomStart: Int = 1,
-        length: Int = 4,
-    ): ByteArray {
-        val start = randomStart.coerceIn(1, 15)
-        val len = length.coerceIn(1, (16 - start).coerceAtMost(12))
-        val slice = payload.copyOfRange(start, start + len)
-        val b = ByteArray(20)
-        b[0] = b(0x9A); b[1] = b(0xF1)
-        b[2] = b(requestType)
-        b[3] = b(start)
-        b[4] = b(len)
-        b[5] = 0
-        slice.copyInto(b, 6)
-        b[19] = 0xFF.toByte()
-        return b
-    }
-
-    fun buildKeylessRequest(command: KeylessCommand, randomStart: Int = 1, length: Int = 4) =
-        buildKeylessFrame(command.bytes, KEYLESS_INITIATE, randomStart, length)
-
-    /**
-     * APK BluetoothUtil.cipher(): AES/CTR/NoPadding with the 16-byte key, and
-     * the received challenge frame itself as the IV. The ciphertext is then
-     * wrapped in a 9A F1 SEND_RESPONSE frame.
-     */
-    fun encryptChallenge(challenge: ByteArray): ByteArray {
-        // The frame is 20 bytes (start, DID, 16 challenge bytes, FF). The APK
-        // passes the 16-byte challenge body to cipher(), which uses it as both
-        // the AES-CTR IV and the plaintext.
-        val payload = if (challenge.size >= 20) {
-            challenge.copyOfRange(2, 18)
-        } else {
-            challenge.copyOf(16)
-        }
-        val cipher = Cipher.getInstance("AES/CTR/NoPadding")
-        cipher.init(Cipher.ENCRYPT_MODE, SecretKeySpec(AES_KEY, "AES"), IvParameterSpec(payload))
-        return cipher.doFinal(payload)
-    }
-
-    fun buildKeylessResponse(challenge: ByteArray, randomStart: Int = 1, length: Int = 4) =
-        buildKeylessFrame(encryptChallenge(challenge), KEYLESS_RESPONSE, randomStart, length)
-
-    /** True for the 5A F2 challenge frame the cluster sends during keyless auth. */
-    fun isKeylessChallenge(raw: ByteArray) =
-        raw.size >= 20 && (raw[0].toInt() and 0xFF) == 0x5A &&
-            (raw[1].toInt() and 0xFF) == 0xF2
 
     // --------------------------------------------------- handshake setup (7)
 

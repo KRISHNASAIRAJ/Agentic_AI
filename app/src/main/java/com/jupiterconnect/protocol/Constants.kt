@@ -28,8 +28,6 @@ object InboundId {
     const val ECONOMY = 0x19
     const val CLUSTER_ADDRESS = 0x42
     const val MUSIC = 0x6B
-    /** 5A F2 - keyless-entry challenge from the cluster (CHALLENGE_FRAME). */
-    const val KEYLESS_CHALLENGE = 0xF2
 }
 
 /** A device seen during a BLE scan. Clusters are flagged but never hidden. */

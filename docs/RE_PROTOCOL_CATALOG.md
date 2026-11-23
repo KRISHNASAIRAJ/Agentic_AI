@@ -163,7 +163,8 @@ Write order: **text frame first, sleep 400 ms, then control** (`BleEngine.java:4
 - `setTripValue()` sends `5A F1` (see 4.3).
 - Service reminders are **RX-only** from the cluster (`@ParsingMeta(frameType=SERVICE_REMINDER)` in the speedometer models); no TX reset frame found.
 
-### 4.8 Keyless entry (advanced, local)
+### 4.8 Keyless entry (advanced, local) — NOT IMPLEMENTED
+Documented for reference only; removed from the app at the user's request.
 `9A F1 <64 init / 80 challenge> <random> <len> <00> <16-byte XOR-obfuscated command UUID> <00 pad> FF`; commands in `KeylessEntryUtils.java:14-19`, AES-CTR keyed challenge at `:19`, `BleEngine.writeChallenge():4279`.
 
 ### 4.9 Receive-side status (`VAClusterOperator.java:41-52`, no writes)
@@ -210,7 +211,7 @@ Inbound decoded: speedometer `0x10`, service `0x11`, engine `0x18`, economy `0x1
 | 3 | Trip select/reset + service reminder RX | `5A F1`, RX `0x11` byte 4 | ✅ Implemented |
 | 4 | Pictogram tables + road-name frame | `5A 49` | ✅ Implemented — `nav/Pictograms.kt` has verbatim `fromU725`, `fromMmiV2`, `fromManeuverId`; More → Navigation Extras |
 | 5 | Social chats-vs-messages packing | `5B 9C` | ✅ Implemented — `buildSocialCountsV2` |
-| 6 | Keyless entry / find-my | `9A F1` + AES-CTR challenge | ✅ Implemented — **disabled by default**, two-step confirmation required. RX `5A F2` challenge auto-answered only while enabled. |
+| 6 | Keyless entry / find-my | `9A F1` + AES-CTR challenge | ❌ Removed — frame builders, UI and RX challenge handling deleted at the user's request. Documented above only as reverse-engineering reference for the genuine APK. |
 | 7 | VIN / DOB / user ID handshake | `5B 22/7E/80`, `5A 7D` | ✅ Implemented — More → Setup Data (manual only) |
 | 8 | High speed alert | `5B 4C` "HIGH SPEED ALERT" + held text + vibration + status-bar notification | ✅ Implemented — Settings → HIGH SPEED ALERT; threshold/switch persisted; one-shot with re-arm below limit. Keepalive `5B 4A` byte 3 intentionally NOT written. |
 
