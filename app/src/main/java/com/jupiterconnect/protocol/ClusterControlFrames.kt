@@ -238,6 +238,26 @@ object ClusterControlFrames {
         return b
     }
 
+    // --------------------------------------------------- speed alert
+
+    /**
+     * Genuine TVS Connect over-speed alert trigger:
+     * `5B 4C` + ASCII "HIGH SPEED ALERT" + 1 zero pad + `FF` = 20 bytes.
+     * Transcribed from U368SendDataToCluster.sendHighSpeedMessage() (303-317);
+     * the same frame is used by U449/U507. This is a dedicated message frame -
+     * it never touches the 0x4A keepalive (whose byte 3 must stay zero).
+     */
+    fun buildHighSpeedAlertFrame(text: String = "HIGH SPEED ALERT"): ByteArray {
+        val b = dataFrame(0x4C) // header + 0xFF postfix, rest zeroed
+        val clean = StringBuilder()
+        for (ch in text) {
+            if (clean.length >= 16) break
+            clean.append(if (ch.code in 0x20..0x7E) ch else ' ')
+        }
+        clean.toString().toByteArray(Charsets.US_ASCII).copyInto(b, 2)
+        return b
+    }
+
     // --------------------------------------------------- social counters (5)
 
     /**

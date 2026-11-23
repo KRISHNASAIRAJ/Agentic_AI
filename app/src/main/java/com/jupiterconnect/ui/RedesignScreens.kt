@@ -1272,6 +1272,11 @@ fun FindScreenV2(
                 else "Saved ${parked!!.timeLabel}" +
                     if (parked!!.approximate) " · approximate fix" else "",
                 fontSize = 13.sp, color = JupiterColors.OnSurfaceVariant)
+            val parkedNote by ClusterRepository.parkedStatus.collectAsState()
+            if (parkedNote.isNotBlank()) {
+                Spacer(Modifier.height(4.dp))
+                Text(parkedNote, fontSize = 11.sp, color = JupiterColors.Accent)
+            }
             Spacer(Modifier.height(10.dp))
             SecondaryButton("Refresh location",
                 { ClusterRepository.refreshParkedLocation() },
@@ -1511,18 +1516,18 @@ private fun SettingsContent(
                     fontSize = 11.sp, color = JupiterColors.OnSurfaceVariant)
             }
             OutlinedButton(
-                onClick = { ClusterRepository.highSpeedAlertSpeed.value = (limit - 5).coerceIn(20, 100) },
+                onClick = { ClusterRepository.setHighSpeedAlertSpeed(limit - 5) },
                 modifier = Modifier.size(44.dp), shape = RoundedCornerShape(14.dp),
             ) { Text("-") }
             Spacer(Modifier.width(6.dp))
             OutlinedButton(
-                onClick = { ClusterRepository.highSpeedAlertSpeed.value = (limit + 5).coerceIn(20, 100) },
+                onClick = { ClusterRepository.setHighSpeedAlertSpeed(limit + 5) },
                 modifier = Modifier.size(44.dp), shape = RoundedCornerShape(14.dp),
             ) { Text("+") }
             Spacer(Modifier.width(8.dp))
             Switch(
                 checked = alert,
-                onCheckedChange = { ClusterRepository.highSpeedAlert.value = it },
+                onCheckedChange = { ClusterRepository.setHighSpeedAlert(it) },
                 colors = SwitchDefaults.colors(
                     checkedThumbColor = Color.White,
                     checkedTrackColor = JupiterColors.Red,
@@ -1530,6 +1535,15 @@ private fun SettingsContent(
                 ),
             )
         }
+        Spacer(Modifier.height(8.dp))
+        Text(
+            "Fires once when speed crosses the limit, then re-arms after you slow " +
+                "down. Sends the cluster's HIGH SPEED ALERT frame and vibrates the phone.",
+            fontSize = 10.sp, color = JupiterColors.OnSurfaceVariant,
+        )
+        Spacer(Modifier.height(8.dp))
+        SecondaryButton("Test alert now", { ClusterRepository.testSpeedAlert() },
+            Modifier.fillMaxWidth())
     }
     Spacer(Modifier.height(10.dp))
     RedCard(bar = true) {
@@ -1783,6 +1797,9 @@ private fun ClusterControlsCard() {
     val tsl by ClusterRepository.tslSetting.collectAsState()
     val regen by ClusterRepository.regenSetting.collectAsState()
     val mode by ClusterRepository.rideMode.collectAsState()
+    val applied by ClusterRepository.appliedSettings.collectAsState()
+    val dirty = illumination != applied.illumination || tsl != applied.tsl ||
+        regen != applied.regen || mode != applied.rideMode
     val status by ClusterRepository.settingsStatus.collectAsState()
     val handshake by ClusterRepository.handshakeStatus.collectAsState()
     val reminder by ClusterRepository.serviceReminderCode.collectAsState()
@@ -1794,8 +1811,9 @@ private fun ClusterControlsCard() {
     RedCard {
         Label("CLUSTER SETTINGS")
         Spacer(Modifier.height(8.dp))
-        Text("Changes apply instantly. Saved values are resent each time the ignition comes on.",
-            fontSize = 10.sp, color = JupiterColors.OnSurfaceVariant)
+        Text(if (dirty) "Unapplied changes - tap Apply to send them. The cluster still shows the last applied values."
+            else "Only applied values reach the cluster. They are remembered and re-sent when the ignition comes on.",
+            fontSize = 10.sp, color = if (dirty) JupiterColors.Red else JupiterColors.OnSurfaceVariant)
         Spacer(Modifier.height(8.dp))
         Text("Illumination / theme", fontSize = 12.sp, color = JupiterColors.OnSurfaceVariant)
         Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
@@ -1829,8 +1847,14 @@ private fun ClusterControlsCard() {
             }
         }
         Spacer(Modifier.height(10.dp))
-        SecondaryButton("Apply settings to cluster", { ClusterRepository.applyClusterSettings() },
-            Modifier.fillMaxWidth())
+        Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+            SecondaryButton("Apply settings to cluster",
+                { ClusterRepository.applyClusterSettings() }, Modifier.weight(2f))
+            if (dirty) {
+                SecondaryButton("Revert", { ClusterRepository.discardSettingsChanges() },
+                    Modifier.weight(1f))
+            }
+        }
         Text(status, fontSize = 10.sp, color = JupiterColors.OnSurfaceVariant)
         Spacer(Modifier.height(6.dp))
         Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {

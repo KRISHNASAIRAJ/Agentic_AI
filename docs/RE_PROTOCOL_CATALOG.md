@@ -82,7 +82,7 @@ ISS-based carbon locally and correctly keeps it off the wire.
 | `5A F1` | Trip select / reset | `BluetoothUtil.java:1461,1520` |
 | `5A F1` / `5A F2` | Brightness, auto-brightness, regen (VA settings) | `ble/feature/utils/BluetoothUtil.java:619,885,895` |
 | `5A F2` | U577 dual timer (follow-me / idle start-stop) | `BlePacketsProvider.java:2001` |
-| `5B 4C` | Custom text line 1 / nav assist / traffic select | `BluetoothUtil.java:1283,1375,1448,883,898` |
+| `5B 4C` | Custom text line 1 / nav assist / traffic select / **high speed alert trigger** | `BluetoothUtil.java:1283,1375,1448,883,898`; `U368SendDataToCluster.java:303-317` |
 | `5B 63` | Custom text line 2 (also music artist) | `BluetoothUtil.java:1283` |
 | `5B 52` | Rider name | `BluetoothUtil.java:1424` |
 | `5B 43` | Caller ID (category 1 number / 2 name / 3 area) | `BlePacketsProvider.java:437`; `TelephonyUtils.java:269-283` |
@@ -169,6 +169,24 @@ Write order: **text frame first, sleep 400 ms, then control** (`BleEngine.java:4
 ### 4.9 Receive-side status (`VAClusterOperator.java:41-52`, no writes)
 `valueReceived[12]==4` → invoke voice assist; `[11]>33` → cluster at max brightness; `[2]` → over-speed TTS.
 
+### 4.10 Over-speed alert — two separate frames
+1. **Threshold setting:** the limit is byte `[3]` of the `5B 4A` mobile-data frame
+   (`BlePacketsProvider.java:721-738,1193-1196`); `120` (0x78) = disabled,
+   `255` (0xFF) = disabled on U408, enabled = the limit itself. Detection is
+   nevertheless done in the app (`U368ClusterDataManager:499-505`,
+   `U368AlertHelper:221-268`): `speed >= limit`, one-shot until speed drops
+   below the limit.
+   > **Jupiter Connect deliberately does NOT write `5B 4A` byte 3.** The stable
+   > keepalive leaves it zero: a past experiment writing a value there changed
+   > cluster behaviour after ~1 min and dropped the BLE link. The user's hard
+   > constraint is "keepalive bytes 3/11 remain untouched". Detection therefore
+   > stays entirely app-side.
+2. **Alert trigger:** `5B 4C` + ASCII `"HIGH SPEED ALERT"` (16 bytes) + one
+   zero pad + `FF` = 20 bytes (`U368SendDataToCluster.sendHighSpeedMessage():303-317`,
+   also U449/U507). This is the frame that makes the cluster render its alert.
+   The Raider/U577 branch additionally posts a real Android notification
+   (`U577DashboardFragment.setOverSpeedNotification():1804-1826`).
+
 ---
 
 ## 5. Jupiter Connect gap analysis
@@ -194,9 +212,10 @@ Inbound decoded: speedometer `0x10`, service `0x11`, engine `0x18`, economy `0x1
 | 5 | Social chats-vs-messages packing | `5B 9C` | ✅ Implemented — `buildSocialCountsV2` |
 | 6 | Keyless entry / find-my | `9A F1` + AES-CTR challenge | ✅ Implemented — **disabled by default**, two-step confirmation required. RX `5A F2` challenge auto-answered only while enabled. |
 | 7 | VIN / DOB / user ID handshake | `5B 22/7E/80`, `5A 7D` | ✅ Implemented — More → Setup Data (manual only) |
+| 8 | High speed alert | `5B 4C` "HIGH SPEED ALERT" + held text + vibration + status-bar notification | ✅ Implemented — Settings → HIGH SPEED ALERT; threshold/switch persisted; one-shot with re-arm below limit. Keepalive `5B 4A` byte 3 intentionally NOT written. |
 
 All new frames live in `protocol/ClusterControlFrames.kt` and are verified by
-`ClusterControlFramesTest.kt` (12 tests). None are sent automatically on
+`ClusterControlFramesTest.kt` (13 tests). None are sent automatically on
 connect, so Bluetooth link behaviour is unchanged.
 
 ### 5.3 Deliberately out of scope

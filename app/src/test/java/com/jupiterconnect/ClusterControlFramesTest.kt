@@ -84,6 +84,22 @@ class ClusterControlFramesTest {
     }
 
     @Test
+    fun high_speed_alert_frame_matches_apk_layout() {
+        val f = ClusterControlFrames.buildHighSpeedAlertFrame()
+        assertEquals(20, f.size)
+        assertEquals(0x5B, u(f, 0)); assertEquals(0x4C, u(f, 1))
+        assertEquals("HIGH SPEED ALERT", String(f, 2, 16, Charsets.US_ASCII))
+        assertEquals(0, u(f, 18))   // single zero pad
+        assertEquals(0xFF, u(f, 19)) // postfix
+        // Custom text is sanitised and capped to the 16-byte payload.
+        val custom = ClusterControlFrames.buildHighSpeedAlertFrame("ABC\nDEF")
+        assertEquals("ABC DEF", String(custom, 2, 7, Charsets.US_ASCII))
+        val long = ClusterControlFrames.buildHighSpeedAlertFrame("12345678901234567890")
+        assertEquals("1234567890123456", String(long, 2, 16, Charsets.US_ASCII))
+        assertEquals(0xFF, u(long, 19))
+    }
+
+    @Test
     fun social_split_uses_apk_bit_packing() {
         val f = ClusterControlFrames.buildSocialCountsV2(2, 5, 3, 4, 7)
         assertEquals(0x5B, u(f, 0)); assertEquals(0x9C, u(f, 1))

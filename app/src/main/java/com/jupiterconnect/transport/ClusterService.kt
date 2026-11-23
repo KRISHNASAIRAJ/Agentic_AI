@@ -105,6 +105,8 @@ object ClusterRepository {
     private const val KEY_TSL = "cluster_tsl"
     private const val KEY_REGEN = "cluster_regen"
     private const val KEY_RIDE_MODE = "cluster_ride_mode"
+    private const val KEY_SPEED_ALERT = "high_speed_alert"
+    private const val KEY_SPEED_ALERT_LIMIT = "high_speed_alert_limit"
     private var prefs: SharedPreferences? = null
 
     /** One-time init from the app or the service; reads persisted settings. */
@@ -116,10 +118,21 @@ object ClusterRepository {
         riderNameEnabled.value = prefs?.getBoolean(KEY_RIDER_NAME_ON, true) ?: true
         weatherCity.value = prefs?.getString(KEY_WEATHER_CITY, Cities.HYDERABAD.name)
             ?: Cities.HYDERABAD.name
-        illumination.value = prefs?.getInt(KEY_ILLUMINATION, 2) ?: 2
-        tslSetting.value = prefs?.getInt(KEY_TSL, 0) ?: 0
-        regenSetting.value = prefs?.getInt(KEY_REGEN, 0) ?: 0
-        rideMode.value = prefs?.getInt(KEY_RIDE_MODE, 0) ?: 0
+        val applied = AppliedSettings(
+            illumination = prefs?.getInt(KEY_ILLUMINATION, 2) ?: 2,
+            tsl = prefs?.getInt(KEY_TSL, 0) ?: 0,
+            regen = prefs?.getInt(KEY_REGEN, 0) ?: 0,
+            rideMode = prefs?.getInt(KEY_RIDE_MODE, 0) ?: 0,
+        )
+        appliedSettings.value = applied
+        // The draft starts equal to what was last applied: no phantom "unsaved"
+        // state, and never a chip selection that silently changes the cluster.
+        illumination.value = applied.illumination
+        tslSetting.value = applied.tsl
+        regenSetting.value = applied.regen
+        rideMode.value = applied.rideMode
+        highSpeedAlert.value = prefs?.getBoolean(KEY_SPEED_ALERT, false) ?: false
+        highSpeedAlertSpeed.value = prefs?.getInt(KEY_SPEED_ALERT_LIMIT, 60) ?: 60
         ClusterImageTransfer.restore(context)
         riderPhotoReady.value = ClusterImageTransfer.hasImage
     }
@@ -162,6 +175,27 @@ object ClusterRepository {
     val dnd = MutableStateFlow(false)
     val highSpeedAlert = MutableStateFlow(false)
     val highSpeedAlertSpeed = MutableStateFlow(60)
+
+    /** Persist the speed-alert switch. Turning it off clears any active alert. */
+    fun setHighSpeedAlert(enabled: Boolean) {
+        highSpeedAlert.value = enabled
+        prefs?.edit()?.putBoolean(KEY_SPEED_ALERT, enabled)?.apply()
+        if (!enabled) service?.clearSpeedAlert()
+    }
+
+    /** Persist the threshold (20-100 km/h), matching the settings UI range. */
+    fun setHighSpeedAlertSpeed(limit: Int) {
+        val v = limit.coerceIn(20, 100)
+        highSpeedAlertSpeed.value = v
+        prefs?.edit()?.putInt(KEY_SPEED_ALERT_LIMIT, v)?.apply()
+        // If the rider lowers the limit below the current speed, re-evaluate on
+        // the next telemetry frame instead of waiting for another crossing.
+        service?.rearmSpeedAlert()
+    }
+
+    /** Fire one alert now, for the "Test" button in Settings. */
+    fun testSpeedAlert() = service?.testSpeedAlert()
+
     val socialCounts = MutableStateFlow(Triple(0, 0, 0))
     // Genuine APK packs WhatsApp/Facebook as chats + messages (5).
     data class SocialSplit(
@@ -173,13 +207,24 @@ object ClusterRepository {
     /** Last raw service-reminder byte from the 0x11 frame. */
     val serviceReminderCode = MutableStateFlow(0)
 
-    /** Persisted cluster settings, applied only when the user taps Apply. */
+    /** Draft values shown in the More screen. Tapping a chip only changes these. */
     val illumination = MutableStateFlow(2)
     val tslSetting = MutableStateFlow(0)
     val regenSetting = MutableStateFlow(0)
     val rideMode = MutableStateFlow(0)
+
+    /** Values actually sent on the last Apply, re-sent once per ignition. */
+    data class AppliedSettings(
+        val illumination: Int = 2,
+        val tsl: Int = 0,
+        val regen: Int = 0,
+        val rideMode: Int = 0,
+    )
+    val appliedSettings = MutableStateFlow(AppliedSettings())
     val selectedTrip = MutableStateFlow(0)
-    val settingsStatus = MutableStateFlow("Settings not sent yet")
+    val settingsStatus = MutableStateFlow("Nothing applied yet")
+    /** Feedback for the Find-tab Refresh location button. */
+    val parkedStatus = MutableStateFlow("")
     val handshakeStatus = MutableStateFlow("Setup data not sent yet")
     /**
      * Keyless control is OFF by default. Enabling it only exposes the buttons;
@@ -201,29 +246,35 @@ object ClusterRepository {
 
     fun clearSocialSplit() { socialSplit.value = SocialSplit() }
 
-    /** Each setter applies the change to the dash immediately, with no Apply button. */
-    fun setIllumination(level: Int) {
-        illumination.value = level.coerceIn(1, 5)
-        prefs?.edit()?.putInt(KEY_ILLUMINATION, illumination.value)?.apply()
-        service?.sendIlluminationSetting(illumination.value)
+    /**
+     * Chip taps only change the local draft. No BLE write, no persistence:
+     * the cluster keeps showing the last applied values until Apply is pressed.
+     */
+    fun setIllumination(level: Int) { illumination.value = level.coerceIn(1, 5) }
+    fun setTsl(code: Int) { tslSetting.value = code }
+    fun setRegen(level: Int) { regenSetting.value = level.coerceIn(0, 3) }
+    fun setRideMode(code: Int) { rideMode.value = code }
+
+    fun discardSettingsChanges() {
+        val a = appliedSettings.value
+        illumination.value = a.illumination
+        tslSetting.value = a.tsl
+        regenSetting.value = a.regen
+        rideMode.value = a.rideMode
+        settingsStatus.value = "Unapplied changes discarded"
     }
 
-    fun setTsl(code: Int) {
-        tslSetting.value = code
-        prefs?.edit()?.putInt(KEY_TSL, code)?.apply()
-        service?.sendTslSetting(code)
-    }
-
-    fun setRegen(level: Int) {
-        regenSetting.value = level.coerceIn(0, 3)
-        prefs?.edit()?.putInt(KEY_REGEN, regenSetting.value)?.apply()
-        service?.sendRegenSetting(regenSetting.value)
-    }
-
-    fun setRideMode(code: Int) {
-        rideMode.value = code
-        prefs?.edit()?.putInt(KEY_RIDE_MODE, code)?.apply()
-        service?.sendRideModeSetting(code)
+    /** Called only after Apply has written the frames to the cluster. */
+    fun markSettingsApplied() {
+        val draft = AppliedSettings(
+            illumination.value, tslSetting.value, regenSetting.value, rideMode.value)
+        appliedSettings.value = draft
+        prefs?.edit()
+            ?.putInt(KEY_ILLUMINATION, draft.illumination)
+            ?.putInt(KEY_TSL, draft.tsl)
+            ?.putInt(KEY_REGEN, draft.regen)
+            ?.putInt(KEY_RIDE_MODE, draft.rideMode)
+            ?.apply()
     }
 
     // Experimental: send text frames with a response. The stock app uses
@@ -364,8 +415,9 @@ class ClusterService : Service() {
     private val coldStartTracker = ColdStartTracker()
     private val writeLock = Mutex()
     private val main = Handler(Looper.getMainLooper())
-    // Saved settings are written once when the ignition comes on, then again
-    // whenever the rider changes a chip. Reset on every ignition-off edge.
+    // Last APPLIED settings are re-sent once when the ignition comes on. A
+    // chip tap never writes to the cluster; only the Apply button does. Reset
+    // on every ignition-off edge.
     @Volatile private var lastIgnitionOn = false
     @Volatile private var settingsAppliedThisIgnition = false
     // The foreground notification is only meaningful while Bluetooth is on.
@@ -402,6 +454,10 @@ class ClusterService : Service() {
     private var syncJob: Job? = null
     private var reconnectJob: Job? = null
     private var connectWatchdog: Job? = null
+    // A GATT connect attempted while bonding is still in progress fails with
+    // 147 on some phones - the classic "connects only sometimes" symptom.
+    private var bondWaitJob: Job? = null
+    private var bondWaiter: BroadcastReceiver? = null
     private var reconnectAttempts = 0
     private var writeFailures = 0
     /** Set by an explicit disconnect so the auto-retry never fights the user. */
@@ -679,6 +735,10 @@ class ClusterService : Service() {
     /** Low-level connect used by both user taps and the retry loop. */
     private fun attemptConnect(address: String) {
         if (!hasBluetoothPermission()) return
+        if (bondWaitJob?.isActive == true) {
+            FrameLog.note("CONNECT ignored: waiting for pairing")
+            return
+        }
         scanCallback?.let { cb -> runCatching { adapter?.bluetoothLeScanner?.stopScan(cb) } }
         ClusterRepository.scanning.value = false
         if (gatt != null) {
@@ -692,14 +752,77 @@ class ClusterService : Service() {
                 error = e.message)
             return
         }
-        // Bond first when needed - some clusters refuse GATT until bonded.
+        // Some clusters refuse GATT until bonded, but a connect issued while
+        // pairing is still running fails with 147. Finish pairing first.
         if (device.bondState != BluetoothDevice.BOND_BONDED) {
-            runCatching { device.createBond() }
-            Log.i(TAG, "createBond requested for $address")
+            if (device.bondState == BluetoothDevice.BOND_NONE) {
+                runCatching { device.createBond() }
+                Log.i(TAG, "createBond requested for $address")
+            }
+            connectWhenBonded(device, address)
+            return
         }
+        doConnect(device, address)
+    }
+
+    private fun doConnect(device: BluetoothDevice, address: String) {
+        if (gatt != null) return
+        FrameLog.note("CONNECT GATT $address")
         Log.i(TAG, "connectGatt -> $address")
         gatt = device.connectGatt(this, false, gattCallback, BluetoothDevice.TRANSPORT_LE)
         armConnectWatchdog()
+    }
+
+    /** Wait for the pairing broadcast, with a hard timeout so we never stall. */
+    private fun connectWhenBonded(device: BluetoothDevice, address: String) {
+        finishBondWait()
+        ClusterRepository.telemetry.value = ClusterRepository.telemetry.value.copy(
+            error = "Pairing with cluster...")
+        val receiver = object : BroadcastReceiver() {
+            override fun onReceive(ctx: Context?, intent: Intent?) {
+                val extra: BluetoothDevice? =
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                        intent?.getParcelableExtra(
+                            BluetoothDevice.EXTRA_DEVICE, BluetoothDevice::class.java)
+                    } else {
+                        @Suppress("DEPRECATION")
+                        intent?.getParcelableExtra(BluetoothDevice.EXTRA_DEVICE)
+                    }
+                if (extra?.address != address) return
+                when (intent?.getIntExtra(BluetoothDevice.EXTRA_BOND_STATE, -1)) {
+                    BluetoothDevice.BOND_BONDED, BluetoothDevice.BOND_NONE -> {
+                        val state = intent.getIntExtra(BluetoothDevice.EXTRA_BOND_STATE, -1)
+                        FrameLog.note("PAIR state=$state for $address - connecting")
+                        finishBondWait()
+                        doConnect(device, address)
+                    }
+                }
+            }
+        }
+        bondWaiter = receiver
+        val filter = IntentFilter(BluetoothDevice.ACTION_BOND_STATE_CHANGED)
+        runCatching {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                registerReceiver(receiver, filter, Context.RECEIVER_NOT_EXPORTED)
+            } else {
+                registerReceiver(receiver, filter)
+            }
+        }
+        bondWaitJob = scope.launch {
+            delay(15_000L)
+            if (bondWaiter === receiver) {
+                FrameLog.note("PAIR wait timed out - connecting anyway")
+                finishBondWait()
+                doConnect(device, address)
+            }
+        }
+    }
+
+    private fun finishBondWait() {
+        bondWaitJob?.cancel()
+        bondWaitJob = null
+        bondWaiter?.let { runCatching { unregisterReceiver(it) } }
+        bondWaiter = null
     }
 
     /**
@@ -719,6 +842,19 @@ class ClusterService : Service() {
         }
     }
 
+    /**
+     * A bare close() on Android can leave a half-open GATT client behind; the
+     * next connectGatt then fails with 147 "sometimes, but not always". Always
+     * ask the stack to disconnect first, and close only after it has settled.
+     * The DISCONNECTED callback still closes its own Gatt immediately - that is
+     * the one place where Android has already finished the teardown.
+     */
+    private fun closeGattSafely(g: BluetoothGatt?, disconnectFirst: Boolean) {
+        if (g == null) return
+        if (disconnectFirst) runCatching { g.disconnect() }
+        main.postDelayed({ runCatching { g.close() } }, if (disconnectFirst) 750L else 0L)
+    }
+
     /** Clear a connect that never came up and hand control back to the backoff loop. */
     private fun recoverStalledConnect() {
         FrameLog.note("CONNECT STALLED ${CONNECT_WATCHDOG_MS / 1000}s - dropping and retrying")
@@ -726,7 +862,7 @@ class ClusterService : Service() {
         gatt = null
         writeChar = null
         connectionEstablished = false
-        runCatching { g?.close() }
+        closeGattSafely(g, disconnectFirst = true)
         connectWatchdog?.cancel()
         connectWatchdog = null
         keepaliveJob?.cancel()
@@ -765,7 +901,7 @@ class ClusterService : Service() {
             val stale = gatt
             gatt = null
             writeChar = null
-            runCatching { stale?.close() }
+            closeGattSafely(stale, disconnectFirst = true)
             FrameLog.note("Dropped stale unconnected GATT before redial")
         }
         connectWatchdog?.cancel()
@@ -793,33 +929,76 @@ class ClusterService : Service() {
         else -> "Link lost (status $status) - reconnecting"
     }
 
-    /** Active only while the cluster is linked, like TVS Connect. */
+    /**
+     * Over-speed detection, mirroring TVS Connect: the phone watches the speed
+     * reported by the cluster, fires once when it crosses the limit, and only
+     * re-arms after the rider drops clearly below it. Genuine APK behaviour is
+     * `speed >= limit` with the flag reset below the limit (U368AlertHelper).
+     */
     private fun checkSpeedAlert(t: Telemetry) {
         if (!t.connected || !ClusterRepository.highSpeedAlert.value) {
-            speedAlertActive = false
+            if (speedAlertActive) clearSpeedAlert()
             return
         }
-        val over = t.speedKmh > ClusterRepository.highSpeedAlertSpeed.value
-        if (over == speedAlertActive) return
-        speedAlertActive = over
-        if (over) {
-            val now = System.currentTimeMillis()
-            // A rising edge can flicker when speed hovers at the limit. Keep a
-            // short cooldown so it vibrates once per real overspeed event.
-            if (now - lastSpeedAlertMs < 10_000L) return
-            lastSpeedAlertMs = now
-            FrameLog.note("SPEED ALERT ${t.speedKmh} > ${ClusterRepository.highSpeedAlertSpeed.value}")
-            // Use the held-text path: a direct 0x4F write is overwritten by the
-            // navigation bridge on its next 1.5 s tick, so the rider never saw it.
-            ClusterRepository.showText("OVER SPEED ${t.speedKmh}", holdMs = 5_000L)
-            val vibrator = getSystemService(android.os.Vibrator::class.java)
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                vibrator?.vibrate(android.os.VibrationEffect.createOneShot(180, 180))
-            } else {
-                @Suppress("DEPRECATION")
-                vibrator?.vibrate(180L)
-            }
+        val limit = ClusterRepository.highSpeedAlertSpeed.value
+        if (speedAlertActive) {
+            // One-shot: stay silent until the bike drops below the limit.
+            if (t.speedKmh < limit - SPEED_ALERT_HYSTERESIS) speedAlertActive = false
+            return
         }
+        if (t.speedKmh <= 0 || t.speedKmh < limit) return
+        speedAlertActive = true
+        // A brief debounce stops a jittery sensor at the limit from firing
+        // twice in the same crossing. The one-shot flag above handles the rest.
+        val now = System.currentTimeMillis()
+        if (now - lastSpeedAlertMs < 2_000L) return
+        lastSpeedAlertMs = now
+        fireSpeedAlert(t.speedKmh, limit)
+    }
+
+    /**
+     * Send the genuine `5B 4C` "HIGH SPEED ALERT" message frame, hold the same
+     * warning on the cluster's text row, vibrate and post a status-bar alert.
+     * The 0x4A keepalive is deliberately untouched - writing its byte 3 used to
+     * drop the BLE link, so all detection stays in the app.
+     */
+    private fun fireSpeedAlert(speed: Int, limit: Int) {
+        val frame = ClusterControlFrames.buildHighSpeedAlertFrame()
+        scope.launch { write(frame) }
+        FrameLog.note("SPEED ALERT $speed >= $limit frame=${hex(frame)}")
+        // Held text survives the navigation bridge's next 1.5 s refresh; a bare
+        // 0x4F write is overwritten before the rider can read it.
+        ClusterRepository.showText("HIGH SPEED $speed km/h", holdMs = 5_000L)
+        val vibrator = getSystemService(android.os.Vibrator::class.java)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            vibrator?.vibrate(android.os.VibrationEffect.createOneShot(180, 180))
+        } else {
+            @Suppress("DEPRECATION")
+            vibrator?.vibrate(180L)
+        }
+        postSpeedAlertNotification(speed, limit)
+        FeatureVerification.log("Speed alert", Status.APPLIED,
+            "$speed >= $limit km/h", hex(frame))
+    }
+
+    /** Clear the one-shot flag and dismiss the phone notification. */
+    fun clearSpeedAlert() {
+        speedAlertActive = false
+        runCatching {
+            getSystemService(NotificationManager::class.java)?.cancel(NOTIF_SPEED_ALERT)
+        }
+    }
+
+    /** Re-evaluate immediately after the rider changes the threshold. */
+    fun rearmSpeedAlert() {
+        speedAlertActive = false
+        checkSpeedAlert(ClusterRepository.telemetry.value)
+    }
+
+    /** Settings "Test" button: fire the alert without waiting for a crossing. */
+    fun testSpeedAlert() {
+        val limit = ClusterRepository.highSpeedAlertSpeed.value
+        fireSpeedAlert(limit + 1, limit)
     }
 
     /** GPS speed for the Kalman fusion with the cluster speedometer. */
@@ -888,21 +1067,27 @@ class ClusterService : Service() {
     }
 
     /**
-     * Write the saved settings once per ignition cycle. Keyless commands, trip
-     * resets and one-shot setup frames are deliberately NOT part of this - only
-     * persistent display settings are safe to apply automatically.
+     * Re-send the values from the last Apply once per ignition cycle. Keyless
+     * commands, trip resets and one-shot setup frames are deliberately NOT part
+     * of this. Unapplied chip selections are ignored here by design.
      */
     private fun applySavedSettingsOnIgnition() {
         settingsAppliedThisIgnition = true
-        val r = ClusterRepository
-        sendIlluminationSetting(r.illumination.value)
-        sendTslSetting(r.tslSetting.value)
-        sendRegenSetting(r.regenSetting.value)
-        if (r.rideMode.value != 0) sendRideModeSetting(r.rideMode.value)
+        val a = ClusterRepository.appliedSettings.value
+        scope.launch {
+            write(ClusterControlFrames.buildVehicleControlFrame(
+                illumination = a.illumination, tsl = a.tsl))
+            write(ClusterControlFrames.buildRegenFrame(a.regen))
+            if (a.rideMode != 0) {
+                write(ClusterControlFrames.buildRideModeFrame(
+                    a.rideMode, a.illumination, a.tsl))
+            }
+        }
+        FrameLog.note("IGNITION APPLY $a")
         FeatureVerification.log(
             "Ignition auto-apply", Status.APPLIED,
-            "illumination ${r.illumination.value}, TSL ${r.tslSetting.value}, " +
-                "regen ${r.regenSetting.value}, mode ${r.rideMode.value}")
+            "illumination ${a.illumination}, TSL ${a.tsl}, " +
+                "regen ${a.regen}, mode ${a.rideMode}")
     }
 
     /** Fan out one decoded frame to rides, voice, speed graph and warm-up. */
@@ -975,67 +1160,77 @@ class ClusterService : Service() {
     }
 
     /**
-     * Capture the parking spot the instant the link drops. Ask for a fresh fix
-     * (the scooter is parked now, not where the phone last had a cached fix),
-     * and fall back to the best cached fix if a fresh one takes too long. The
-     * saved time is the disconnect time, never the GPS fix time, so "Saved" is
-     * accurate. [connectionEstablished] keeps the spot frozen until the next
-     * real connect/disconnect cycle.
+     * Capture the parking spot the instant the link drops. Save the best cached
+     * fix immediately (so a drop always leaves a spot), then try to improve it
+     * with a fresh fix for up to 5 s. The saved time is the disconnect time, not
+     * the GPS fix time, so "Saved" stays accurate. [connectionEstablished] keeps
+     * the spot frozen until the next real connect/disconnect cycle.
      */
     @SuppressLint("MissingPermission")
-    private fun saveParkedLocation(force: Boolean = false, preserveAtMs: Long = 0L) {
+    private fun saveParkedLocation(
+        force: Boolean = false,
+        preserveAtMs: Long = 0L,
+        reportStatus: Boolean = false,
+    ) {
         if (!force && !connectionEstablished) return
         connectionEstablished = false
         val epoch = ++parkingEpoch
+        fun report(msg: String) {
+            FrameLog.note("PARKED $msg")
+            if (reportStatus) ClusterRepository.parkedStatus.value = msg
+        }
         val locationAllowed =
             ContextCompat.checkSelfPermission(this, android.Manifest.permission.ACCESS_FINE_LOCATION) ==
                 PackageManager.PERMISSION_GRANTED ||
                 ContextCompat.checkSelfPermission(this, android.Manifest.permission.ACCESS_COARSE_LOCATION) ==
                 PackageManager.PERMISSION_GRANTED
         if (!locationAllowed) {
-            FrameLog.note("PARKED skipped: no location permission")
+            report("no location permission")
             return
         }
         val manager = getSystemService(Context.LOCATION_SERVICE) as? LocationManager ?: return
-        val providers = listOf(LocationManager.GPS_PROVIDER, LocationManager.NETWORK_PROVIDER)
-            .filter { runCatching { manager.isProviderEnabled(it) }.getOrDefault(false) }
-        if (providers.isEmpty()) {
-            FrameLog.note("PARKED skipped: no location provider enabled")
-            return
+        // PASSIVE_PROVIDER aggregates fixes other apps (Maps, etc.) already took
+        // and is often far fresher than GPS/NETWORK's own last-known values.
+        val knownProviders = listOf(
+            LocationManager.GPS_PROVIDER,
+            LocationManager.NETWORK_PROVIDER,
+            LocationManager.PASSIVE_PROVIDER,
+        )
+        val activeProviders = knownProviders.filter {
+            runCatching { manager.isProviderEnabled(it) }.getOrDefault(false)
         }
+        if (activeProviders.isEmpty()) report("no location provider enabled")
 
-        val fallback = providers
+        val fallback = knownProviders
             .mapNotNull { runCatching { manager.getLastKnownLocation(it) }.getOrNull() }
             .maxByOrNull { it.time }
         // Refresh keeps the original parking time: only the coordinates may be
         // corrected, never the moment the scooter was parked.
         val savedAt = if (preserveAtMs > 0) preserveAtMs else System.currentTimeMillis()
-        // Save immediately from the cached fix. Never wait up to 5 s for a fresh
-        // fix before the Find tab has a spot — a drop must leave one at once.
-        fallback?.let { f ->
-            RideStore.saveParkedLocation(f.latitude, f.longitude, savedAt, approximate = true)
-            FrameLog.note("PARKED cached immediately ${"%.5f,%.5f".format(f.latitude, f.longitude)}")
+        fun store(l: Location, fresh: Boolean) {
+            RideStore.saveParkedLocation(l.latitude, l.longitude, savedAt, approximate = !fresh)
+            report("${if (fresh) "fresh fix" else "cached fix"} " +
+                "${"%.5f,%.5f".format(l.latitude, l.longitude)}")
         }
-        var saved = false
+        // Never wait for a fresh fix before the Find tab has a spot.
+        fallback?.let { store(it, fresh = false) }
+
+        var saved = fallback != null
         lateinit var timeout: Runnable
         lateinit var listenerRef: LocationListener
         fun stopUpdates() {
-            providers.forEach { p -> runCatching { manager.removeUpdates(listenerRef) } }
+            activeProviders.forEach { p -> runCatching { manager.removeUpdates(listenerRef) } }
         }
-        // Local holder so the timeout can clear the same listener instance.
         listenerRef = object : LocationListener {
             override fun onLocationChanged(location: Location) {
                 if (saved || epoch != parkingEpoch) return
+                // LocationManager can replay a cached fix immediately. Never let
+                // an older replay replace the best fix we already captured.
+                if (fallback != null && location.time <= fallback.time) return
                 saved = true
                 main.removeCallbacks(timeout)
                 stopUpdates()
-                // LocationManager can replay a cached fix immediately; only
-                // call it fresh when it was obtained at disconnect time.
-                val isFresh = savedAt - location.time < 60_000L
-                RideStore.saveParkedLocation(location.latitude, location.longitude, savedAt,
-                    approximate = !isFresh)
-                FrameLog.note("PARKED ${if (isFresh) "fresh" else "replayed"} " +
-                    "${"%.5f,%.5f".format(location.latitude, location.longitude)}")
+                store(location, fresh = savedAt - location.time < 60_000L)
             }
             override fun onStatusChanged(provider: String?, status: Int,
                                          extras: android.os.Bundle?) {}
@@ -1046,19 +1241,11 @@ class ClusterService : Service() {
             if (saved || epoch != parkingEpoch) return@Runnable
             saved = true
             stopUpdates()
-            val f = fallback
-            if (f != null) {
-                // A cached fix is better than leaving last ride's spot on screen.
-                RideStore.saveParkedLocation(f.latitude, f.longitude, savedAt,
-                    approximate = true)
-                FrameLog.note("PARKED cached ${"%.5f,%.5f".format(f.latitude, f.longitude)}")
-            } else {
-                FrameLog.note("PARKED no fresh fix and no cached fix available")
-            }
+            report("no location fix available")
         }
         // requestLocationUpdates is more reliable than requestSingleUpdate on
         // OEM stacks that silently drop one-shot requests. First fix wins.
-        providers.forEach { p ->
+        activeProviders.forEach { p ->
             runCatching<Unit> {
                 manager.requestLocationUpdates(p, 1_000L, 0f, listenerRef, Looper.getMainLooper())
             }
@@ -1074,12 +1261,14 @@ class ClusterService : Service() {
                 ContextCompat.checkSelfPermission(this, android.Manifest.permission.ACCESS_COARSE_LOCATION) ==
                 PackageManager.PERMISSION_GRANTED
         if (!allowed) {
-            ClusterRepository.telemetry.value = ClusterRepository.telemetry.value.copy(
-                error = "Location permission needed to save the parking spot")
+            val msg = "Location permission needed to save the parking spot"
+            ClusterRepository.parkedStatus.value = msg
+            ClusterRepository.telemetry.value = ClusterRepository.telemetry.value.copy(error = msg)
             return
         }
+        ClusterRepository.parkedStatus.value = "Getting a fresh fix..."
         val originalAt = RideStore.parkedLocation.value?.atMs ?: 0L
-        saveParkedLocation(force = true, preserveAtMs = originalAt)
+        saveParkedLocation(force = true, preserveAtMs = originalAt, reportStatus = true)
         ClusterRepository.telemetry.value = ClusterRepository.telemetry.value.copy(error = null)
     }
 
@@ -1182,17 +1371,7 @@ class ClusterService : Service() {
 
     private fun hex(bytes: ByteArray) = bytes.joinToString(" ") { "%02X".format(it) }
 
-    /** Cluster-reported values that can confirm a setting actually took effect. */
-    private fun clusterLookValue(): Int? {
-        val t = ClusterRepository.telemetry.value
-        return if (t.frameCount == 0L) null else t.backlightMode * 100 + t.clusterTheme
-    }
-
-    private fun clusterTurnValue(): Int? {
-        val t = ClusterRepository.telemetry.value
-        return if (t.frameCount == 0L) null else t.turnIndicator
-    }
-
+    /** Cluster-reported value that can confirm a trip command took effect. */
     private fun clusterTripValue(): Int? {
         val t = ClusterRepository.telemetry.value
         return if (t.frameCount == 0L) null else t.tripMeterKm.toInt()
@@ -1237,49 +1416,23 @@ class ClusterService : Service() {
         }
     }
 
-    /** Auto-applied when the illumination chip changes. */
-    fun sendIlluminationSetting(level: Int) {
-        verifySetting("Illumination $level", ClusterControlFrames.buildVehicleControlFrame(
-            illumination = level, tsl = ClusterRepository.tslSetting.value), ::clusterLookValue)
-    }
-
-    /** Auto-applied when the turn-signal chip changes. */
-    fun sendTslSetting(code: Int) {
-        val name = when (code) { 0 -> "Off"; 26 -> "Left"; 27 -> "Right"; else -> "Hazard" }
-        verifySetting("Turn signal $name", ClusterControlFrames.buildVehicleControlFrame(
-            illumination = ClusterRepository.illumination.value, tsl = code), ::clusterTurnValue)
-    }
-
-    /** Auto-applied when the regen chip changes. EV-only: no cluster feedback. */
-    fun sendRegenSetting(level: Int) {
-        verifySetting("Regen $level", ClusterControlFrames.buildRegenFrame(level))
-    }
-
-    /** Auto-applied when the ride-mode chip changes. */
-    fun sendRideModeSetting(mode: Int) {
-        if (mode == 0) {
-            FeatureVerification.unverifiable("Ride mode Auto", "no mode frame sent by design")
-            ClusterRepository.settingsStatus.value = "Ride mode Auto at ${nowLabel()}"
-            return
-        }
-        verifySetting("Ride mode $mode", ClusterControlFrames.buildRideModeFrame(
-            mode, ClusterRepository.illumination.value, ClusterRepository.tslSetting.value))
-    }
-
-    /** Apply the More -> Cluster settings values. Does not touch the link setup. */
+    /** Send the More-screen draft to the cluster and remember it as applied. */
     fun applyClusterSettings() {
         scope.launch {
             val r = ClusterRepository
+            val draft = ClusterRepository.AppliedSettings(
+                r.illumination.value, r.tslSetting.value,
+                r.regenSetting.value, r.rideMode.value)
             write(ClusterControlFrames.buildVehicleControlFrame(
-                illumination = r.illumination.value, tsl = r.tslSetting.value))
-            write(ClusterControlFrames.buildRegenFrame(r.regenSetting.value))
-            if (r.rideMode.value != 0) {
+                illumination = draft.illumination, tsl = draft.tsl))
+            write(ClusterControlFrames.buildRegenFrame(draft.regen))
+            if (draft.rideMode != 0) {
                 write(ClusterControlFrames.buildRideModeFrame(
-                    r.rideMode.value, r.illumination.value, r.tslSetting.value))
+                    draft.rideMode, draft.illumination, draft.tsl))
             }
-            r.settingsStatus.value = "Applied at ${"%02d:%02d".format(
-                java.util.Calendar.getInstance().get(java.util.Calendar.HOUR_OF_DAY),
-                java.util.Calendar.getInstance().get(java.util.Calendar.MINUTE))}"
+            r.markSettingsApplied()
+            r.settingsStatus.value = "Applied at ${nowLabel()}"
+            FrameLog.note("SETTINGS APPLIED $draft")
         }
     }
 
@@ -1384,6 +1537,7 @@ class ClusterService : Service() {
         reconnectJob?.cancel()
         reconnectJob = null
         reconnectAttempts = 0
+        finishBondWait() // a pending pairing must not reconnect after Disconnect
         // Only a connected bike has a parking spot to save (onDestroy also
         // calls this, with no link at all).
         if (connectionEstablished || gatt != null) saveParkedLocation(force = true)
@@ -1406,7 +1560,7 @@ class ClusterService : Service() {
         if (g != null) {
             writeChar = null
             gatt = null
-            runCatching { g.close() }
+            closeGattSafely(g, disconnectFirst = true)
         }
         scope.launch { writeLock.withLock { } }
         ClusterRepository.telemetry.value = ClusterRepository.telemetry.value.copy(
@@ -1436,6 +1590,7 @@ class ClusterService : Service() {
                     reconnectJob?.cancel()
                     reconnectJob = null
                     reconnectAttempts = 0
+                    finishBondWait()
                     manualDisconnect = false
                     // No requestConnectionPriority(HIGH): it triggers a
                     // parameter update that drops the link on this cluster.
@@ -1513,7 +1668,9 @@ class ClusterService : Service() {
                     phoneEventJob?.cancel()
                     phoneEventJob = null
                     if (g === gatt) gatt = null
-                    runCatching { g.close() }
+                    // Android has already finished the disconnect here, so a
+                    // direct close is safe (no extra disconnect round-trip).
+                    closeGattSafely(g, disconnectFirst = false)
                     if (!manualDisconnect) scheduleReconnect()
                 }
             }
@@ -1957,9 +2114,43 @@ class ClusterService : Service() {
     }
 
     private fun createChannel() {
+        val manager = getSystemService(NotificationManager::class.java)
         val channel = NotificationChannel(
             "cluster", "Cluster link", NotificationManager.IMPORTANCE_LOW)
-        getSystemService(NotificationManager::class.java).createNotificationChannel(channel)
+        manager.createNotificationChannel(channel)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            val alert = NotificationChannel(
+                CHANNEL_SPEED_ALERT, "High speed alert", NotificationManager.IMPORTANCE_HIGH
+            ).apply {
+                description = "Fires once when the configured speed limit is crossed"
+                enableVibration(true)
+            }
+            manager.createNotificationChannel(alert)
+        }
+    }
+
+    /** One-shot status-bar alert; mirrors the Raider/U577 variant in TVS Connect. */
+    private fun postSpeedAlertNotification(speed: Int, limit: Int) {
+        // MainActivity requests POST_NOTIFICATIONS on API 33+. If the rider
+        // denied it, notify() simply does nothing - the cluster alert and the
+        // vibration still fire, so this is safe to call unconditionally.
+        val pending = android.app.PendingIntent.getActivity(
+            this, 0,
+            Intent(this, com.jupiterconnect.MainActivity::class.java),
+            android.app.PendingIntent.FLAG_IMMUTABLE or android.app.PendingIntent.FLAG_UPDATE_CURRENT,
+        )
+        val notification = NotificationCompat.Builder(this, CHANNEL_SPEED_ALERT)
+            .setSmallIcon(R.drawable.ic_stat_link)
+            .setContentTitle("High speed alert")
+            .setContentText("$speed km/h - limit $limit km/h")
+            .setPriority(NotificationCompat.PRIORITY_HIGH)
+            .setCategory(NotificationCompat.CATEGORY_ALARM)
+            .setAutoCancel(true)
+            .setContentIntent(pending)
+            .build()
+        runCatching {
+            getSystemService(NotificationManager::class.java)?.notify(NOTIF_SPEED_ALERT, notification)
+        }
     }
 
     private fun buildNotification(): Notification {
@@ -2023,6 +2214,10 @@ class ClusterService : Service() {
         const val EXTRA_ADDRESS = "com.jupiterconnect.extra.ADDRESS"
 
         private const val TAG = "JupiterBle"
+        private const val CHANNEL_SPEED_ALERT = "speed_alert"
+        private const val NOTIF_SPEED_ALERT = 2
+        /** Prevent flicker at the limit: re-arm only a few km/h below it. */
+        private const val SPEED_ALERT_HYSTERESIS = 3
         private const val SCAN_TIMEOUT_MS = 20_000L
         private const val RUNNING_RPM = 500
         // HCI supervision timeout: an established link really dropped.
