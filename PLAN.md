@@ -14,7 +14,10 @@ what is deferred.
   turn-by-turn mirroring from any navigation app's notification.
 - Ride recording with checkpoints; a brief link drop resumes the same ride
   instead of splitting it into several.
-- Fuel logs, cumulative stats, parked location, call/message cards.
+- Fuel logs, cumulative stats, parked location, call/message cards. The Rides
+  monthly bars use imported fuel-odometer deltas for past months and, for the
+  current month only, the fuel total plus live odometer distance ridden since
+  the last fill — past months are never rewritten.
 - Carbon saving is an **app-only estimate** with no manual entry: the cluster's
   lifetime ISS idle-seconds counter first, then distance + fuel economy. The dash
   computes its own figure from ISS data; no BLE frame can write it. TVS Connect
@@ -56,6 +59,16 @@ Still deliberately excluded:
 - Overview and Carbon tabs duplicate cards that already exist on Home/Rides.
 - Social **unread counters** are mirrored on `0x9C` (confirmed by RE), but the
   old Social tab is not restored until its rendering is verified on hardware.
+
+### Service records and other Meridian data — future plan
+
+The service history (and other records) that currently live in the Meridian app
+are not in Jupiter Connect yet. Planned import: read Meridian's exported service
+records, key them by date/odometer, and surface them in a dedicated card (next
+service due, past jobs, cost) without inventing entries. The same importer
+should be able to bring in any further per-ride metadata Meridian exports.
+Until that lands, the Rides history stays derived only from the fuel log and
+the cluster's live odometer/telemetry.
 
 ### Other backlog
 

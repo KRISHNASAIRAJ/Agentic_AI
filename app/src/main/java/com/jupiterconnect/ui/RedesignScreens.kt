@@ -103,10 +103,14 @@ import com.jupiterconnect.nav.NavInstruction
 import com.jupiterconnect.protocol.ClusterControlFrames
 import com.jupiterconnect.protocol.ScannedDevice
 import com.jupiterconnect.protocol.Telemetry
+import com.jupiterconnect.session.FuelLogStore
 import com.jupiterconnect.session.Ride
 import com.jupiterconnect.session.RideAnalytics
 import com.jupiterconnect.session.RideStore
 import com.jupiterconnect.session.WarmupPhase
+import com.jupiterconnect.session.lastMonthKeys
+import com.jupiterconnect.session.monthlyDistanceKm
+import com.jupiterconnect.session.odometerKmSinceLastFill
 import com.jupiterconnect.traffic.Cities
 import com.jupiterconnect.transport.ClusterRepository
 import com.jupiterconnect.ui.theme.JupiterColors
@@ -862,8 +866,11 @@ fun RidesScreenV2(
 ) {
     val total = rides.sumOf { it.distanceKm }
     val top = rides.maxOfOrNull { it.topSpeedKmh } ?: 0
-    val fills by com.jupiterconnect.session.FuelLogStore.fills.collectAsState()
-    val fuelMonths = remember(fills) { com.jupiterconnect.session.FuelLogStore.monthly() }
+    val fills by FuelLogStore.fills.collectAsState()
+    val fuelMonths = remember(fills) { FuelLogStore.monthly() }
+    val lastOdo by RideStore.lastReading.collectAsState()
+    val lastFillOdo = remember(fills) { fills.maxByOrNull { it.dateIst }?.odometerKm }
+    val odoTailKm = odometerKmSinceLastFill(lastFillOdo, lastOdo.odometerKm)
     var expandedId by remember { mutableStateOf<Long?>(null) }
     var selectedBar by remember { mutableStateOf<Int?>(null) }
     JupiterShell("Rides", "SAVED ON THIS PHONE", activeTab, onTab, onSettings) {
@@ -889,26 +896,19 @@ fun RidesScreenV2(
         Label("HISTORY · LAST 6 MONTHS")
         Spacer(Modifier.height(10.dp))
         RedCard {
-            val months = remember(rides, fuelMonths) {
+            val months = remember(rides, fuelMonths, lastFillOdo, lastOdo.odometerKm) {
                 val fmt = java.text.DateFormatSymbols().shortMonths
-                val keys = mutableListOf<Pair<Int, String>>()
-                repeat(6) { i ->
-                    val c = Calendar.getInstance()
-                    c.set(Calendar.DAY_OF_MONTH, 1)
-                    c.add(Calendar.MONTH, -i)
-                    keys += (c.get(Calendar.YEAR) * 100 + c.get(Calendar.MONTH)) to fmt[c.get(Calendar.MONTH)]
-                }
-                keys.reverse()
-                keys.map { (key, label) ->
-                    // Odometer deltas from the fuel log are real distance; use
-                    // them for covered months, telemetry rides only elsewhere.
-                    val fromFuel = fuelMonths.firstOrNull { it.key == key }?.km
-                    val km = fromFuel ?: rides.filter { r ->
-                        val c = Calendar.getInstance().apply { timeInMillis = r.startedAt }
-                        c.get(Calendar.YEAR) * 100 + c.get(Calendar.MONTH) == key
-                    }.sumOf { it.distanceKm }
-                    label to km
-                }
+                val now = System.currentTimeMillis()
+                val kmByKey = monthlyDistanceKm(
+                    rides = rides,
+                    fuelMonths = fuelMonths,
+                    lastFillOdometerKm = lastFillOdo,
+                    currentOdometerKm = lastOdo.odometerKm,
+                    nowMs = now,
+                )
+                // Past months keep their imported/locked values; only this
+                // month also includes kilometres ridden since the last fill.
+                lastMonthKeys(6, now).map { key -> fmt[key % 100] to (kmByKey[key] ?: 0.0) }
             }
             val maxKm = months.maxOf { it.second }.coerceAtLeast(0.1)
             // Three fixed-height zones per month: value, bar, label. Because
@@ -952,6 +952,11 @@ fun RidesScreenV2(
                         }
                     }
                 }
+            }
+            if (odoTailKm > 0.5) {
+                Spacer(Modifier.height(6.dp))
+                Text("+%.0f km since last fill, from live odometer".format(odoTailKm),
+                    fontSize = 10.sp, color = JupiterColors.OnSurfaceVariant)
             }
         }
         // The Rides tab shows only the two newest rides; "View all" opens a
