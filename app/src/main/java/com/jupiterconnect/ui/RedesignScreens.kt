@@ -1505,6 +1505,33 @@ private fun SettingsContent(
         SecondaryButton("Sign out", onSignOut, Modifier.fillMaxWidth())
     }
     Spacer(Modifier.height(10.dp))
+    RedCard(bar = true) {
+        Label("DRIVING MODE")
+        Spacer(Modifier.height(8.dp))
+        val driving by ClusterRepository.drivingMode.collectAsState()
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Column(Modifier.weight(1f)) {
+                Text("Scan & connect to cluster", fontSize = 14.sp,
+                    color = JupiterColors.OnSurface)
+                Text(if (driving) "On - BLE scanning and the link notification are active"
+                    else "Off - Bluetooth stays free for other devices",
+                    fontSize = 11.sp, color = JupiterColors.OnSurfaceVariant)
+            }
+            Switch(
+                checked = driving,
+                onCheckedChange = { ClusterRepository.setDrivingMode(it) },
+                colors = SwitchDefaults.colors(
+                    checkedThumbColor = Color.White,
+                    checkedTrackColor = JupiterColors.Red,
+                    uncheckedTrackColor = JupiterColors.High,
+                ),
+            )
+        }
+        Spacer(Modifier.height(8.dp))
+        Text("Turn this on before a ride. While off, the app does not scan, connect or show a persistent notification - Bluetooth can stay on for earbuds and other devices.",
+            fontSize = 10.sp, color = JupiterColors.OnSurfaceVariant)
+    }
+    Spacer(Modifier.height(10.dp))
     RedCard {
         Label("HIGH SPEED ALERT")
         Spacer(Modifier.height(8.dp))

@@ -175,9 +175,7 @@ fun JupiterApp() {
         rememberedAddress = address
         // Send the action with the Intent; onStartCommand performs the connect
         // after onCreate has initialised the service. No main-thread race.
-        val i = Intent(context, ClusterService::class.java).setAction(ClusterService.ACTION_CONNECT)
-        i.putExtra(ClusterService.EXTRA_ADDRESS, address)
-        ContextCompat.startForegroundService(context, i)
+        ClusterRepository.startService(context, ClusterService.ACTION_CONNECT, address)
     }
     fun connectAndRemember(address: String) = connectToDevice(address)
     fun forgetDevice() {
@@ -197,9 +195,7 @@ fun JupiterApp() {
         bluetoothOn = isBluetoothOn()
         if (bluetoothOn && resumeScanAfterEnable) {
             resumeScanAfterEnable = false
-            ContextCompat.startForegroundService(
-                context, Intent(context, ClusterService::class.java)
-                    .setAction(ClusterService.ACTION_SCAN))
+            ClusterRepository.startService(context, ClusterService.ACTION_SCAN)
         }
     }
 
@@ -230,8 +226,7 @@ fun JupiterApp() {
         if (permStatus.bleReady) {
             rememberedAddress?.let { addr ->
                 connectToDevice(addr)
-            } ?: ContextCompat.startForegroundService(
-                context, Intent(context, ClusterService::class.java))
+            } ?: ClusterRepository.startService(context)
         }
     }
 
@@ -244,6 +239,12 @@ fun JupiterApp() {
     // then asks it to scan. Without this, tapping Scan while the service is
     // null or Bluetooth is off silently does nothing.
     fun scanForDevices() {
+        if (!ClusterRepository.drivingMode.value) {
+            Toast.makeText(context,
+                "Turn on Driving mode in More → Settings to scan for the cluster",
+                Toast.LENGTH_LONG).show()
+            return
+        }
         permStatus = currentStatus()
         if (!permStatus.bleReady) {
             launcher.launch(permissions)
@@ -252,8 +253,7 @@ fun JupiterApp() {
         if (!bluetoothReady("scan for your cluster", thenScan = true)) return
         // Send SCAN as an Intent action. onStartCommand runs after onCreate,
         // so the service reference is guaranteed ready when it calls startScan.
-        ContextCompat.startForegroundService(
-            context, Intent(context, ClusterService::class.java).setAction(ClusterService.ACTION_SCAN))
+        ClusterRepository.startService(context, ClusterService.ACTION_SCAN)
     }
 
     // Ask on first launch AND refresh the displayed state every time the app

@@ -27,9 +27,14 @@ class BootReceiver : BroadcastReceiver() {
         if (!bleReady) return
         val address = context.getSharedPreferences("jupiter_device", Context.MODE_PRIVATE)
             .getString("address", null) ?: return
+        // Honour the driving-mode switch: a reboot must not silently start BLE
+        // scanning when the rider only wants Bluetooth for other devices.
+        ClusterRepository.initPrefs(context)
+        if (!ClusterRepository.drivingMode.value) return
         val serviceIntent = Intent(context, ClusterService::class.java)
             .setAction(ClusterService.ACTION_CONNECT)
             .putExtra(ClusterService.EXTRA_ADDRESS, address)
+            .putExtra(ClusterService.EXTRA_FOREGROUND, true)
         runCatching { ContextCompat.startForegroundService(context, serviceIntent) }
     }
 }

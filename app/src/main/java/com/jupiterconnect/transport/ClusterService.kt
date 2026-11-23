@@ -107,11 +107,14 @@ object ClusterRepository {
     private const val KEY_RIDE_MODE = "cluster_ride_mode"
     private const val KEY_SPEED_ALERT = "high_speed_alert"
     private const val KEY_SPEED_ALERT_LIMIT = "high_speed_alert_limit"
+    private const val KEY_DRIVING_MODE = "driving_mode"
     private var prefs: SharedPreferences? = null
+    private var appContext: Context? = null
 
     /** One-time init from the app or the service; reads persisted settings. */
     fun initPrefs(context: Context) {
         if (prefs != null) return
+        appContext = context.applicationContext
         prefs = context.applicationContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
         FeatureVerification.init(context)
         riderName.value = prefs?.getString(KEY_RIDER_NAME, "Rider") ?: "Rider"
@@ -133,6 +136,7 @@ object ClusterRepository {
         rideMode.value = applied.rideMode
         highSpeedAlert.value = prefs?.getBoolean(KEY_SPEED_ALERT, false) ?: false
         highSpeedAlertSpeed.value = prefs?.getInt(KEY_SPEED_ALERT_LIMIT, 60) ?: 60
+        drivingMode.value = prefs?.getBoolean(KEY_DRIVING_MODE, false) ?: false
         ClusterImageTransfer.restore(context)
         riderPhotoReady.value = ClusterImageTransfer.hasImage
     }
@@ -195,6 +199,45 @@ object ClusterRepository {
 
     /** Fire one alert now, for the "Test" button in Settings. */
     fun testSpeedAlert() = service?.testSpeedAlert()
+
+    /**
+     * Off by default: BLE scanning, connecting and the foreground notification
+     * only happen while the rider explicitly turns on driving mode. Bluetooth
+     * can stay on for AirPods and other devices without this app draining the
+     * battery.
+     */
+    val drivingMode = MutableStateFlow(false)
+
+    fun setDrivingMode(enabled: Boolean) {
+        if (drivingMode.value == enabled) return
+        drivingMode.value = enabled
+        prefs?.edit()?.putBoolean(KEY_DRIVING_MODE, enabled)?.apply()
+        val ctx = appContext ?: return
+        val i = Intent(ctx, ClusterService::class.java)
+            .setAction(ClusterService.ACTION_DRIVING_MODE)
+            .putExtra(ClusterService.EXTRA_DRIVING_ENABLED, enabled)
+        runCatching {
+            if (enabled) {
+                i.putExtra(ClusterService.EXTRA_FOREGROUND, true)
+                ContextCompat.startForegroundService(ctx, i)
+            } else {
+                ctx.startService(i)
+            }
+        }
+    }
+
+    /** Start the service the right way for the current driving-mode state. */
+    fun startService(context: Context, action: String? = null, address: String? = null) {
+        val i = Intent(context, ClusterService::class.java)
+        if (action != null) i.action = action
+        if (address != null) i.putExtra(ClusterService.EXTRA_ADDRESS, address)
+        if (drivingMode.value) {
+            i.putExtra(ClusterService.EXTRA_FOREGROUND, true)
+            ContextCompat.startForegroundService(context, i)
+        } else {
+            runCatching { context.startService(i) }
+        }
+    }
 
     val socialCounts = MutableStateFlow(Triple(0, 0, 0))
     // Genuine APK packs WhatsApp/Facebook as chats + messages (5).
@@ -428,6 +471,7 @@ class ClusterService : Service() {
             // the user never has to reopen the app to get the link back.
             if (intent?.action == BluetoothAdapter.ACTION_STATE_CHANGED &&
                 intent.getIntExtra(BluetoothAdapter.EXTRA_STATE, -1) == BluetoothAdapter.STATE_ON &&
+                ClusterRepository.drivingMode.value &&
                 !manualDisconnect && !lastAddress.isNullOrBlank() && gatt == null
             ) {
                 FrameLog.note("BLUETOOTH ON - redial $lastAddress")
@@ -499,6 +543,8 @@ class ClusterService : Service() {
     private var speedAlertActive = false
     private var lastSpeedAlertMs = 0L
     private var lastNotificationKey = ""
+    /** True only after a successful startForeground(), so we never stop one we never started. */
+    @Volatile private var foregroundActive = false
     private val speedFusion = SpeedFusion()
     @Volatile private var gpsSpeedMps = -1f
     @Volatile private var gpsAccuracyM = -1f
@@ -531,20 +577,25 @@ class ClusterService : Service() {
             registerReceiver(bluetoothStateReceiver, IntentFilter(BluetoothAdapter.ACTION_STATE_CHANGED))
             bluetoothReceiverRegistered = true
         }
-        // Show the foreground notification only while Bluetooth is on.
-        updateForegroundForBluetooth()
+        // Foreground promotion happens in onStartCommand, only when this start
+        // was requested as a foreground service (driving mode on). Calling
+        // stopForeground here when we were started with a plain startService()
+        // used to kill the app as soon as Bluetooth was off.
         // Keep rides, fuel logs and app state synced even with no bike linked.
         startRideSync()
     }
 
-    /** Promote to foreground only with Bluetooth on; otherwise hide the row. */
+    /** Foreground only while driving mode is on AND Bluetooth is powered. */
     private fun updateForegroundForBluetooth() {
-        if (adapter?.isEnabled == true) {
-            startForegroundSafe(ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE)
-        } else {
+        val wanted = ClusterRepository.drivingMode.value && adapter?.isEnabled == true
+        if (wanted) {
+            if (!foregroundActive) startForegroundSafe(ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE)
+            updateNotification()
+        } else if (foregroundActive) {
             ServiceCompat.stopForeground(this, ServiceCompat.STOP_FOREGROUND_REMOVE)
+            foregroundActive = false
+            lastNotificationKey = ""
         }
-        updateNotification()
     }
 
     /**
@@ -555,13 +606,15 @@ class ClusterService : Service() {
     private fun startForegroundSafe(types: Int) {
         try {
             ServiceCompat.startForeground(this, 1, buildNotification(), types)
+            foregroundActive = true
         } catch (e: SecurityException) {
             FrameLog.note("FOREGROUND typed start denied - retrying connectedDevice")
             runCatching {
                 ServiceCompat.startForeground(
                     this, 1, buildNotification(),
                     ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE)
-            }.onFailure { FrameLog.note("FOREGROUND fallback failed: ${it.message}") }
+            }.onSuccess { foregroundActive = true }
+                .onFailure { FrameLog.note("FOREGROUND fallback failed: ${it.message}") }
         } catch (e: Exception) {
             FrameLog.note("FOREGROUND start failed: ${e.message}")
         }
@@ -587,12 +640,25 @@ class ClusterService : Service() {
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         if (!hasBluetoothPermission()) return START_STICKY
+        // startForegroundService() REQUIRES a prompt startForeground() call even
+        // if Bluetooth is off or driving mode was switched off in the meantime.
+        // Skipping it is what made the app disappear the moment Bluetooth went
+        // off. A plain startService() start never sets this extra.
+        if (intent?.getBooleanExtra(EXTRA_FOREGROUND, false) == true ||
+            ClusterRepository.drivingMode.value
+        ) {
+            if (!foregroundActive) {
+                startForegroundSafe(ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE)
+            }
+        }
         // Always handle the requested action HERE, in onStartCommand, which is
         // guaranteed to run after onCreate has set ClusterRepository.service.
         // Launching the service and then posting scan()/connect() to the main
         // thread raced with onCreate and silently dropped the action when the
         // service reference was still null ΓÇö "Bluetooth not connecting".
         when (intent?.action) {
+            ACTION_DRIVING_MODE ->
+                onDrivingModeChanged(intent.getBooleanExtra(EXTRA_DRIVING_ENABLED, false))
             ACTION_CONNECT -> intent.getStringExtra(EXTRA_ADDRESS)?.let { connectTo(it) }
                 ?: startScan()
             ACTION_SCAN -> startScan()
@@ -607,7 +673,30 @@ class ClusterService : Service() {
                 }
             }
         }
+        updateForegroundForBluetooth()
         return START_STICKY
+    }
+
+    /** Enter or leave the only state in which this app touches BLE. */
+    private fun onDrivingModeChanged(enabled: Boolean) {
+        FrameLog.note("DRIVING MODE ${if (enabled) "ON" else "OFF"}")
+        if (!enabled) {
+            // Park the scooter and stop every BLE loop before hiding the link.
+            if (connectionEstablished || gatt != null || ClusterRepository.scanning.value) {
+                disconnectNow()
+            }
+            scanCallback?.let { cb ->
+                runCatching { adapter?.bluetoothLeScanner?.stopScan(cb) }
+                scanCallback = null
+            }
+            ClusterRepository.scanning.value = false
+            reconnectJob?.cancel()
+            reconnectJob = null
+            ClusterRepository.telemetry.value = ClusterRepository.telemetry.value.copy(error = null)
+        } else if (adapter?.isEnabled == true) {
+            if (!lastAddress.isNullOrBlank()) connectTo(lastAddress!!) else startScan()
+        }
+        updateForegroundForBluetooth()
     }
 
     override fun onBind(intent: Intent?): IBinder? = null
@@ -624,6 +713,12 @@ class ClusterService : Service() {
         }
 
     fun startScan() {
+        if (!ClusterRepository.drivingMode.value) {
+            // Bluetooth may be on for AirPods etc. - never scan unless the
+            // rider explicitly enabled driving mode.
+            FrameLog.note("SCAN skipped: driving mode off")
+            return
+        }
         if (!hasBluetoothPermission()) {
             ClusterRepository.telemetry.value = ClusterRepository.telemetry.value.copy(
                 error = "Bluetooth permission not granted - grant it in Settings")
@@ -734,6 +829,10 @@ class ClusterService : Service() {
 
     /** Low-level connect used by both user taps and the retry loop. */
     private fun attemptConnect(address: String) {
+        if (!ClusterRepository.drivingMode.value) {
+            FrameLog.note("CONNECT skipped: driving mode off")
+            return
+        }
         if (!hasBluetoothPermission()) return
         if (bondWaitJob?.isActive == true) {
             FrameLog.note("CONNECT ignored: waiting for pairing")
@@ -887,6 +986,7 @@ class ClusterService : Service() {
      */
     private fun scheduleReconnect() {
         val address = lastAddress ?: return
+        if (!ClusterRepository.drivingMode.value) return
         if (manualDisconnect || reconnectJob?.isActive == true) return
         val adapter = adapter
         if (adapter == null || !adapter.isEnabled) {
@@ -2183,7 +2283,8 @@ class ClusterService : Service() {
 
     /** Re-post the notification so its title/text follow the link state. */
     private fun updateNotification() {
-        if (adapter?.isEnabled != true) return // no notification with Bluetooth off
+        // No notification while not driving, even if Bluetooth is on for AirPods.
+        if (!ClusterRepository.drivingMode.value || adapter?.isEnabled != true) return
         val t = ClusterRepository.telemetry.value
         val key = "${t.connected}|${t.address}|${t.error}"
         // Only post when the state actually changes - never spam the shade.
@@ -2212,7 +2313,10 @@ class ClusterService : Service() {
     companion object {
         const val ACTION_SCAN = "com.jupiterconnect.action.SCAN"
         const val ACTION_CONNECT = "com.jupiterconnect.action.CONNECT"
+        const val ACTION_DRIVING_MODE = "com.jupiterconnect.action.DRIVING_MODE"
         const val EXTRA_ADDRESS = "com.jupiterconnect.extra.ADDRESS"
+        const val EXTRA_DRIVING_ENABLED = "com.jupiterconnect.extra.DRIVING_ENABLED"
+        const val EXTRA_FOREGROUND = "com.jupiterconnect.extra.FOREGROUND"
 
         private const val TAG = "JupiterBle"
         private const val CHANNEL_SPEED_ALERT = "speed_alert"
