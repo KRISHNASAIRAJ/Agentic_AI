@@ -1,11 +1,9 @@
 package com.jupiterconnect.session
 
 import android.content.Context
-import com.jupiterconnect.R
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
-import org.json.JSONObject
 
 /** One petrol fill from the Meridian fuel-log export (IST dates, paise amounts). */
 data class FuelFill(
@@ -54,9 +52,9 @@ internal fun aggregateFuelMonths(fills: List<FuelFill>): List<FuelMonth> {
 }
 
 /**
- * Reads the bundled Meridian export so the Rides history can show real monthly
- * distance from odometer readings, not fabricated ride cards. Telemetry rides
- * remain the only source of ride cards with speed/duration data.
+ * Holds the fuel fills pulled from Meridian's cloud. Telemetry rides remain
+ * the only source of ride cards with speed/duration data; fills only supply
+ * real monthly distance from odometer readings.
  */
 object FuelLogStore {
     private val _fills = MutableStateFlow<List<FuelFill>>(emptyList())
@@ -67,32 +65,18 @@ object FuelLogStore {
     val totalPaise: Long get() = _fills.value.sumOf { it.amountPaise }
     val averageMileage: Double get() = if (totalLiters > 0) totalKm / totalLiters else 0.0
 
+    /**
+     * Kept for the existing RideStore.init call. CloudGarageStore owns the
+     * offline cache and pushes fills in via [setFills], so this only triggers
+     * that cache load. Never parses the old bundled raw export.
+     */
     fun init(context: Context) {
-        if (_fills.value.isNotEmpty()) return
-        val raw = runCatching {
-            context.resources.openRawResource(R.raw.fuel_logs).bufferedReader().use { it.readText() }
-        }.getOrElse { return }
-        val parsed = runCatching {
-            val array = JSONObject(raw).getJSONArray("fuel_logs")
-            buildList {
-                for (i in 0 until array.length()) {
-                    val o = array.getJSONObject(i)
-                    add(FuelFill(
-                        no = o.getInt("fill_no"),
-                        dateIst = o.getString("date_ist"),
-                        odometerKm = o.getDouble("odometer_km"),
-                        distanceKm = if (o.isNull("distance_since_prev_km")) 0.0
-                            else o.getDouble("distance_since_prev_km"),
-                        liters = o.getDouble("liters"),
-                        amountPaise = o.getLong("amount_paise"),
-                        mileageKmpl = if (o.isNull("mileage_kmpl_since_prev")) 0.0
-                            else o.getDouble("mileage_kmpl_since_prev"),
-                        station = if (o.isNull("station")) "" else o.getString("station"),
-                    ))
-                }
-            }
-        }.getOrElse { return }
-        _fills.value = parsed
+        CloudGarageStore.init(context)
+    }
+
+    /** Replace the cached fills with a fresh cloud pull. */
+    fun setFills(fills: List<FuelFill>) {
+        _fills.value = fills
     }
 
     fun monthly(): List<FuelMonth> = aggregateFuelMonths(_fills.value)

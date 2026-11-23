@@ -1038,7 +1038,7 @@ fun PremiumSettingsScreen(
                 if (signedIn) {
                     InfoRow("Signed in as", com.jupiterconnect.sync.SupabaseClient.currentEmail() ?: "-")
                     Text(
-                        "Rides sync to Supabase while the cluster is connected and for 2 minutes after it disconnects.",
+                        "Odometer, fuel fills, service records and rides sync with Meridian through Supabase.",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )

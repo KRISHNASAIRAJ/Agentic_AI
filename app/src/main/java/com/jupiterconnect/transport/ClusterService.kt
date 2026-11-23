@@ -50,13 +50,15 @@ import com.jupiterconnect.protocol.Gatt
 import com.jupiterconnect.protocol.InboundId
 import com.jupiterconnect.protocol.ScannedDevice
 import com.jupiterconnect.protocol.Telemetry
+import com.jupiterconnect.session.CloudGarageStore
 import com.jupiterconnect.session.ColdStartTracker
-import com.jupiterconnect.session.FuelLogStore
+import com.jupiterconnect.session.JUPITER_VEHICLE
 import com.jupiterconnect.session.RideAnalytics
 import com.jupiterconnect.session.SpeedFusion
 import com.jupiterconnect.session.WarmupPhase
 import com.jupiterconnect.session.WarmupState
 import com.jupiterconnect.sync.SupabaseClient
+import com.jupiterconnect.sync.shouldReportOdo
 import com.jupiterconnect.nav.NavInstruction
 import com.jupiterconnect.profile.ClusterImageTransfer
 import com.jupiterconnect.protocol.buildKeepalive
@@ -314,18 +316,11 @@ object ClusterRepository {
             ?.apply()
     }
 
-    // Experimental: send text frames with a response. The stock app uses
-    // WRITE_NO_RESPONSE, but some clusters latch the first text of a burst;
-    // a confirmed write serialises them and may let every page render.
-    val confirmedTextWrites = MutableStateFlow(false)
-
     fun setBrightness(level: Int) {
         val next = level.coerceIn(2, 5)
         brightness.value = next
         service?.sendBrightness(next)
     }
-    // Raw 0x18 engine frame + decoded values, for mapping verification.
-    val engineDebug = MutableStateFlow("No 0x18 frame seen yet")
     // Recent live speeds for the speedometer graph (oldest first).
     val speedHistory = MutableStateFlow<List<Int>>(emptyList())
     // Cluster + GPS fusion: smoothed speed and learned speedometer error.
@@ -360,13 +355,6 @@ object ClusterRepository {
      * Jupiter. No Bluetooth connection behaviour is affected by this flag.
      */
     val legacyCallerPackets = MutableStateFlow(false)
-
-    /**
-     * Diagnostic only: override the remaining-trip-distance field (0x4E bytes
-     * 6-8) with a known value. -1 = use the parsed Maps value. Used to find out
-     * what the cluster draws in the small symbol area above the arrow.
-     */
-    val debugRemainingMeters = MutableStateFlow(-1)
 
     /** Traffic screens (weather / cricket / market / news) with free APIs. */
     val trafficEnabled = MutableStateFlow(false)
@@ -489,6 +477,9 @@ class ClusterService : Service() {
     private var mediaKeyJob: Job? = null
     private var phoneEventJob: Job? = null
     private var syncJob: Job? = null
+    // Throttle for live odometer reports: re-send after 1 km or 30 s.
+    private var lastReportedOdoKm = 0
+    private var lastOdoReportAtMs = 0L
     private var reconnectJob: Job? = null
     private var connectWatchdog: Job? = null
     // A GATT connect attempted while bonding is still in progress fails with
@@ -1192,15 +1183,6 @@ class ClusterService : Service() {
         }
         if (!t.ignitionOn) settingsAppliedThisIgnition = false
         lastIgnitionOn = t.ignitionOn
-        if ((raw[1].toInt() and 0xFF) == 0x18) {
-            val hex = raw.joinToString(" ") { "%02X".format(it) }
-            ClusterRepository.engineDebug.value =
-                "RAW: $hex\n" +
-                "byte11=${"%02X".format(raw[11])} (${raw[11].toInt() and 0xFF}) " +
-                "ΓåÆ ${"%.1f".format(t.batteryVoltage)} V\n" +
-                "load=${t.engineLoad} intake=${t.intakeTempC}C " +
-                "coolant=${t.engineTempC}C"
-        }
         if ((raw[1].toInt() and 0xFF) == 0x10) {
             voiceBridge.onSwitchAction(raw[12].toInt() and 0x3F)
         }
@@ -1891,9 +1873,10 @@ class ClusterService : Service() {
     }
 
     /**
-     * Keep every app detail in the cloud: rides (including graphs), all petrol
-     * fills, and the one JSON document of settings and cumulative counters.
-     * Runs at a slow cadence while parked so sign-in without a bike still syncs.
+     * Sync with the cloud: push rides (including graphs) and the one JSON
+     * document of settings/counters, pull live garage data from Meridian, and
+     * report the cluster odometer. Runs at a slow cadence while parked so
+     * sign-in without a bike still syncs.
      */
     private fun startRideSync() {
         if (syncJob?.isActive == true) return
@@ -1906,7 +1889,20 @@ class ClusterService : Service() {
                             RideStore.markSynced(ride.startedAt)
                         }
                     }
-                    SupabaseClient.uploadFuelLogs(FuelLogStore.fills.value, token)
+                    // Fuel, service records and odometer are read-only here.
+                    CloudGarageStore.pull(token)
+                    val liveKm = ClusterRepository.telemetry.value.odometerKm
+                        .takeIf { it > 0 } ?: RideStore.lastReading.value.odometerKm
+                    val km = kotlin.math.round(liveKm).toInt()
+                    val now = System.currentTimeMillis()
+                    if (km > 0 && shouldReportOdo(km, lastReportedOdoKm, now, lastOdoReportAtMs)) {
+                        if (SupabaseClient.reportOdometer(
+                                JUPITER_VEHICLE, km, "cluster", token) == null
+                        ) {
+                            lastReportedOdoKm = km
+                            lastOdoReportAtMs = now
+                        }
+                    }
                     SupabaseClient.uploadAppState(buildAppStateJson(), token)
                 }
                 delay(if (ClusterRepository.telemetry.value.connected) 30_000L else 120_000L)
@@ -1962,9 +1958,7 @@ class ClusterService : Service() {
                 if (ClusterRepository.mirroring.value) {
                     ClusterRepository.navInstruction.value?.let { step ->
                         val distance = step.distanceMeters.coerceAtLeast(0)
-                        val probe = ClusterRepository.debugRemainingMeters.value
-                        val remaining = if (probe >= 0) probe
-                            else step.remainingMeters.coerceAtLeast(0)
+                        val remaining = step.remainingMeters.coerceAtLeast(0)
                         val eta = if (step.etaMinutes > 0)
                             RideAnalytics.adjustedEta(step.etaMinutes, etaFactor)
                         else step.etaMinutes
@@ -2148,11 +2142,8 @@ class ClusterService : Service() {
         if (g == null || ch == null) return@withLock
         FrameLog.record("TX", bytes)
         FrameCatalog.observe(bytes, rx = false)
-        val id = if (bytes.size > 1) bytes[1].toInt() and 0xFF else -1
-        val textFrame = id in setOf(0x43, 0x4C, 0x4F, 0x50, 0x52, 0x53, 0x61, 0x62, 0x63, 0x65)
-        val writeType = if (textFrame && ClusterRepository.confirmedTextWrites.value)
-            BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT
-        else BluetoothGattCharacteristic.WRITE_TYPE_NO_RESPONSE
+        // Stock write type for every frame: no response, as TVS Connect does.
+        val writeType = BluetoothGattCharacteristic.WRITE_TYPE_NO_RESPONSE
         try {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
                 g.writeCharacteristic(ch, bytes, writeType)

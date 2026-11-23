@@ -1,7 +1,6 @@
 ﻿package com.jupiterconnect.sync
 
 import android.content.Context
-import com.jupiterconnect.session.FuelFill
 import com.jupiterconnect.session.Ride
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -121,29 +120,64 @@ object SupabaseClient {
         if (response == null) "Ride upload failed" else null
     }
 
-    /** Upsert every petrol fill from the bundled Meridian export in one call. */
-    suspend fun uploadFuelLogs(fills: List<FuelFill>, token: String): String? =
+    /** Read a table through PostgREST. RLS scopes rows to the signed-in user. */
+    suspend fun getTable(table: String, query: String, token: String): JSONArray? =
         withContext(Dispatchers.IO) {
-            if (fills.isEmpty()) return@withContext null
-            val userId = prefs()?.getString(KEY_USER, null)
-            val array = JSONArray()
-            fills.forEach { f ->
-                array.put(JSONObject().apply {
-                    put("user_id", userId)
-                    put("client_id", "f${f.no}_${f.dateIst}")
-                    put("date_ist", f.dateIst)
-                    put("odometer_km", f.odometerKm)
-                    put("distance_km", f.distanceKm)
-                    put("liters", f.liters)
-                    put("amount_paise", f.amountPaise)
-                    put("mileage_kmpl", f.mileageKmpl)
-                    put("station", f.station)
-                })
+            val conn = URL("$URL_BASE/rest/v1/$table?$query").openConnection() as HttpURLConnection
+            conn.requestMethod = "GET"
+            conn.connectTimeout = 10_000
+            conn.readTimeout = 15_000
+            conn.setRequestProperty("apikey", ANON_KEY)
+            conn.setRequestProperty("Authorization", "Bearer $token")
+            conn.setRequestProperty("Accept", "application/json")
+            try {
+                val code = conn.responseCode
+                if (code !in 200..299) {
+                    println("getTable($table) failed: HTTP $code")
+                    return@withContext null
+                }
+                val text = conn.inputStream.bufferedReader().use { it.readText() }
+                if (text.isBlank()) return@withContext JSONArray()
+                runCatching { JSONArray(text) }.getOrElse {
+                    println("getTable($table) parse failed: ${it.message}")
+                    null
+                }
+            } catch (e: Exception) {
+                println("getTable($table) failed: ${e.message}")
+                null
+            } finally {
+                conn.disconnect()
             }
-            val response = requestArray(
-                "$URL_BASE/rest/v1/jc_fuel_logs", array, token)
-            if (response == null) "Fuel log upload failed" else null
         }
+
+    /**
+     * Report a live cluster odometer reading through the RPC. The cloud keeps
+     * the monotonic greatest value and ignores manual reports shortly after a
+     * cluster report, so retries are harmless.
+     */
+    suspend fun reportOdometer(
+        vehicle: String,
+        km: Int,
+        source: String,
+        token: String,
+    ): String? = withContext(Dispatchers.IO) {
+        val body = JSONObject().apply {
+            put("p_vehicle", vehicle)
+            put("p_km", km)
+            put("p_source", source)
+            put("p_device_id", JSONObject.NULL)
+        }
+        val response = runCatching {
+            request(
+                "$URL_BASE/rest/v1/rpc/jc_report_odometer", "POST", body,
+                authenticated = true, token = token,
+            )
+        }.getOrNull()
+        if (response == null || response.has("error")) {
+            response?.optString("msg").takeUnless { it.isNullOrBlank() }
+                ?: "Odometer report failed"
+        } else null
+    }
 
     /** Upsert the one JSON document holding settings and cumulative counters. */
     suspend fun uploadAppState(details: JSONObject, token: String): String? =

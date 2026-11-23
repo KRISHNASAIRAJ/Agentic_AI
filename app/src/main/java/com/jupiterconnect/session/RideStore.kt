@@ -304,7 +304,7 @@ object RideStore {
     fun init(context: Context) {
         if (prefs != null) return
         prefs = context.applicationContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
-        // Bundled Meridian fuel export powers the Rides monthly history.
+        // Cached cloud fuel fills power the Rides monthly history offline.
         FuelLogStore.init(context.applicationContext)
         val p = prefs ?: return
         _lastReading.value = LastReading(

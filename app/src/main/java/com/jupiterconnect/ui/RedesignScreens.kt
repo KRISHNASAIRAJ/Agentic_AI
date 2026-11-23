@@ -96,16 +96,16 @@ import androidx.compose.ui.unit.sp
 import com.jupiterconnect.R
 import com.jupiterconnect.debug.FeatureVerification
 import com.jupiterconnect.debug.FeatureVerification.Status
-import com.jupiterconnect.debug.FrameCatalog
-import com.jupiterconnect.debug.FrameLog
-import com.jupiterconnect.debug.PhoneFrameDebug
 import com.jupiterconnect.nav.NavInstruction
 import com.jupiterconnect.protocol.ClusterControlFrames
 import com.jupiterconnect.protocol.ScannedDevice
 import com.jupiterconnect.protocol.Telemetry
+import com.jupiterconnect.session.CloudGarageStore
 import com.jupiterconnect.session.FuelLogStore
 import com.jupiterconnect.session.Ride
 import com.jupiterconnect.session.RideAnalytics
+import com.jupiterconnect.session.nextServiceFromRecords
+import com.jupiterconnect.session.totalServicePaise
 import com.jupiterconnect.session.RideStore
 import com.jupiterconnect.session.WarmupPhase
 import com.jupiterconnect.session.lastMonthKeys
@@ -379,57 +379,6 @@ private fun VehicleDetailsRows(
     StatLine("Cluster addr", telemetry.clusterBleAddress.ifEmpty { "--" })
     StatLine("Media key", if (telemetry.mediaKey != 0) "0x%02X".format(telemetry.mediaKey) else "--")
     StatLine("Service due", if (telemetry.serviceDue) "YES" else "NO")
-}
-
-/** Passive code discovery: what the cluster emits and what the app sends. */
-@Composable
-private fun ProtocolDiscoveryCard() {
-    val frames by FrameCatalog.frames.collectAsState()
-    val confirmed by ClusterRepository.confirmedTextWrites.collectAsState()
-    val seen = frames.associateBy { it.id }
-    val missing = FrameCatalog.CANDIDATES.filter { seen[it.id] == null }
-
-    Label("PROTOCOL DISCOVERY")
-    Spacer(Modifier.height(8.dp))
-    Text("Every frame is saved to Downloads/JupiterConnect as one file per connection.",
-        fontSize = 11.sp, color = JupiterColors.OnSurfaceVariant)
-    FrameLog.currentSession()?.let {
-        Spacer(Modifier.height(4.dp))
-        Text("Writing: $it", fontSize = 10.sp, color = JupiterColors.Accent)
-    }
-    Spacer(Modifier.height(10.dp))
-    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-        Column(Modifier.weight(1f)) {
-            Text("Confirmed text writes", fontSize = 12.sp, color = JupiterColors.OnSurface)
-            Text("Try if cluster text stays on the first page", fontSize = 10.sp,
-                color = JupiterColors.OnSurfaceVariant)
-        }
-        Switch(checked = confirmed, onCheckedChange = {
-            ClusterRepository.confirmedTextWrites.value = it
-        }, colors = SwitchDefaults.colors(
-            checkedThumbColor = Color.White, checkedTrackColor = JupiterColors.Red,
-            uncheckedTrackColor = JupiterColors.High))
-    }
-    Spacer(Modifier.height(12.dp))
-    Label("SEEN ON THIS CLUSTER")
-    Spacer(Modifier.height(6.dp))
-    if (frames.isEmpty()) {
-        Text("No frames yet on this connection.", fontSize = 11.sp,
-            color = JupiterColors.OnSurfaceVariant)
-    } else {
-        frames.forEach { f ->
-            StatLine("0x%02X %s".format(f.id, f.label), "RX ${f.rx} / TX ${f.tx}", accent = f.rx > 0)
-            Text(f.hex, fontSize = 9.sp, color = JupiterColors.OnSurfaceVariant,
-                maxLines = 1, softWrap = false, overflow = TextOverflow.Ellipsis)
-            Spacer(Modifier.height(4.dp))
-        }
-    }
-    Spacer(Modifier.height(8.dp))
-    Label("NOT SEEN")
-    Spacer(Modifier.height(6.dp))
-    Text(if (missing.isEmpty()) "All candidate IDs were observed."
-        else missing.joinToString("  ") { "0x%02X".format(it.id) },
-        fontSize = 10.sp, color = JupiterColors.OnSurfaceVariant)
 }
 
 @Composable
@@ -1122,6 +1071,16 @@ private fun AnalyticsCards(rides: List<Ride>, fills: List<com.jupiterconnect.ses
     val advice = remember(rides, lastReading.odometerKm) {
         RideAnalytics.serviceAdvice(rides, lastReading.odometerKm)
     }
+    val cloudMaintenance by CloudGarageStore.maintenance.collectAsState()
+    val cloudOdometer by CloudGarageStore.odometerKm.collectAsState()
+    val cloudIssues by CloudGarageStore.issues.collectAsState()
+    val nextService = remember(cloudMaintenance, cloudOdometer) {
+        nextServiceFromRecords(cloudMaintenance, cloudOdometer)
+    }
+    val serviceTotalPaise = remember(cloudMaintenance) { totalServicePaise(cloudMaintenance) }
+    val openIssues = remember(cloudIssues) {
+        cloudIssues.count { it.status.equals("open", ignoreCase = true) }
+    }
     val fused by ClusterRepository.fusedSpeed.collectAsState()
     val errorKmh by ClusterRepository.speedErrorKmh.collectAsState()
     val fusionSamples by ClusterRepository.speedFusionSamples.collectAsState()
@@ -1186,16 +1145,30 @@ private fun AnalyticsCards(rides: List<Ride>, fills: List<com.jupiterconnect.ses
     Label("SERVICE TIMING")
     Spacer(Modifier.height(8.dp))
     RedCard {
-        BigValue("${advice.suggestedKm}", "km", 26)
-        Text("Odometer interval ${advice.odometerIntervalKm} km" +
-            if (advice.severe) " · moved earlier for severe use" else "",
-            fontSize = 11.sp, color = JupiterColors.OnSurfaceVariant)
-        if (advice.reasons.isNotEmpty()) {
-            Text(advice.reasons.joinToString(" · "), fontSize = 11.sp,
-                color = JupiterColors.Accent)
+        if (nextService.kmLeft != null && nextService.dueKm != null) {
+            BigValue("${nextService.kmLeft}", "km left", 26)
+            Text("General service due at ${nextService.dueKm} km · last at ${nextService.lastKm} km",
+                fontSize = 11.sp, color = JupiterColors.OnSurfaceVariant)
+            Text("Total service spend Rs %.0f".format(serviceTotalPaise / 100.0),
+                fontSize = 11.sp, color = JupiterColors.OnSurfaceVariant)
+            Text("Open service issues: $openIssues", fontSize = 11.sp,
+                color = JupiterColors.OnSurfaceVariant)
+            Text("Heuristic suggests ${advice.suggestedKm} km", fontSize = 9.sp,
+                color = JupiterColors.OnSurfaceVariant)
+            Text("From Meridian service records", fontSize = 9.sp,
+                color = JupiterColors.OnSurfaceVariant)
+        } else {
+            BigValue("${advice.suggestedKm}", "km", 26)
+            Text("Odometer interval ${advice.odometerIntervalKm} km" +
+                if (advice.severe) " · moved earlier for severe use" else "",
+                fontSize = 11.sp, color = JupiterColors.OnSurfaceVariant)
+            if (advice.reasons.isNotEmpty()) {
+                Text(advice.reasons.joinToString(" · "), fontSize = 11.sp,
+                    color = JupiterColors.Accent)
+            }
+            Text("Heuristic from short trips, cold starts and idling", fontSize = 9.sp,
+                color = JupiterColors.OnSurfaceVariant)
         }
-        Text("Heuristic from short trips, cold starts and idling", fontSize = 9.sp,
-            color = JupiterColors.OnSurfaceVariant)
     }
     Spacer(Modifier.height(10.dp))
     Label("CHECKS")
@@ -1641,31 +1614,6 @@ private fun SettingsContent(
     }
     Spacer(Modifier.height(10.dp))
     RedCard {
-        Label("NAV DIAGNOSTICS")
-        Spacer(Modifier.height(8.dp))
-        val probe by ClusterRepository.debugRemainingMeters.collectAsState()
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Column(Modifier.weight(1f)) {
-                Text("Remaining-distance probe", fontSize = 14.sp,
-                    color = JupiterColors.OnSurface)
-                Text("Sends 1500 m in 0x4E bytes 6-8 to identify the arrow symbol",
-                    fontSize = 11.sp, color = JupiterColors.OnSurfaceVariant)
-            }
-            Switch(
-                checked = probe >= 0,
-                onCheckedChange = {
-                    ClusterRepository.debugRemainingMeters.value = if (it) 1500 else -1
-                },
-                colors = SwitchDefaults.colors(
-                    checkedThumbColor = Color.White,
-                    checkedTrackColor = JupiterColors.Red,
-                    uncheckedTrackColor = JupiterColors.High,
-                ),
-            )
-        }
-    }
-    Spacer(Modifier.height(10.dp))
-    RedCard {
         Label("VOICE")
         Spacer(Modifier.height(8.dp))
         Spacer(Modifier.height(10.dp))
@@ -1675,58 +1623,16 @@ private fun SettingsContent(
     }
     Spacer(Modifier.height(10.dp))
     RedCard {
-        Label("ENGINE FRAME")
-        Spacer(Modifier.height(8.dp))
-        val engine by ClusterRepository.engineDebug.collectAsState()
-        Text(engine, fontSize = 10.sp, color = JupiterColors.OnSurfaceVariant)
+        val carbonKg = RideStore.carbonSavedKg
+        Text("CARBON ESTIMATE  ${"%.1f".format(carbonKg)} kg",
+            fontSize = 12.sp, color = JupiterColors.OnSurface)
+        Text(RideStore.carbonEstimateSource,
+            fontSize = 10.sp, color = JupiterColors.OnSurfaceVariant)
+        Text("The dash computes its own value from idle-stop (ISS) data - no phone " +
+            "frame can write it. This is our independent estimate (TVS formats its " +
+            "own figure with a x0.8 factor), shown in the app only.",
+            fontSize = 10.sp, color = JupiterColors.OnSurfaceVariant)
     }
-}
-
-/**
- * Passive debug for the call/message channels. Shows whether any START_PHONE
- * frame (0x43 caller / 0x53 message) was ever seen from the cluster, with the
- * ASCII payload decoded exactly like the community protocol note. Sends nothing.
- */
-@Composable
-private fun PhoneFrameDebugCard() {
-    val frames by FrameCatalog.frames.collectAsState()
-    Label("PHONE FRAME DEBUG")
-    Spacer(Modifier.height(8.dp))
-    PhoneFrameDebug.PHONE_IDS.forEach { id ->
-        val seen = frames.firstOrNull { it.id == id }
-        val rxHex = seen?.lastRxHex.orEmpty()
-        val txHex = seen?.lastTxHex.orEmpty()
-        RedCard {
-            StatLine(
-                if (id == 0x43) "0x43 caller" else "0x53 message",
-                "RX ${seen?.rx ?: 0} / TX ${seen?.tx ?: 0}",
-                accent = (seen?.rx ?: 0) > 0,
-            )
-            Spacer(Modifier.height(4.dp))
-            Text("RX text: ${if (rxHex.isEmpty()) "-" else PhoneFrameDebug.decode(rxHex, id).ifEmpty { "(no ASCII)" }}",
-                fontSize = 11.sp, color = JupiterColors.OnSurface)
-            Text("TX text: ${if (txHex.isEmpty()) "-" else PhoneFrameDebug.decode(txHex, id).ifEmpty { "(no ASCII)" }}",
-                fontSize = 11.sp, color = JupiterColors.OnSurfaceVariant)
-            if (rxHex.isNotEmpty()) {
-                Spacer(Modifier.height(2.dp))
-                Text(rxHex, fontSize = 9.sp, color = JupiterColors.OnSurfaceVariant,
-                    maxLines = 1, softWrap = false, overflow = TextOverflow.Ellipsis)
-            }
-        }
-        Spacer(Modifier.height(8.dp))
-    }
-    Text("Bytes 2-18 of START_PHONE frames as ASCII. Observation only - no frames are sent.",
-        fontSize = 10.sp, color = JupiterColors.OnSurfaceVariant)
-    Spacer(Modifier.height(12.dp))
-    val carbonKg = RideStore.carbonSavedKg
-    Text("CARBON ESTIMATE  ${"%.1f".format(carbonKg)} kg",
-        fontSize = 12.sp, color = JupiterColors.OnSurface)
-    Text(RideStore.carbonEstimateSource,
-        fontSize = 10.sp, color = JupiterColors.OnSurfaceVariant)
-    Text("The dash computes its own value from idle-stop (ISS) data - no phone " +
-        "frame can write it. This is our independent estimate (TVS formats its " +
-        "own figure with a x0.8 factor), shown in the app only.",
-        fontSize = 10.sp, color = JupiterColors.OnSurfaceVariant)
 }
 
 /** Persisted record of which optional features produced a visible dash change. */
@@ -1952,9 +1858,5 @@ fun MoreScreenV2(
         ClusterControlsCard()
         Spacer(Modifier.height(18.dp))
         FeatureVerificationCard()
-        Spacer(Modifier.height(18.dp))
-        RedCard { ProtocolDiscoveryCard() }
-        Spacer(Modifier.height(10.dp))
-        PhoneFrameDebugCard()
     }
 }

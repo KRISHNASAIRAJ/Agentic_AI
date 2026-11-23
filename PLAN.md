@@ -65,20 +65,43 @@ Still deliberately excluded:
 - Social **unread counters** are mirrored on `0x9C` (confirmed by RE), but the
   old Social tab is not restored until its rendering is verified on hardware.
 
-### Service records and other Meridian data — future plan
+### Service records and other Meridian data — shipped
 
-The service history (and other records) that currently live in the Meridian app
-are not in Jupiter Connect yet. Planned import: read Meridian's exported service
-records, key them by date/odometer, and surface them in a dedicated card (next
-service due, past jobs, cost) without inventing entries. The same importer
-should be able to bring in any further per-ride metadata Meridian exports.
-Until that lands, the Rides history stays derived only from the fuel log and
-the cluster's live odometer/telemetry.
+Meridian's garage data is now pulled live from the shared Supabase project
+(RLS-scoped to the signed-in user) and shown read-only in Jupiter Connect:
+
+- `fuel_fills` → `session/CloudGarageStore.kt` maps rows into `FuelLogStore`,
+  deriving distance/mileage from consecutive odometer readings. This replaces
+  the stale bundled `res/raw/fuel_logs.json` export, which the app no longer
+  reads or uploads.
+- `maintenance_logs` → a Service card shows next general-service due (last
+  service km + 3000), km left at the live cluster odometer, past jobs and total
+  service cost. No add/edit UI exists here; Meridian remains the writer.
+- `vehicle_service_issues` → reported/open issues are cached for display.
+- `vehicle_odometer` → live cluster odometer is pushed via the RPC
+  `jc_report_odometer(p_vehicle, p_km, p_source, p_device_id)` (monotonic
+  greatest; throttled to 1 km or 30 s). The cloud is the single source of
+  truth; the local SharedPreferences copy is a cache that a pull overwrites.
+
+Rides stay local-first in `RideStore` and are uploaded to `jc_rides`; settings
+and the parked spot stay in `jc_app_state`.
 
 ### Other backlog
 
-- Apply the pending Supabase migrations (`0001_jc_rides.sql`,
-  `0002_jc_sync.sql`) and verify ride/fuel/settings sync end to end.
+- Push Meridian migration `0058_vehicle_odometer_and_jc_tables.sql` to the
+  shared Supabase project — it creates `jc_rides`, `jc_app_state` and
+  `vehicle_odometer` plus the `jc_report_odometer` RPC. The JC-local
+  `0001_jc_rides.sql` / `0002_jc_sync.sql` are reference-only and must NOT be
+  pushed separately (they would conflict with the shared schema).
 - Decode more of the candidate IDs from the frame logs; only proven codes get
   adopted into telemetry.
 - Google Maps remaining-distance work remains deferred.
+
+### Removed from More → Settings
+
+Keyless entry, NAV DIAGNOSTICS (remaining-distance probe), ENGINE FRAME debug,
+PHONE FRAME DEBUG and PROTOCOL DISCOVERY cards were removed at the user's
+request, along with their backing debug state and the speculative `0x4E`
+remaining-distance probe write path. The genuine `0x4E` navigation control
+frame and `0x18` telemetry decoding are unchanged. The carbon estimate text was
+kept as a standalone card.

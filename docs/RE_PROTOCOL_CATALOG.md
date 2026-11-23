@@ -214,6 +214,8 @@ Inbound decoded: speedometer `0x10`, service `0x11`, engine `0x18`, economy `0x1
 | 6 | Keyless entry / find-my | `9A F1` + AES-CTR challenge | ❌ Removed — frame builders, UI and RX challenge handling deleted at the user's request. Documented above only as reverse-engineering reference for the genuine APK. |
 | 7 | VIN / DOB / user ID handshake | `5B 22/7E/80`, `5A 7D` | ✅ Implemented — More → Setup Data (manual only) |
 | 8 | High speed alert | `5B 4C` "HIGH SPEED ALERT" + held text + vibration + status-bar notification | ✅ Implemented — Settings → HIGH SPEED ALERT; threshold/switch persisted; one-shot with re-arm below limit. Keepalive `5B 4A` byte 3 intentionally NOT written. |
+| 9 | Meridian cloud sync (odo / fuel / service) | n/a (Supabase REST) | ✅ Implemented — Supabase cloud is the source of truth; local storage is cache only. Fuel fills, service records and issues are pulled read-only; live cluster odo is pushed via `jc_report_odometer`. |
+| 10 | Remaining-distance probe (`5A 4E` bytes 6-8) | `5A 4E` | ❌ Removed — diagnostic override and its More → NAV DIAGNOSTICS switch are gone; `5A 4E` navigation control still uses the Maps remaining distance. |
 
 All new frames live in `protocol/ClusterControlFrames.kt` and are verified by
 `ClusterControlFramesTest.kt` (13 tests). None are sent automatically on
