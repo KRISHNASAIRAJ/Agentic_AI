@@ -110,7 +110,6 @@ import com.jupiterconnect.session.RideStore
 import com.jupiterconnect.session.WarmupPhase
 import com.jupiterconnect.session.lastMonthKeys
 import com.jupiterconnect.session.monthlyDistanceKm
-import com.jupiterconnect.session.odometerKmSinceLastFill
 import com.jupiterconnect.traffic.Cities
 import com.jupiterconnect.transport.ClusterRepository
 import com.jupiterconnect.ui.theme.JupiterColors
@@ -511,6 +510,26 @@ fun HomeScreenV2(
                                 color = JupiterColors.OnSurfaceVariant)
                         }
                     }
+                    // Driving-mode toggle, icon only. Bright when BLE scanning
+                    // is active, dim when the bike is free for other devices.
+                    val driving by ClusterRepository.drivingMode.collectAsState()
+                    Spacer(Modifier.height(6.dp))
+                    Box(
+                        Modifier.size(34.dp)
+                            .align(Alignment.CenterHorizontally)
+                            .clip(CircleShape)
+                            .background(if (driving) JupiterColors.RedTint else JupiterColors.High)
+                            .clickable { ClusterRepository.setDrivingMode(!driving) },
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        Icon(
+                            Icons.Rounded.TwoWheeler,
+                            contentDescription = if (driving) "Driving mode on - tap to turn off"
+                                else "Driving mode off - tap to turn on",
+                            modifier = Modifier.size(18.dp),
+                            tint = if (driving) JupiterColors.Red else JupiterColors.OnSurfaceVariant,
+                        )
+                    }
                     val lowFuel by RideStore.lowFuel.collectAsState()
                     if (lowFuel) {
                         Spacer(Modifier.height(8.dp))
@@ -870,7 +889,6 @@ fun RidesScreenV2(
     val fuelMonths = remember(fills) { FuelLogStore.monthly() }
     val lastOdo by RideStore.lastReading.collectAsState()
     val lastFillOdo = remember(fills) { fills.maxByOrNull { it.dateIst }?.odometerKm }
-    val odoTailKm = odometerKmSinceLastFill(lastFillOdo, lastOdo.odometerKm)
     var expandedId by remember { mutableStateOf<Long?>(null) }
     var selectedBar by remember { mutableStateOf<Int?>(null) }
     JupiterShell("Rides", "SAVED ON THIS PHONE", activeTab, onTab, onSettings) {
@@ -952,11 +970,6 @@ fun RidesScreenV2(
                         }
                     }
                 }
-            }
-            if (odoTailKm > 0.5) {
-                Spacer(Modifier.height(6.dp))
-                Text("+%.0f km since last fill, from live odometer".format(odoTailKm),
-                    fontSize = 10.sp, color = JupiterColors.OnSurfaceVariant)
             }
         }
         // The Rides tab shows only the two newest rides; "View all" opens a
@@ -1503,33 +1516,6 @@ private fun SettingsContent(
             fontSize = 11.sp, color = JupiterColors.OnSurfaceVariant)
         Spacer(Modifier.height(12.dp))
         SecondaryButton("Sign out", onSignOut, Modifier.fillMaxWidth())
-    }
-    Spacer(Modifier.height(10.dp))
-    RedCard(bar = true) {
-        Label("DRIVING MODE")
-        Spacer(Modifier.height(8.dp))
-        val driving by ClusterRepository.drivingMode.collectAsState()
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Column(Modifier.weight(1f)) {
-                Text("Scan & connect to cluster", fontSize = 14.sp,
-                    color = JupiterColors.OnSurface)
-                Text(if (driving) "On - BLE scanning and the link notification are active"
-                    else "Off - Bluetooth stays free for other devices",
-                    fontSize = 11.sp, color = JupiterColors.OnSurfaceVariant)
-            }
-            Switch(
-                checked = driving,
-                onCheckedChange = { ClusterRepository.setDrivingMode(it) },
-                colors = SwitchDefaults.colors(
-                    checkedThumbColor = Color.White,
-                    checkedTrackColor = JupiterColors.Red,
-                    uncheckedTrackColor = JupiterColors.High,
-                ),
-            )
-        }
-        Spacer(Modifier.height(8.dp))
-        Text("Turn this on before a ride. While off, the app does not scan, connect or show a persistent notification - Bluetooth can stay on for earbuds and other devices.",
-            fontSize = 10.sp, color = JupiterColors.OnSurfaceVariant)
     }
     Spacer(Modifier.height(10.dp))
     RedCard {
