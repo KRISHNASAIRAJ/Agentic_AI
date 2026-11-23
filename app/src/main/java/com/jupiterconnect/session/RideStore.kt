@@ -620,12 +620,15 @@ object RideStore {
     ) {
         val location = ParkedLocation(lat, lng, atMs, approximate)
         _parkedLocation.value = location
+        // commit(), not apply(): a disconnect is often followed immediately by
+        // the system freezing/killing the app. apply() only queues the write and
+        // the spot was lost on the next cold start. This is a tiny, rare write.
         prefs?.edit()
             ?.putLong(KEY_PARK_LAT, java.lang.Double.doubleToRawLongBits(lat))
             ?.putLong(KEY_PARK_LNG, java.lang.Double.doubleToRawLongBits(lng))
             ?.putLong(KEY_PARK_MS, atMs)
             ?.putBoolean(KEY_PARK_APPROX, approximate)
-            ?.apply()
+            ?.commit()
     }
 
     private fun String.parseSamples(): List<Int> =
