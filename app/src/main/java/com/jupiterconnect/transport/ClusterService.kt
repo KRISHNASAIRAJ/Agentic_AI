@@ -95,6 +95,9 @@ import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import java.text.SimpleDateFormat
+import java.util.Locale
+import java.util.TimeZone
 import java.util.UUID
 
 /** Shared state between the foreground service and Compose UI. */
@@ -360,6 +363,8 @@ object ClusterRepository {
     val trafficEnabled = MutableStateFlow(false)
     val trafficStatus = MutableStateFlow("Off")
     val trafficScreen = MutableStateFlow(-1)
+    /** Ambient temperature for the cluster's own readout (byte 4 of 0x4A). */
+    val ambientTempC = MutableStateFlow<Int?>(null)
 
     /** Show a short reply on the cluster, overriding the nav text briefly. */
     fun showText(text: String, holdMs: Long = 10_000L) {
@@ -378,11 +383,21 @@ object ClusterRepository {
         text: String,
         holdMs: Long = 5_000L,
         sourcePackage: String? = null,
+        untilDismissed: Boolean = false,
     ) {
         // Social unread counters use the separate 0x9C frame, never the text row.
         if (!isCall) onSocialNotification(sourcePackage)
-        service?.sendPhoneEvent(isCall, text, holdMs)
+        service?.sendPhoneEvent(isCall, text, holdMs, untilDismissed)
     }
+
+    /** End the caller card when the incoming-call notification goes away. */
+    fun clearPhoneEvent() = service?.clearPhoneEvent()
+
+    /** Pull garage data immediately after sign-in instead of waiting for the loop. */
+    fun requestGarageSync() = service?.requestGarageSync()
+
+    /** Manual test of the cluster's READY TO GO notice. */
+    fun testWarmupNotice() = service?.testWarmupNotice()
 
     /**
      * TVS Connect increments a per-app unread counter for each notification.
@@ -476,6 +491,7 @@ class ClusterService : Service() {
     private var trafficJob: Job? = null
     private var mediaKeyJob: Job? = null
     private var phoneEventJob: Job? = null
+    private var warmupNoticeJob: Job? = null
     private var syncJob: Job? = null
     // Throttle for live odometer reports: re-send after 1 km or 30 s.
     private var lastReportedOdoKm = 0
@@ -1226,12 +1242,50 @@ class ClusterService : Service() {
             "WARMUP ready target=${s.targetC}C start=${s.startTemp}C " +
                 "ambient=${s.ambientC}C slope=${String.format("%.2f", s.slopeCPerMin)}",
         )
+        // One notice per calendar day (IST). The transition itself can fire
+        // again after an app restart mid-warmup; the persisted day stops the
+        // dash from repeating the same message.
+        val prefs = getSharedPreferences("jupiter_warmup_notice", MODE_PRIVATE)
+        val fmt = SimpleDateFormat("yyyy-MM-dd", Locale.US)
+        fmt.timeZone = TimeZone.getTimeZone("Asia/Kolkata")
+        val today = fmt.format(java.util.Date())
+        if (prefs.getString("last_day", null) == today) return
+        prefs.edit().putString("last_day", today).apply()
+
         val vibrator = getSystemService(android.os.Vibrator::class.java)
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             vibrator?.vibrate(android.os.VibrationEffect.createOneShot(120, 120))
         } else {
             @Suppress("DEPRECATION")
             vibrator?.vibrate(120L)
+        }
+        showWarmupNotice()
+    }
+
+    /** Manual test button: same cluster notice, without the once-per-day guard. */
+    fun testWarmupNotice() {
+        FrameLog.note("WARMUP notice test button pressed")
+        showWarmupNotice()
+    }
+
+    private fun showWarmupNotice() {
+        if (phoneEventJob?.isActive == true) return // a message owns the text row
+        warmupNoticeJob?.cancel()
+        warmupNoticeJob = scope.launch {
+            val until = System.currentTimeMillis() + 10_000L
+            while (isActive && System.currentTimeMillis() < until) {
+                // Same pair the message card uses: 0x4C is Jupiter's text row,
+                // 0x53 the genuine TVS message ID that makes the dash open the
+                // card. The 0x4F direction row is never touched.
+                write(buildMessageRow("READY TO GO"))
+                write(buildMessageFrame("READY TO GO"))
+                delay(500L)
+            }
+            if (isActive) {
+                write(buildMessageRow(""))
+                write(buildMessageFrame(""))
+            }
+            warmupNoticeJob = null
         }
     }
 
@@ -1367,7 +1421,12 @@ class ClusterService : Service() {
      * Messages use the Jupiter 0x4C text row; 0x53 is a genuine TVS ID whose
      * rendering on this cluster is still unverified.
      */
-    fun sendPhoneEvent(isCall: Boolean, text: String, holdMs: Long) {
+    fun sendPhoneEvent(
+        isCall: Boolean,
+        text: String,
+        holdMs: Long,
+        untilDismissed: Boolean = false,
+    ) {
         phoneEventJob?.cancel()
         phoneEventJob = scope.launch {
             if (isCall) {
@@ -1386,7 +1445,9 @@ class ClusterService : Service() {
                 val packets = if (ClusterRepository.legacyCallerPackets.value) {
                     buildCallerPackets(text, contactName = text)
                 } else listOf(buildCallerFrame(text))
-                while (isActive && System.currentTimeMillis() < until) {
+                // An incoming call stays on the dash until its notification is
+                // removed (answered, rejected or missed), not just for 5 s.
+                while (isActive && (untilDismissed || System.currentTimeMillis() < until)) {
                     packets.forEach { write(it) }
                     delay(500L)
                 }
@@ -1402,21 +1463,44 @@ class ClusterService : Service() {
                 }
             }
             if (!isActive) return@launch
-            if (isCall) {
-                val calls = currentMissedCalls()
-                repeat(3) {
-                    write(buildKeepalive(
-                        batteryPct = phoneBatteryPct(),
-                        signalBars = phoneSignalBars(),
-                        missedCalls = calls,
-                    ))
-                    delay(100L)
-                }
-            } else {
+            if (isCall) finishCallCard() else {
                 write(buildMessageRow(""))
                 write(buildMessageFrame(""))
             }
             phoneEventJob = null
+        }
+    }
+
+    /** Clear the caller card and keep the cluster's missed-call count current. */
+    private suspend fun finishCallCard() {
+        write(buildCallerFrame(""))
+        val calls = currentMissedCalls()
+        repeat(3) {
+            write(buildKeepalive(
+                batteryPct = phoneBatteryPct(),
+                signalBars = phoneSignalBars(),
+                missedCalls = calls,
+                ambientTempC = clusterAmbientTempC(),
+            ))
+            delay(100L)
+        }
+    }
+
+    /** One-off garage pull, used by the Sign in button so data appears at once. */
+    fun requestGarageSync() {
+        scope.launch {
+            val token = SupabaseClient.currentToken() ?: return@launch
+            CloudGarageStore.pull(token)
+        }
+    }
+
+    /** The call notification disappeared: stop re-sending 0x43 and clear the card. */
+    fun clearPhoneEvent() {
+        phoneEventJob?.cancel()
+        phoneEventJob = null
+        scope.launch {
+            write(buildCallerFrame(""))
+            finishCallCard()
         }
     }
 
@@ -1728,6 +1812,8 @@ class ClusterService : Service() {
                     releaseWakeLock()
                     phoneEventJob?.cancel()
                     phoneEventJob = null
+                    warmupNoticeJob?.cancel()
+                    warmupNoticeJob = null
                     if (g === gatt) gatt = null
                     // Android has already finished the disconnect here, so a
                     // direct close is safe (no extra disconnect round-trip).
@@ -1854,10 +1940,37 @@ class ClusterService : Service() {
         }
     }
 
+    /**
+     * Ambient temperature for the cluster's own readout. Live weather from the
+     * free API is best; otherwise the cold-start intake reading (ambient while
+     * the engine is off) is a good local proxy. 0 means "unknown" on the wire.
+     */
+    private fun clusterAmbientTempC(): Int {
+        ClusterRepository.ambientTempC.value?.let { if (it in -40..60) return it }
+        val w = ClusterRepository.warmup.value
+        if (w.hasEngineData && w.ambientC > 0) return w.ambientC
+        val t = ClusterRepository.telemetry.value
+        if (!t.ignitionOn && t.intakeTempC > 0) return t.intakeTempC
+        return 0
+    }
+
+    private var lastAmbientFetchMs = 0L
+
     private fun startKeepalive() {
         if (keepaliveJob?.isActive == true) return
         keepaliveJob = scope.launch {
             while (isActive) {
+                // Ambient temperature for the dash is fetched independently of
+                // the traffic-screen toggle, so the readout still works when
+                // those screens are off. Failures keep the previous value.
+                val now = System.currentTimeMillis()
+                if (now - lastAmbientFetchMs > 600_000L) {
+                    lastAmbientFetchMs = now
+                    val (lat, lon) = resolveWeatherLocation()
+                    kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                        runCatching { TrafficClient.weather(lat, lon) }.getOrNull()
+                    }?.let { ClusterRepository.ambientTempC.value = it.tempC }
+                }
                 acquireWakeLock()
                 // Real phone values stop the cluster flipping between
                 // "full signal / full battery" and "no signal / low battery"
@@ -1866,6 +1979,7 @@ class ClusterService : Service() {
                     batteryPct = phoneBatteryPct(),
                     signalBars = phoneSignalBars(),
                     missedCalls = currentMissedCalls(),
+                    ambientTempC = clusterAmbientTempC(),
                 ))
                 delay(2000)
             }
@@ -2070,21 +2184,21 @@ class ClusterService : Service() {
             var news: TrafficClient.News? = null
             var lastFetch = 0L
             var index = 0
-            val screens = intArrayOf(
-                TrafficScreen.WEATHER, TrafficScreen.CRICKET,
-                TrafficScreen.MARKET, TrafficScreen.DEFAULT,
-            )
             while (isActive) {
                 if (!ClusterRepository.trafficEnabled.value) {
                     ClusterRepository.trafficStatus.value = "Off"
                     delay(1000L)
                     continue
                 }
-                // Navigation owns the cluster while a route is active.
-                if (ClusterRepository.mirroring.value &&
-                    ClusterRepository.navInstruction.value != null
+                // Navigation owns the cluster while a route is active, and a
+                // call/message or the READY TO GO notice owns the text row.
+                // Switching screens here used to wipe the notice off the dash.
+                if ((ClusterRepository.mirroring.value &&
+                        ClusterRepository.navInstruction.value != null) ||
+                    phoneEventJob?.isActive == true ||
+                    warmupNoticeJob?.isActive == true
                 ) {
-                    delay(2000L)
+                    delay(1000L)
                     continue
                 }
                 val now = System.currentTimeMillis()
@@ -2097,11 +2211,32 @@ class ClusterService : Service() {
                         market = runCatching { TrafficClient.market() }.getOrNull()
                         news = runCatching { TrafficClient.news() }.getOrNull()
                     }
+                    // The same weather value also feeds the cluster's ambient
+                    // temperature readout, so it stops showing 0 C.
+                    weather?.let {
+                        ClusterRepository.ambientTempC.value = it.tempC.toInt()
+                    }
                     lastFetch = now
                     ClusterRepository.trafficStatus.value = when {
                         weather != null || market != null || news != null -> "Live"
                         else -> "No data - check connection"
                     }
+                }
+                // Only cycle screens that actually have data. Selecting a
+                // screen with no fetched payload made the dash show placeholder
+                // rows such as "Yet to start" and all-zero text.
+                val screens = buildList<Int> {
+                    if (weather != null) add(TrafficScreen.WEATHER)
+                    // A match with no runs yet only renders "Yet to start".
+                    if (cricket != null && (cricket.runs1 > 0 || cricket.runs2 > 0)) {
+                        add(TrafficScreen.CRICKET)
+                    }
+                    if (market != null) add(TrafficScreen.MARKET)
+                    if (news != null) add(TrafficScreen.DEFAULT)
+                }
+                if (screens.isEmpty()) {
+                    delay(2000L)
+                    continue
                 }
                 val id = screens[index % screens.size]
                 ClusterRepository.trafficScreen.value = id
@@ -2255,6 +2390,8 @@ class ClusterService : Service() {
         }
         phoneEventJob?.cancel()
         phoneEventJob = null
+        warmupNoticeJob?.cancel()
+        warmupNoticeJob = null
         releaseWakeLock()
         disconnectNow(fromDestroy = true)
         voiceBridge.destroy()

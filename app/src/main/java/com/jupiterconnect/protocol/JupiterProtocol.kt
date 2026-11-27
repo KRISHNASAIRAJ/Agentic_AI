@@ -123,6 +123,7 @@ fun buildKeepalive(
     batteryPct: Int = -1,
     signalBars: Int = -1,
     missedCalls: Int = 0,
+    ambientTempC: Int = 0,
 ): ByteArray {
     val b = ByteArray(20)
     b[0] = 0x5B
@@ -136,7 +137,9 @@ fun buildKeepalive(
     val bucket = if (batteryPct >= 0) ((batteryPct + 24) / 25).coerceIn(0, 4) else 0
     val bars = signalBars.coerceIn(0, 4)
     b[2] = ((bars shl 4) or bucket).toByte()
-    b[4] = 40 // ambient temperature + 40 (40 = 0 C / unknown)
+    // The cluster's own temperature readout is byte 4 of this frame: ambient
+    // temperature + 40. Hardcoding 40 made the dash permanently show 0 C.
+    b[4] = (ambientTempC + 40).coerceIn(0, 255).toByte()
     val now = Calendar.getInstance()
     val hour = now.get(Calendar.HOUR).let { if (it == 0) 12 else it }
     b[6] = hour.toByte()

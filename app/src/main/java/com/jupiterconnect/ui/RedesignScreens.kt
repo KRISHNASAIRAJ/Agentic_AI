@@ -91,6 +91,7 @@ import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.jupiterconnect.R
@@ -107,6 +108,7 @@ import com.jupiterconnect.session.RideAnalytics
 import com.jupiterconnect.session.nextServiceFromRecords
 import com.jupiterconnect.session.totalServicePaise
 import com.jupiterconnect.session.RideStore
+import com.jupiterconnect.sync.SupabaseClient
 import com.jupiterconnect.session.WarmupPhase
 import com.jupiterconnect.session.lastMonthKeys
 import com.jupiterconnect.session.monthlyDistanceKm
@@ -840,7 +842,10 @@ fun RidesScreenV2(
     val lastFillOdo = remember(fills) { fills.maxByOrNull { it.dateIst }?.odometerKm }
     var expandedId by remember { mutableStateOf<Long?>(null) }
     var selectedBar by remember { mutableStateOf<Int?>(null) }
-    JupiterShell("Rides", "SAVED ON THIS PHONE", activeTab, onTab, onSettings) {
+    val syncLabel by CloudGarageStore.lastSyncLabel.collectAsState()
+    val kicker = if (SupabaseClient.isSignedIn()) syncLabel.uppercase()
+    else "OFFLINE - SIGN IN FOR FUEL HISTORY"
+    JupiterShell("Rides", kicker, activeTab, onTab, onSettings) {
         Spacer(Modifier.height(4.dp))
         Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
             RedCard(modifier = Modifier.weight(1f)) {
@@ -1478,17 +1483,74 @@ private fun SettingsContent(
             { ClusterRepository.clearSocialCounts() }, Modifier.fillMaxWidth())
         Text("WhatsApp / Facebook / Instagram unread counts are mirrored on 0x9C.",
             fontSize = 11.sp, color = JupiterColors.OnSurfaceVariant)
+        Text("Text hidden by Android? OnePlus: Settings > Notifications & Quick " +
+            "Settings > More settings > Enhanced notifications OFF, then restart.",
+            fontSize = 10.sp, color = JupiterColors.OnSurfaceVariant)
+    }
+
+    RedCard {
+        Label("WARMUP NOTICE")
+        Spacer(Modifier.height(8.dp))
+        var noticeResult by remember { mutableStateOf("") }
+        val ctx = LocalContext.current
+        Text("Sends READY TO GO to the cluster for 10 seconds. Test only.",
+            fontSize = 11.sp, color = JupiterColors.OnSurfaceVariant)
+        Spacer(Modifier.height(8.dp))
+        SecondaryButton("Test READY TO GO", {
+            if (ClusterRepository.service == null) ClusterRepository.startService(ctx)
+            ClusterRepository.testWarmupNotice()
+            noticeResult = if (ClusterRepository.telemetry.value.connected)
+                "Sent - watch the cluster" else "Not linked - connect the bike first"
+        }, Modifier.fillMaxWidth())
+        if (noticeResult.isNotBlank()) {
+            Spacer(Modifier.height(8.dp))
+            Text(noticeResult, fontSize = 11.sp, color = JupiterColors.Accent)
+        }
     }
 
     RedCard(bar = true) {
         Label("CLOUD SYNC")
         Spacer(Modifier.height(8.dp))
-        Text(email ?: "Not signed in", fontSize = 15.sp, color = JupiterColors.OnSurface)
-        Spacer(Modifier.height(6.dp))
-        Text("Rides, fuel log, settings and stats sync when signed in.",
-            fontSize = 11.sp, color = JupiterColors.OnSurfaceVariant)
-        Spacer(Modifier.height(12.dp))
-        SecondaryButton("Sign out", onSignOut, Modifier.fillMaxWidth())
+        var signedInEmail by remember { mutableStateOf(email) }
+        if (signedInEmail != null) {
+            Text(signedInEmail!!, fontSize = 15.sp, color = JupiterColors.OnSurface)
+            Spacer(Modifier.height(6.dp))
+            Text("Fuel, service, odometer and rides sync with Meridian.",
+                fontSize = 11.sp, color = JupiterColors.OnSurfaceVariant)
+            Spacer(Modifier.height(12.dp))
+            SecondaryButton("Sign out", {
+                onSignOut()
+                signedInEmail = null
+            }, Modifier.fillMaxWidth())
+        } else {
+            val scope = rememberCoroutineScope()
+            var user by remember { mutableStateOf("") }
+            var password by remember { mutableStateOf("") }
+            var result by remember { mutableStateOf("") }
+            Text("Sign in with your Meridian account to load fuel, service and odometer data.",
+                fontSize = 11.sp, color = JupiterColors.OnSurfaceVariant)
+            Spacer(Modifier.height(8.dp))
+            OutlinedTextField(user, { user = it }, label = { Text("Email") },
+                singleLine = true, modifier = Modifier.fillMaxWidth())
+            Spacer(Modifier.height(8.dp))
+            OutlinedTextField(password, { password = it }, label = { Text("Password") },
+                singleLine = true, visualTransformation = PasswordVisualTransformation(),
+                modifier = Modifier.fillMaxWidth())
+            Spacer(Modifier.height(10.dp))
+            Button({
+                scope.launch {
+                    result = SupabaseClient.signIn(user, password) ?: run {
+                        signedInEmail = SupabaseClient.currentEmail()
+                        ClusterRepository.requestGarageSync()
+                        "Signed in - syncing now"
+                    }
+                }
+            }, Modifier.fillMaxWidth()) { Text("Sign in") }
+            if (result.isNotBlank()) {
+                Spacer(Modifier.height(8.dp))
+                Text(result, fontSize = 11.sp, color = JupiterColors.Accent)
+            }
+        }
     }
     Spacer(Modifier.height(10.dp))
     RedCard {

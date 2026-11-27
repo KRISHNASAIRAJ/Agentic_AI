@@ -95,6 +95,14 @@ class ProtocolTest {
     }
 
     @Test
+    fun keepalive_carries_ambient_temperature() {
+        // The cluster's own temperature readout reads byte 4 as temp + 40.
+        assertEquals(64, buildKeepalive(ambientTempC = 24)[4].toInt() and 0xFF)
+        assertEquals(40, buildKeepalive()[4].toInt() and 0xFF) // unknown -> 0 C
+        assertEquals(70, buildKeepalive(ambientTempC = 30)[4].toInt() and 0xFF)
+    }
+
+    @Test
     fun keepalive_has_no_checksum_and_12_hour_clock() {
         val b = buildKeepalive()
         assertEquals(20, b.size)
@@ -309,6 +317,16 @@ class ProtocolTest {
         assertEquals("Mom", com.jupiterconnect.nav.PhoneEventFormat.call("Mom"))
         assertEquals("919876543210",
             com.jupiterconnect.nav.PhoneEventFormat.call("+91 98765 43210"))
+    }
+
+    @Test
+    fun redacted_notification_body_is_detected() {
+        assertTrue(com.jupiterconnect.nav.PhoneEventFormat.isRedactedBody(
+            "Sensitive notification content hidden"))
+        assertTrue(com.jupiterconnect.nav.PhoneEventFormat.isRedactedBody(
+            "Sensitive content hidden"))
+        assertFalse(com.jupiterconnect.nav.PhoneEventFormat.isRedactedBody("On my way"))
+        assertFalse(com.jupiterconnect.nav.PhoneEventFormat.isRedactedBody(""))
     }
 
     @Test

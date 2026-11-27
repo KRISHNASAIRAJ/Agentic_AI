@@ -10,6 +10,7 @@ import android.provider.ContactsContract.PhoneLookup
 import android.service.notification.NotificationListenerService
 import android.service.notification.StatusBarNotification
 import androidx.core.content.ContextCompat
+import com.jupiterconnect.debug.FrameLog
 import com.jupiterconnect.session.RideStore
 import com.jupiterconnect.transport.ClusterRepository
 
@@ -187,6 +188,17 @@ class MapsNotificationListener : NotificationListenerService() {
     }
 
     override fun onNotificationRemoved(sbn: StatusBarNotification?) {
+        // A caller card is held until THIS notification goes away. Dialers and
+        // WhatsApp remove it when the call is answered, rejected or missed.
+        if (sbn != null && sbn.key == activeCallKey) {
+            activeCallKey = null
+            if (sbn.key == lastPhoneKey) {
+                lastPhoneKey = null
+                lastPhoneText = ""
+            }
+            ClusterRepository.clearPhoneEvent()
+            return
+        }
         if (sbn?.packageName !in MAP_PACKAGES) return
         // Maps posts junk notifications too. Only the removal of the one we
         // actually accepted may clear the instruction.
@@ -242,7 +254,13 @@ class MapsNotificationListener : NotificationListenerService() {
      * their own full-screen cluster cards, leaving the navigation row alone.
      */
     private fun handlePhoneEvent(n: StatusBarNotification) {
-        if (!ClusterRepository.phoneMirroring.value) return
+        if (!ClusterRepository.phoneMirroring.value) {
+            if (activeCallKey != null) {
+                activeCallKey = null
+                ClusterRepository.clearPhoneEvent()
+            }
+            return
+        }
         if (n.packageName == packageName) return // never echo our own notification
         if (!ClusterRepository.telemetry.value.connected) return
         val notification = n.notification ?: return
@@ -256,6 +274,17 @@ class MapsNotificationListener : NotificationListenerService() {
         val messages = runCatching { extras.getParcelableArray(Notification.EXTRA_MESSAGES) }.getOrNull()
         val isMessage = messages != null || category == Notification.CATEGORY_MESSAGE
         if (!isCall && !isMessage) return
+        if (isCall) {
+            // A second incoming call replaces the first card.
+            if (activeCallKey != null && activeCallKey != n.key) {
+                activeCallKey = null
+                ClusterRepository.clearPhoneEvent()
+            }
+        } else if (activeCallKey != null) {
+            // Caller cards own the phone display until the call ends. A chat
+            // message must not cancel the ongoing 0x43 write loop.
+            return
+        }
 
         @Suppress("DEPRECATION")
         val people = runCatching { extras.getParcelableArray(Notification.EXTRA_PEOPLE) }.getOrNull()
@@ -279,21 +308,30 @@ class MapsNotificationListener : NotificationListenerService() {
                 ?: latest?.sender?.toString()
                 ?: extras.getCharSequence(Notification.EXTRA_TITLE)?.toString().orEmpty()
             val sender = resolveContactName(rawSender) ?: rawSender
-            val body = latest?.text?.toString()
+            val rawBody = latest?.text?.toString()
                 ?: extras.getCharSequence(Notification.EXTRA_TEXT)?.toString().orEmpty()
+            // Android 15+ may hand us a redaction placeholder instead of the
+            // message. Never print that on the dash; show a short hint and log
+            // the event so the cause is visible in the frame log.
+            val body = if (PhoneEventFormat.isRedactedBody(rawBody)) {
+                FrameLog.note("MSG body redacted by Android for ${n.packageName}")
+                "New message check phone"
+            } else rawBody
             PhoneEventFormat.message(sender, body)
         }
         if (text.isBlank()) return
         // Dialers repost the same call notification repeatedly. Only show a
-        // given key+text once so the 5 s override ends and navigation resumes
-        // on schedule instead of being extended by every repost.
+        // given key+text once so the card hold ends on schedule instead of
+        // being extended by every repost.
         if (n.key == lastPhoneKey && text == lastPhoneText) return
         lastPhoneKey = n.key
         lastPhoneText = text
         // Use the cluster's dedicated call/message cards so the turn-by-turn
-        // direction row is never overwritten. Both clear after 5 s and Maps
-        // keeps rendering underneath without any extra work.
-        ClusterRepository.showPhoneEvent(isCall, text, PHONE_HOLD_MS, n.packageName)
+        // direction row is never overwritten. Calls stay until their
+        // notification is removed; messages clear after a short hold.
+        if (isCall) activeCallKey = n.key
+        ClusterRepository.showPhoneEvent(
+            isCall, text, PHONE_HOLD_MS, n.packageName, untilDismissed = isCall)
     }
 
     /**
@@ -363,9 +401,11 @@ class MapsNotificationListener : NotificationListenerService() {
 
     private val handler = android.os.Handler(android.os.Looper.getMainLooper())
     private var pendingClear: Runnable? = null
-    // One display per notification/text so a repost cannot extend the 5 s hold.
+    // One display per notification/text so a repost cannot extend the hold.
     private var lastPhoneKey: String? = null
     private var lastPhoneText = ""
+    // Key of the call whose 0x43 card is held until the notification is removed.
+    private var activeCallKey: String? = null
     // Last distance Maps actually published; reused when a notification omits it.
     private var lastKnownDistance: Int = -1
     private var lastDistanceAtMs: Long = 0L
@@ -393,7 +433,8 @@ class MapsNotificationListener : NotificationListenerService() {
     companion object {
         private const val CLEAR_GRACE_MS = 4000L
         private const val VALUE_HOLD_MS = 60_000L
-        private const val PHONE_HOLD_MS = 5_000L
+        // Long enough to read a message paged across 17-byte cluster rows.
+        private const val PHONE_HOLD_MS = 12_000L
         private val DIALER_PACKAGES = setOf(
             "com.google.android.dialer", "com.android.dialer", "com.android.phone",
             "com.samsung.android.dialer", "com.samsung.android.incallui",

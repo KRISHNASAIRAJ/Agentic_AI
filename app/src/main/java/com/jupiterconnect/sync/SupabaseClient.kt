@@ -28,6 +28,10 @@ object SupabaseClient {
 
     private var appContext: Context? = null
 
+    /** Last REST failure, surfaced in the Rides header so sync errors are diagnosable. */
+    @Volatile var lastError: String? = null
+        private set
+
     fun init(context: Context) {
         appContext = context.applicationContext
     }
@@ -37,6 +41,30 @@ object SupabaseClient {
     fun currentEmail(): String? = prefs()?.getString(KEY_EMAIL, null)
 
     private fun prefs() = appContext?.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+
+    /**
+     * Supabase access tokens expire after about an hour. Sign-in saved a refresh
+     * token but nothing ever used it, so every REST call started failing with
+     * 401 hours later. Blocking is safe here - all callers use Dispatchers.IO.
+     */
+    private fun refreshTokenBlocking(): String? {
+        val refresh = prefs()?.getString(KEY_REFRESH, null) ?: return null
+        val body = JSONObject().put("refresh_token", refresh)
+        val response = request(
+            "$URL_BASE/auth/v1/token?grant_type=refresh_token", "POST", body,
+            authenticated = false,
+        ) ?: return null
+        if (response.has("error")) return null
+        val token = response.optString("access_token")
+        if (token.isBlank()) return null
+        prefs()?.edit()
+            ?.putString(KEY_TOKEN, token)
+            ?.putString(KEY_REFRESH, response.optString("refresh_token").ifBlank { refresh })
+            ?.putString(KEY_USER, response.optJSONObject("user")?.optString("id")
+                ?: prefs()?.getString(KEY_USER, null))
+            ?.apply()
+        return token
+    }
 
     /** Returns null on success, or a short error message. */
     suspend fun signIn(email: String, password: String): String? = withContext(Dispatchers.IO) {
@@ -121,8 +149,12 @@ object SupabaseClient {
     }
 
     /** Read a table through PostgREST. RLS scopes rows to the signed-in user. */
-    suspend fun getTable(table: String, query: String, token: String): JSONArray? =
-        withContext(Dispatchers.IO) {
+    suspend fun getTable(
+        table: String,
+        query: String,
+        token: String,
+        retried: Boolean = false,
+    ): JSONArray? = withContext(Dispatchers.IO) {
             val conn = URL("$URL_BASE/rest/v1/$table?$query").openConnection() as HttpURLConnection
             conn.requestMethod = "GET"
             conn.connectTimeout = 10_000
@@ -132,18 +164,26 @@ object SupabaseClient {
             conn.setRequestProperty("Accept", "application/json")
             try {
                 val code = conn.responseCode
+                if (code == 401 && !retried) {
+                    val fresh = refreshTokenBlocking()
+                    if (fresh != null) {
+                        return@withContext getTable(table, query, fresh, retried = true)
+                    }
+                }
                 if (code !in 200..299) {
-                    println("getTable($table) failed: HTTP $code")
+                    val msg = conn.errorStream?.bufferedReader()?.use { it.readText() }.orEmpty()
+                    lastError = "HTTP $code ${msg.take(90)}"
                     return@withContext null
                 }
+                lastError = null
                 val text = conn.inputStream.bufferedReader().use { it.readText() }
                 if (text.isBlank()) return@withContext JSONArray()
                 runCatching { JSONArray(text) }.getOrElse {
-                    println("getTable($table) parse failed: ${it.message}")
+                    lastError = "parse: ${it.message?.take(90)}"
                     null
                 }
             } catch (e: Exception) {
-                println("getTable($table) failed: ${e.message}")
+                lastError = e.message?.take(90) ?: "network error"
                 null
             } finally {
                 conn.disconnect()
@@ -220,6 +260,7 @@ object SupabaseClient {
         authenticated: Boolean,
         token: String? = null,
         prefer: String? = null,
+        retried: Boolean = false,
     ): JSONObject? {
         val conn = URL(urlString).openConnection() as HttpURLConnection
         conn.requestMethod = method
@@ -241,7 +282,17 @@ object SupabaseClient {
         val stream = if (code in 200..299) conn.inputStream else conn.errorStream
         val text = stream?.bufferedReader()?.use { it.readText() }.orEmpty()
         conn.disconnect()
-        if (code !in 200..299) return JSONObject().put("error", code).put("msg", text.take(160))
+        if (code == 401 && authenticated && !retried) {
+            val fresh = refreshTokenBlocking()
+            if (fresh != null) {
+                return request(urlString, method, body, authenticated, fresh, prefer, true)
+            }
+        }
+        if (code !in 200..299) {
+            lastError = "HTTP $code ${text.take(90)}"
+            return JSONObject().put("error", code).put("msg", text.take(160))
+        }
+        lastError = null
         if (text.isBlank()) return JSONObject()
         return runCatching { JSONArray(text).optJSONObject(0) ?: JSONObject(text) }
             .getOrDefault(JSONObject(text))

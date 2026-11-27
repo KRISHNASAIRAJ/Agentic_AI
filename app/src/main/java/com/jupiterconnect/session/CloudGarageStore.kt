@@ -2,6 +2,7 @@ package com.jupiterconnect.session
 
 import android.content.Context
 import android.content.SharedPreferences
+import com.jupiterconnect.R
 import com.jupiterconnect.sync.SupabaseClient
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -155,8 +156,14 @@ object CloudGarageStore {
         prefs = context.applicationContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
         val p = prefs ?: return
         runCatching {
-            p.getString(KEY_FILLS, null)?.let {
-                FuelLogStore.setFills(mapFillRows(fillRows(JSONArray(it))))
+            val cachedFills = p.getString(KEY_FILLS, null)
+            if (!cachedFills.isNullOrBlank()) {
+                FuelLogStore.setFills(mapFillRows(fillRows(JSONArray(cachedFills))))
+            } else if (!SupabaseClient.isSignedIn()) {
+                // Display-only fallback so past-month bars are not blank before
+                // the first cloud pull. Never uploaded; a successful pull
+                // overwrites this with the real Meridian data.
+                FuelLogStore.setFills(bundledFills(context))
             }
             p.getString(KEY_MAINTENANCE, null)?.let { _maintenance.value = serviceRecords(JSONArray(it)) }
             p.getString(KEY_ISSUES, null)?.let { _issues.value = serviceIssues(JSONArray(it)) }
@@ -193,8 +200,9 @@ object CloudGarageStore {
                 _odometerKm.value = odoJson.optJSONObject(0)?.optDouble("current_km", 0.0) ?: 0.0
             }
 
+            val detail = SupabaseClient.lastError?.let { " ($it)" }.orEmpty()
             val label = if (failed.isEmpty()) "Synced ${timeLabel()}"
-            else "Sync failed: ${failed.joinToString(", ")}"
+            else "Sync failed: ${failed.joinToString(", ")}$detail"
             _lastSyncLabel.value = label
             persist(fills, records, issues, _odometerKm.value, label)
         } catch (e: Exception) {
@@ -224,6 +232,26 @@ object CloudGarageStore {
         fmt.timeZone = TimeZone.getTimeZone("Asia/Kolkata")
         return fmt.format(Date())
     }
+
+    /** Old bundled Meridian export, used only for offline display before sync. */
+    private fun bundledFills(context: Context): List<FuelFill> = runCatching {
+        val raw = context.resources.openRawResource(R.raw.fuel_logs)
+            .bufferedReader().use { it.readText() }
+        val array = JSONObject(raw).getJSONArray("fuel_logs")
+        val rows = buildList {
+            for (i in 0 until array.length()) {
+                val o = array.optJSONObject(i) ?: continue
+                add(FillRow(
+                    date = o.optString("date_ist"),
+                    odometerKm = o.optDouble("odometer_km", 0.0),
+                    liters = o.optDouble("liters", 0.0),
+                    amountPaise = o.optLong("amount_paise", 0L),
+                    station = if (o.isNull("station")) "" else o.optString("station"),
+                ))
+            }
+        }
+        mapFillRows(rows)
+    }.getOrDefault(emptyList())
 
     private fun fillRows(array: JSONArray): List<FillRow> = buildList {
         for (i in 0 until array.length()) {

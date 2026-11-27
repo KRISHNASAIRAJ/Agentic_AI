@@ -75,6 +75,7 @@ ISS-based carbon locally and correctly keeps it off the wire.
 | Header | Feature | Builder / file:line |
 |---|---|---|
 | `5B 4A` | Cyclic mobile data (battery, signal, missed calls, call state, time, temp, find-me, DND, voice assist, overspeed) | `BlePacketsProvider.java:700,1026,1138,1263,1794` |
+| `5B 4A` byte 4 | **The dash's own temperature readout** = ambient °C + 40. Writing a constant 40 made the cluster show `0 °C`; now fed from live weather / cold-start intake temperature. | `BlePacketsProvider.java:1151-1154` (`temp+40`); `JupiterProtocol.kt:buildKeepalive` |
 | `5B 73 08` | Calibration write request | `JupiterMobileToCluster.java:1496` |
 | `5B 73 <cmd>` | Calibration update (idle stop/start id 9, follow-me id 18, TSL id 23) | `BlePacketsProvider.java:1001` |
 | `5B 73 0A 12` | Follow-me headlamp timer (Jupiter variants) | `BlePacketsProvider.java:2033` |

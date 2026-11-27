@@ -34,12 +34,25 @@ internal object PhoneEventFormat {
 
     /**
      * Split a long message into frames the 17-byte cluster text card can show.
-     * Capped so every page still gets roughly a second on screen during the
-     * 5 s hold instead of flashing past.
+     * Capped so every page still gets enough time on screen during the message
+     * hold instead of flashing past.
      */
     fun pages(text: String): List<String> {
         if (text.length <= MAX) return listOf(text)
         return text.chunked(MAX).take(8)
+    }
+
+    /**
+     * Android 15+ replaces the body of a notification it considers sensitive
+     * with a localised placeholder before any third-party listener sees it.
+     * Detect it so the dash shows a useful hint instead of that raw text.
+     */
+    fun isRedactedBody(body: String): Boolean {
+        val b = body.trim().lowercase()
+        if (b.isBlank()) return false
+        return b.contains("sensitive notification content hidden") ||
+            b.contains("sensitive content hidden") ||
+            (b.contains("sensitive") && b.contains("hidden"))
     }
 
     /** Drop punctuation (the protocol sanitizer maps it to X) and collapse spaces. */
