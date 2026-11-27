@@ -241,7 +241,7 @@ fun JupiterApp() {
     fun scanForDevices() {
         if (!ClusterRepository.drivingMode.value) {
             Toast.makeText(context,
-                "Turn on Driving mode in More → Settings to scan for the cluster",
+                "Turn on Driving mode (bike icon under the fuel ring on Home) to scan for the cluster",
                 Toast.LENGTH_LONG).show()
             return
         }

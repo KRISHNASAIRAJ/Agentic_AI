@@ -1358,6 +1358,8 @@ private fun DevicesContent(
             letterSpacing = 2.sp)
     }
     Spacer(Modifier.height(10.dp))
+    var connectResult by remember { mutableStateOf("") }
+    val driving by ClusterRepository.drivingMode.collectAsState()
     RedCard {
         if (devices.isEmpty()) {
             Text("No devices found. Tap Scan.", fontSize = 13.sp,
@@ -1365,7 +1367,22 @@ private fun DevicesContent(
         }
         devices.take(8).forEachIndexed { i, d ->
             if (i > 0) Spacer(Modifier.height(10.dp))
-            Row(verticalAlignment = Alignment.CenterVertically) {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(12.dp))
+                    .background(JupiterColors.High)
+                    .clickable {
+                        if (!driving) {
+                            connectResult = "Turn on Driving mode (bike icon on Home) first"
+                        } else {
+                            connectResult = "Connecting to ${d.name}..."
+                            onConnect(d.address)
+                        }
+                    }
+                    .padding(10.dp),
+            ) {
                 IconCircle(
                     if (d.name.contains("JBL", true)) Icons.Rounded.Headphones
                     else if (d.isCluster) Icons.Rounded.TwoWheeler
@@ -1379,6 +1396,10 @@ private fun DevicesContent(
                 }
                 Text("${d.rssi} dBm", fontSize = 11.sp, color = JupiterColors.OnSurfaceVariant)
             }
+        }
+        if (connectResult.isNotBlank()) {
+            Spacer(Modifier.height(10.dp))
+            Text(connectResult, fontSize = 11.sp, color = JupiterColors.Accent)
         }
     }
     Spacer(Modifier.height(10.dp))

@@ -7,11 +7,14 @@ what is deferred.
 ## Shipped
 
 - BLE scan/connect to the cluster, foreground service with a 2-second keepalive.
-  All BLE work is gated by **Driving mode** (More → Settings, off by default):
-  while off the app never scans, connects or shows a persistent notification, so
-  Bluetooth can stay on for earbuds and other devices. Foreground promotion only
-  happens for a driving-mode start, which also fixes the app closing immediately
-  when Bluetooth is off.
+  All BLE work is gated by **Driving mode** (the bike icon under the fuel ring on
+  Home, off by default): while off the app never scans, connects or shows a
+  persistent notification, so Bluetooth can stay on for earbuds and other
+  devices. Foreground promotion only happens for a driving-mode start, which
+  also fixes the app closing immediately when Bluetooth is off.
+  More → NEARBY device rows are tappable again (the redesigned screen had lost
+  the `onConnect` click handler that the old screen had), with on-screen feedback
+  for connecting or for Driving mode being off.
 - Automatic reconnect with capped backoff (5s / 10s / 20s / 30s). The connected
   device address is persisted, so a killed service or a reboot redials it
   without the user opening the app.
