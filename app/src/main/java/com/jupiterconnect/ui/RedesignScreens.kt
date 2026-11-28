@@ -109,7 +109,6 @@ import com.jupiterconnect.session.FuelLogStore
 import com.jupiterconnect.session.Ride
 import com.jupiterconnect.session.RideAnalytics
 import com.jupiterconnect.session.nextServiceFromRecords
-import com.jupiterconnect.session.totalServicePaise
 import com.jupiterconnect.session.RideStore
 import com.jupiterconnect.sync.SupabaseClient
 import com.jupiterconnect.session.WarmupPhase
@@ -1100,13 +1099,8 @@ private fun AnalyticsCards(rides: List<Ride>, fills: List<com.jupiterconnect.ses
     }
     val cloudMaintenance by CloudGarageStore.maintenance.collectAsState()
     val cloudOdometer by CloudGarageStore.odometerKm.collectAsState()
-    val cloudIssues by CloudGarageStore.issues.collectAsState()
     val nextService = remember(cloudMaintenance, cloudOdometer) {
         nextServiceFromRecords(cloudMaintenance, cloudOdometer)
-    }
-    val serviceTotalPaise = remember(cloudMaintenance) { totalServicePaise(cloudMaintenance) }
-    val openIssues = remember(cloudIssues) {
-        cloudIssues.count { it.status.equals("open", ignoreCase = true) }
     }
     val anomalies by ClusterRepository.anomalyNotes.collectAsState()
 
@@ -1159,30 +1153,8 @@ private fun AnalyticsCards(rides: List<Ride>, fills: List<com.jupiterconnect.ses
     Label("SERVICE TIMING")
     Spacer(Modifier.height(8.dp))
     RedCard {
-        if (nextService.kmLeft != null && nextService.dueKm != null) {
-            BigValue("${nextService.kmLeft}", "km left", 26)
-            Text("General service due at ${nextService.dueKm} km · last at ${nextService.lastKm} km",
-                fontSize = 11.sp, color = JupiterColors.OnSurfaceVariant)
-            Text("Total service spend Rs %.0f".format(serviceTotalPaise / 100.0),
-                fontSize = 11.sp, color = JupiterColors.OnSurfaceVariant)
-            Text("Open service issues: $openIssues", fontSize = 11.sp,
-                color = JupiterColors.OnSurfaceVariant)
-            Text("Heuristic suggests ${advice.suggestedKm} km", fontSize = 9.sp,
-                color = JupiterColors.OnSurfaceVariant)
-            Text("From Meridian service records", fontSize = 9.sp,
-                color = JupiterColors.OnSurfaceVariant)
-        } else {
-            BigValue("${advice.suggestedKm}", "km", 26)
-            Text("Odometer interval ${advice.odometerIntervalKm} km" +
-                if (advice.severe) " · moved earlier for severe use" else "",
-                fontSize = 11.sp, color = JupiterColors.OnSurfaceVariant)
-            if (advice.reasons.isNotEmpty()) {
-                Text(advice.reasons.joinToString(" · "), fontSize = 11.sp,
-                    color = JupiterColors.Accent)
-            }
-            Text("Heuristic from short trips, cold starts and idling", fontSize = 9.sp,
-                color = JupiterColors.OnSurfaceVariant)
-        }
+        val kmLeft = nextService.kmLeft ?: advice.suggestedKm
+        BigValue("$kmLeft", "km left", 26)
     }
     Spacer(Modifier.height(10.dp))
     Label("CHECKS")
