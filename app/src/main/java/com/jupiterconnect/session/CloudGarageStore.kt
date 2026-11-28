@@ -150,6 +150,11 @@ object CloudGarageStore {
     private val _lastSyncLabel = MutableStateFlow("Not synced yet")
     val lastSyncLabel: StateFlow<String> = _lastSyncLabel.asStateFlow()
 
+    /** Called when the phone loses connectivity: cached data stays visible. */
+    fun markOffline() {
+        _lastSyncLabel.value = "Offline - showing cached data"
+    }
+
     /** Restore the last good pull so the UI has data before a network round-trip. */
     fun init(context: Context) {
         if (prefs != null) return
@@ -175,15 +180,22 @@ object CloudGarageStore {
     /** Pull all four garage tables. Never throws; failure is a short label. */
     suspend fun pull(token: String) {
         val failed = mutableListOf<String>()
+        var detail = ""
+        // Capture each failure's reason immediately: lastError is cleared by a
+        // later successful pull, which used to leave the label without detail.
+        suspend fun fetch(table: String, query: String, name: String): JSONArray? {
+            val rows = SupabaseClient.getTable(table, query, token)
+            if (rows == null) {
+                failed += name
+                if (detail.isBlank()) detail = SupabaseClient.lastError.orEmpty()
+            }
+            return rows
+        }
         try {
-            val fillJson = SupabaseClient.getTable("fuel_fills", FILLS_QUERY, token)
-            if (fillJson == null) failed += "fuel"
-            val maintJson = SupabaseClient.getTable("maintenance_logs", MAINTENANCE_QUERY, token)
-            if (maintJson == null) failed += "service"
-            val issueJson = SupabaseClient.getTable("vehicle_service_issues", ISSUES_QUERY, token)
-            if (issueJson == null) failed += "issues"
-            val odoJson = SupabaseClient.getTable("vehicle_odometer", odoQuery, token)
-            if (odoJson == null) failed += "odometer"
+            val fillJson = fetch("fuel_fills", FILLS_QUERY, "fuel")
+            val maintJson = fetch("maintenance_logs", MAINTENANCE_QUERY, "service")
+            val issueJson = fetch("vehicle_service_issues", ISSUES_QUERY, "issues")
+            val odoJson = fetch("vehicle_odometer", odoQuery, "odometer")
 
             // A failed fetch must never wipe the last good offline cache: keep
             // the existing value for that table and persist only real results.
@@ -200,9 +212,9 @@ object CloudGarageStore {
                 _odometerKm.value = odoJson.optJSONObject(0)?.optDouble("current_km", 0.0) ?: 0.0
             }
 
-            val detail = SupabaseClient.lastError?.let { " ($it)" }.orEmpty()
+            val suffix = detail.let { if (it.isBlank()) "" else " ($it)" }
             val label = if (failed.isEmpty()) "Synced ${timeLabel()}"
-            else "Sync failed: ${failed.joinToString(", ")}$detail"
+            else "Sync failed: ${failed.joinToString(", ")}$suffix"
             _lastSyncLabel.value = label
             persist(fills, records, issues, _odometerKm.value, label)
         } catch (e: Exception) {

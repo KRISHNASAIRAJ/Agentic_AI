@@ -19,6 +19,9 @@ import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
 import android.content.SharedPreferences
+import android.net.ConnectivityManager
+import android.net.Network
+import android.net.NetworkCapabilities
 import android.annotation.SuppressLint
 import android.os.BatteryManager
 import android.telephony.TelephonyManager
@@ -52,6 +55,7 @@ import com.jupiterconnect.protocol.ScannedDevice
 import com.jupiterconnect.protocol.Telemetry
 import com.jupiterconnect.session.CloudGarageStore
 import com.jupiterconnect.session.ColdStartTracker
+import com.jupiterconnect.session.DeviceMemory
 import com.jupiterconnect.session.JUPITER_VEHICLE
 import com.jupiterconnect.session.RideAnalytics
 import com.jupiterconnect.session.SpeedFusion
@@ -81,6 +85,7 @@ import com.jupiterconnect.traffic.buildCricketFrame
 import com.jupiterconnect.traffic.buildMarketFrame
 import com.jupiterconnect.traffic.buildNewsFrame
 import com.jupiterconnect.traffic.buildWeatherFrameWithCode
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -95,6 +100,7 @@ import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.withContext
 import java.text.SimpleDateFormat
 import java.util.Locale
 import java.util.TimeZone
@@ -106,6 +112,7 @@ object ClusterRepository {
     private const val KEY_RIDER_NAME = "rider_name"
     private const val KEY_RIDER_NAME_ON = "rider_name_on"
     private const val KEY_WEATHER_CITY = "weather_city"
+    private const val KEY_TRAFFIC_ENABLED = "traffic_enabled"
     private const val KEY_ILLUMINATION = "cluster_illumination"
     private const val KEY_TSL = "cluster_tsl"
     private const val KEY_REGEN = "cluster_regen"
@@ -121,6 +128,10 @@ object ClusterRepository {
         if (prefs != null) return
         appContext = context.applicationContext
         prefs = context.applicationContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+        // Load the persisted toggle here too, so the first composition and the
+        // resume path agree with the service before it is created.
+        drivingMode.value = prefs?.getBoolean(KEY_DRIVING_MODE, false) ?: false
+        trafficEnabled.value = prefs?.getBoolean(KEY_TRAFFIC_ENABLED, true) ?: true
         FeatureVerification.init(context)
         riderName.value = prefs?.getString(KEY_RIDER_NAME, "Rider") ?: "Rider"
         riderNameEnabled.value = prefs?.getBoolean(KEY_RIDER_NAME_ON, true) ?: true
@@ -213,10 +224,16 @@ object ClusterRepository {
      */
     val drivingMode = MutableStateFlow(false)
 
+    /** Keep the flow and the persisted flag in sync, even before service start. */
+    fun persistDrivingMode(enabled: Boolean) {
+        drivingMode.value = enabled
+        (prefs ?: appContext?.getSharedPreferences(PREFS, Context.MODE_PRIVATE))
+            ?.edit()?.putBoolean(KEY_DRIVING_MODE, enabled)?.apply()
+    }
+
     fun setDrivingMode(enabled: Boolean) {
         if (drivingMode.value == enabled) return
-        drivingMode.value = enabled
-        prefs?.edit()?.putBoolean(KEY_DRIVING_MODE, enabled)?.apply()
+        persistDrivingMode(enabled)
         val ctx = appContext ?: return
         val i = Intent(ctx, ClusterService::class.java)
             .setAction(ClusterService.ACTION_DRIVING_MODE)
@@ -359,9 +376,20 @@ object ClusterRepository {
      */
     val legacyCallerPackets = MutableStateFlow(false)
 
-    /** Traffic screens (weather / cricket / market / news) with free APIs. */
-    val trafficEnabled = MutableStateFlow(false)
+    /**
+     * Traffic screens (weather / cricket / market / news) with free APIs.
+     * On by default and remembered across app/process restarts - the rider
+     * should not have to switch them back on after every engine start.
+     */
+    val trafficEnabled = MutableStateFlow(true)
     val trafficStatus = MutableStateFlow("Off")
+
+    /** Persist the rider's last choice so it survives a killed service. */
+    fun setTrafficEnabled(enabled: Boolean) {
+        trafficEnabled.value = enabled
+        prefs?.edit()?.putBoolean(KEY_TRAFFIC_ENABLED, enabled)?.apply()
+        trafficStatus.value = if (enabled) "On" else "Off"
+    }
     val trafficScreen = MutableStateFlow(-1)
     /** Ambient temperature for the cluster's own readout (byte 4 of 0x4A). */
     val ambientTempC = MutableStateFlow<Int?>(null)
@@ -395,9 +423,7 @@ object ClusterRepository {
 
     /** Pull garage data immediately after sign-in instead of waiting for the loop. */
     fun requestGarageSync() = service?.requestGarageSync()
-
-    /** Manual test of the cluster's READY TO GO notice. */
-    fun testWarmupNotice() = service?.testWarmupNotice()
+    fun requestRideRestore() = service?.requestRideRestore()
 
     /**
      * TVS Connect increments a per-app unread counter for each notification.
@@ -452,6 +478,8 @@ class ClusterService : Service() {
     // so create the bridge in onCreate once the Service has a real Context.
     private lateinit var voiceBridge: VoiceAssistantBridge
     private val coldStartTracker = ColdStartTracker()
+    /** Set at 100% warm-up; cleared only after the dash actually shows it. */
+    @Volatile private var warmupReadyPending = false
     private val writeLock = Mutex()
     private val main = Handler(Looper.getMainLooper())
     // Last APPLIED settings are re-sent once when the ignition comes on. A
@@ -493,6 +521,9 @@ class ClusterService : Service() {
     private var phoneEventJob: Job? = null
     private var warmupNoticeJob: Job? = null
     private var syncJob: Job? = null
+    /** Cloud sync is skipped while offline; cached data stays on screen. */
+    @Volatile private var online = true
+    private var networkCallback: ConnectivityManager.NetworkCallback? = null
     // Throttle for live odometer reports: re-send after 1 km or 30 s.
     private var lastReportedOdoKm = 0
     private var lastOdoReportAtMs = 0L
@@ -548,6 +579,10 @@ class ClusterService : Service() {
     private val speedFusion = SpeedFusion()
     @Volatile private var gpsSpeedMps = -1f
     @Volatile private var gpsAccuracyM = -1f
+    // Latest fix while the bike is connected. Weather follows the rider rather
+    // than the parked spot, so a long ride still shows the right city.
+    @Volatile private var liveLatLng: Pair<Double, Double>? = null
+    @Volatile private var liveFixAtMs = 0L
     private var gpsListener: LocationListener? = null
     // BLE callbacks are delivered on the main looper. Keep GPS callbacks on a
     // separate thread so a burst of fixes cannot delay them.
@@ -561,6 +596,9 @@ class ClusterService : Service() {
 
     override fun onCreate() {
         super.onCreate()
+        // The service can be the first thing to run after boot, so install the
+        // crash capture here too (it is a no-op if the app already did).
+        com.jupiterconnect.debug.CrashLog.install(this)
         voiceBridge = VoiceAssistantBridge(this)
         ClusterRepository.initPrefs(applicationContext)
         FrameLog.init(applicationContext)
@@ -572,11 +610,13 @@ class ClusterService : Service() {
         // Restore the last linked bike so a killed service can redial it on
         // restart instead of sitting idle with no address to connect to.
         lastAddress = linkPrefs.getString(KEY_LINK_ADDRESS, null)
+            ?: DeviceMemory.read(applicationContext)?.address
         manualDisconnect = linkPrefs.getBoolean(KEY_USER_DISCONNECTED, false)
         runCatching<Unit> {
             registerReceiver(bluetoothStateReceiver, IntentFilter(BluetoothAdapter.ACTION_STATE_CHANGED))
             bluetoothReceiverRegistered = true
         }
+        registerNetworkCallback()
         // Foreground promotion happens in onStartCommand, only when this start
         // was requested as a foreground service (driving mode on). Calling
         // stopForeground here when we were started with a plain startService()
@@ -639,11 +679,9 @@ class ClusterService : Service() {
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        if (!hasBluetoothPermission()) return START_STICKY
         // startForegroundService() REQUIRES a prompt startForeground() call even
-        // if Bluetooth is off or driving mode was switched off in the meantime.
-        // Skipping it is what made the app disappear the moment Bluetooth went
-        // off. A plain startService() start never sets this extra.
+        // if Bluetooth is off or permissions are missing — otherwise Android
+        // kills the app for an FGS start violation. Do this before any guard.
         if (intent?.getBooleanExtra(EXTRA_FOREGROUND, false) == true ||
             ClusterRepository.drivingMode.value
         ) {
@@ -651,6 +689,7 @@ class ClusterService : Service() {
                 startForegroundSafe(ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE)
             }
         }
+        if (!hasBluetoothPermission()) return START_STICKY
         // Always handle the requested action HERE, in onStartCommand, which is
         // guaranteed to run after onCreate has set ClusterRepository.service.
         // Launching the service and then posting scan()/connect() to the main
@@ -662,6 +701,7 @@ class ClusterService : Service() {
             ACTION_CONNECT -> intent.getStringExtra(EXTRA_ADDRESS)?.let { connectTo(it) }
                 ?: startScan()
             ACTION_SCAN -> startScan()
+            ACTION_FORGET -> forgetLinkedBike()
             else -> {
                 // Null intent = the system restarted a stuck service. Redial the
                 // remembered cluster; a persisted user disconnect is respected.
@@ -680,6 +720,9 @@ class ClusterService : Service() {
     /** Enter or leave the only state in which this app touches BLE. */
     private fun onDrivingModeChanged(enabled: Boolean) {
         FrameLog.note("DRIVING MODE ${if (enabled) "ON" else "OFF"}")
+        // The service is authoritative: onCreate resets the flow from prefs, so
+        // an ACTION_DRIVING_MODE intent must re-apply it or every BLE gate skips.
+        ClusterRepository.persistDrivingMode(enabled)
         if (!enabled) {
             // Park the scooter and stop every BLE loop before hiding the link.
             if (connectionEstablished || gatt != null || ClusterRepository.scanning.value) {
@@ -693,8 +736,15 @@ class ClusterService : Service() {
             reconnectJob?.cancel()
             reconnectJob = null
             ClusterRepository.telemetry.value = ClusterRepository.telemetry.value.copy(error = null)
-        } else if (adapter?.isEnabled == true) {
-            if (!lastAddress.isNullOrBlank()) connectTo(lastAddress!!) else startScan()
+        } else {
+            // Turning riding mode back on is an explicit request to link again.
+            // Clear the disconnect flag even if Bluetooth is still off, so the
+            // adapter-on receiver will redial the remembered bike later.
+            manualDisconnect = false
+            linkPrefs.edit().putBoolean(KEY_USER_DISCONNECTED, false).apply()
+            if (adapter?.isEnabled == true) {
+                if (!lastAddress.isNullOrBlank()) connectTo(lastAddress!!) else startScan()
+            }
         }
         updateForegroundForBluetooth()
     }
@@ -825,6 +875,20 @@ class ClusterService : Service() {
         reconnectJob = null
         reconnectAttempts = 0
         attemptConnect(address)
+    }
+
+    /** Forget must also stop the live service, or it just redials and re-remembers. */
+    private fun forgetLinkedBike() {
+        FrameLog.note("FORGET - clearing the remembered bike")
+        reconnectJob?.cancel()
+        reconnectJob = null
+        disconnectNow()
+        lastAddress = null
+        writeChar = null
+        linkPrefs.edit()
+            .remove(KEY_LINK_ADDRESS)
+            .putBoolean(KEY_USER_DISCONNECTED, true)
+            .apply()
     }
 
     /** Low-level connect used by both user taps and the retry loop. */
@@ -1117,6 +1181,13 @@ class ClusterService : Service() {
             override fun onLocationChanged(location: Location) {
                 gpsSpeedMps = if (location.hasSpeed()) location.speed else -1f
                 gpsAccuracyM = location.accuracy
+                // Keep the freshest usable fix for weather. A stale GPS cache
+                // must not masquerade as the rider's current position.
+                val age = System.currentTimeMillis() - location.time
+                if (location.time > 0L && age in 0..300_000L && location.accuracy <= 500f) {
+                    liveLatLng = location.latitude to location.longitude
+                    liveFixAtMs = System.currentTimeMillis()
+                }
             }
             override fun onStatusChanged(provider: String?, status: Int, extras: android.os.Bundle?) {}
             override fun onProviderEnabled(provider: String) {}
@@ -1227,65 +1298,121 @@ class ClusterService : Service() {
         voiceBridge.onFrame(t)
         ClusterRepository.recordSpeed(fused.kmh)
         checkAnomalies(t)
-        val previous = ClusterRepository.warmup.value.phase
         val state = coldStartTracker.update(t)
         ClusterRepository.warmup.value = state
         RideStore.warmupLastRunMs = coldStartTracker.getLastRunMs()
-        if (previous != WarmupPhase.READY && state.phase == WarmupPhase.READY) {
+        // Fire as soon as the Home card shows a completed warm-up. Waiting for
+        // a STARTING->READY edge lost the notice when the app connected after
+        // the warm-up had already finished, or when a call owned the row at
+        // that exact moment. notifyWarmupReady() is self-guarding (once per IST
+        // day) and keeps retrying until the dash is actually free.
+        // Zero-temperature frames have hasEngineData=false and are ignored, so
+        // they cannot burn the daily guard.
+        if (state.phase == WarmupPhase.READY && state.hasEngineData &&
+            state.message != "Engine off"
+        ) {
             notifyWarmupReady()
         }
     }
 
+    /** True while the Home card shows a finished, engine-on warm-up. */
+    private fun warmupReadyNow(): Boolean {
+        val s = ClusterRepository.warmup.value
+        return s.phase == WarmupPhase.READY && s.hasEngineData && s.message != "Engine off"
+    }
+
+    private fun warmupNoticePrefs() =
+        getSharedPreferences("jupiter_warmup_notice", MODE_PRIVATE)
+
+    private fun istDay(): String {
+        val fmt = SimpleDateFormat("yyyy-MM-dd", Locale.US)
+        fmt.timeZone = TimeZone.getTimeZone("Asia/Kolkata")
+        return fmt.format(java.util.Date())
+    }
+
+    /**
+     * One notice per IST calendar day. Mark it pending as soon as the warm-up
+     * card reaches 100%; a busy text row or a momentary BLE drop must not lose
+     * it forever. [scheduleWarmupNotice] retries until the dash is free.
+     */
     private fun notifyWarmupReady() {
+        if (warmupReadyPending || warmupNoticePrefs().getString("last_day", null) == istDay()) return
+        warmupReadyPending = true
         val s = ClusterRepository.warmup.value
         FrameLog.note(
             "WARMUP ready target=${s.targetC}C start=${s.startTemp}C " +
                 "ambient=${s.ambientC}C slope=${String.format("%.2f", s.slopeCPerMin)}",
         )
-        // One notice per calendar day (IST). The transition itself can fire
-        // again after an app restart mid-warmup; the persisted day stops the
-        // dash from repeating the same message.
-        val prefs = getSharedPreferences("jupiter_warmup_notice", MODE_PRIVATE)
-        val fmt = SimpleDateFormat("yyyy-MM-dd", Locale.US)
-        fmt.timeZone = TimeZone.getTimeZone("Asia/Kolkata")
-        val today = fmt.format(java.util.Date())
-        if (prefs.getString("last_day", null) == today) return
-        prefs.edit().putString("last_day", today).apply()
-
-        val vibrator = getSystemService(android.os.Vibrator::class.java)
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            vibrator?.vibrate(android.os.VibrationEffect.createOneShot(120, 120))
-        } else {
-            @Suppress("DEPRECATION")
-            vibrator?.vibrate(120L)
-        }
-        showWarmupNotice()
+        scheduleWarmupNotice()
     }
 
-    /** Manual test button: same cluster notice, without the once-per-day guard. */
-    fun testWarmupNotice() {
-        FrameLog.note("WARMUP notice test button pressed")
-        showWarmupNotice()
-    }
-
-    private fun showWarmupNotice() {
-        if (phoneEventJob?.isActive == true) return // a message owns the text row
-        warmupNoticeJob?.cancel()
+    private fun scheduleWarmupNotice() {
+        if (warmupNoticeJob?.isActive == true) return
         warmupNoticeJob = scope.launch {
-            val until = System.currentTimeMillis() + 10_000L
-            while (isActive && System.currentTimeMillis() < until) {
-                // Same pair the message card uses: 0x4C is Jupiter's text row,
-                // 0x53 the genuine TVS message ID that makes the dash open the
-                // card. The 0x4F direction row is never touched.
-                write(buildMessageRow("READY TO GO"))
-                write(buildMessageFrame("READY TO GO"))
-                delay(500L)
+            try {
+                // Give up after six hours rather than spin forever if the rider
+                // never starts the engine again. A disconnect cancels this job
+                // but keeps the notice pending, so reconnecting resumes it.
+                val deadline = System.currentTimeMillis() + 6 * 60 * 60_000L
+                while (isActive && warmupReadyPending && System.currentTimeMillis() < deadline &&
+                    warmupNoticePrefs().getString("last_day", null) != istDay() &&
+                    warmupReadyNow()
+                ) {
+                    // A call holds the row until its notification is removed and
+                    // a message holds it for 12 s - neither may be overwritten.
+                    if (!connectionEstablished || phoneEventJob?.isActive == true ||
+                        warmupNoticeJob?.isActive != true
+                    ) {
+                        delay(2_000L)
+                        continue
+                    }
+                    val until = System.currentTimeMillis() + 10_000L
+                    var written = false
+                    try {
+                        while (isActive && System.currentTimeMillis() < until &&
+                            connectionEstablished && phoneEventJob?.isActive != true &&
+                            warmupReadyNow()
+                        ) {
+                            // Same pair the message card uses: 0x4C is Jupiter's
+                            // text row, 0x53 the genuine TVS message ID that opens
+                            // the dash card. The 0x4F direction row is untouched.
+                            write(buildMessageRow("READY TO GO"))
+                            write(buildMessageFrame("READY TO GO"))
+                            if (!written) {
+                                written = true
+                                // Burn the daily guard only after a frame reached
+                                // the bike. A call arriving first leaves it free.
+                                warmupNoticePrefs().edit().putString("last_day", istDay()).apply()
+                                val vibrator = getSystemService(android.os.Vibrator::class.java)
+                                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                                    vibrator?.vibrate(
+                                        android.os.VibrationEffect.createOneShot(120, 120))
+                                } else {
+                                    @Suppress("DEPRECATION")
+                                    vibrator?.vibrate(120L)
+                                }
+                            }
+                            delay(500L)
+                        }
+                    } finally {
+                        // A disconnect cancels this job. Clear the text row even
+                        // then, or "READY TO GO" stays on the dash forever - but
+                        // never blank a newer call/message card.
+                        withContext(NonCancellable) {
+                            if (connectionEstablished && phoneEventJob?.isActive != true) {
+                                runCatching {
+                                    write(buildMessageRow(""))
+                                    write(buildMessageFrame(""))
+                                }
+                            }
+                        }
+                    }
+                    warmupReadyPending = false
+                    return@launch
+                }
+            } finally {
+                warmupNoticeJob = null
             }
-            if (isActive) {
-                write(buildMessageRow(""))
-                write(buildMessageFrame(""))
-            }
-            warmupNoticeJob = null
         }
     }
 
@@ -1427,6 +1554,8 @@ class ClusterService : Service() {
         holdMs: Long,
         untilDismissed: Boolean = false,
     ) {
+        // The warm-up notice yields to the active phone card via phoneEventJob
+        // instead of being cancelled, so it resumes automatically afterwards.
         phoneEventJob?.cancel()
         phoneEventJob = scope.launch {
             if (isCall) {
@@ -1486,11 +1615,77 @@ class ClusterService : Service() {
         }
     }
 
+    private fun isOnlineNow(): Boolean {
+        val cm = getSystemService(ConnectivityManager::class.java) ?: return true
+        val network = cm.activeNetwork ?: return false
+        val caps = cm.getNetworkCapabilities(network) ?: return false
+        return caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
+    }
+
+    /**
+     * The app is offline-first: BLE, rides and cached garage data keep working
+     * with no connection. Network work is simply paused until the link returns.
+     */
+    private fun registerNetworkCallback() {
+        online = isOnlineNow()
+        val cm = getSystemService(ConnectivityManager::class.java) ?: return
+        val cb = object : ConnectivityManager.NetworkCallback() {
+            override fun onAvailable(network: Network) {
+                if (online) return
+                online = true
+                FrameLog.note("NETWORK ON - resuming cloud sync")
+                requestGarageSync()
+                startRideSync()
+            }
+
+            override fun onLost(network: Network) {
+                online = isOnlineNow()
+                if (!online) {
+                    FrameLog.note("NETWORK OFF - using cached data")
+                    CloudGarageStore.markOffline()
+                }
+            }
+        }
+        runCatching {
+            cm.registerDefaultNetworkCallback(cb)
+            networkCallback = cb
+        }
+    }
+
     /** One-off garage pull, used by the Sign in button so data appears at once. */
     fun requestGarageSync() {
         scope.launch {
             val token = SupabaseClient.currentToken() ?: return@launch
             CloudGarageStore.pull(token)
+        }
+    }
+
+    /**
+     * Pull `jc_rides` and merge into the local list. Returns the cloud row count,
+     * or null when the request failed so the caller can retry instead of
+     * concluding that the rider has no history.
+     */
+    private suspend fun restoreRidesFromCloud(token: String): Int? {
+        val cloud = SupabaseClient.downloadRides(token) ?: return null
+        RideStore.restoreFromCloud(cloud)
+        return cloud.size
+    }
+
+    /** Manual "Restore from cloud" action in the Rides tab. */
+    fun requestRideRestore() {
+        scope.launch {
+            val token = SupabaseClient.currentToken()
+            if (token.isNullOrBlank()) {
+                RideStore.setRestoreStatus("Sign in to restore rides")
+                return@launch
+            }
+            RideStore.setRestoreStatus("Restoring rides from cloud...")
+            val count = restoreRidesFromCloud(token)
+            RideStore.setRestoreStatus(when {
+                count == null -> "Restore failed: ${SupabaseClient.lastError ?: "unknown error"}"
+                count == 0 -> "No cloud rides yet - new rides will upload"
+                else -> "Restored $count cloud ride${if (count == 1) "" else "s"}"
+            })
         }
     }
 
@@ -1726,6 +1921,9 @@ class ClusterService : Service() {
                 BluetoothProfile.STATE_CONNECTED -> {
                     Log.i(TAG, "GATT connected, status=$status - requesting MTU")
                     FrameLog.note("LINK UP status=$status addr=${g.device.address}")
+                    // Mirror the connected bike to a durable app-private file as
+                    // well as SharedPreferences, with its human-readable name.
+                    DeviceMemory.save(applicationContext, g.device.address, g.device.name)
                     connectWatchdog?.cancel()
                     connectWatchdog = null
                     connectedAtMs = System.currentTimeMillis()
@@ -1758,6 +1956,8 @@ class ClusterService : Service() {
                     if (!g.requestMtu(Gatt.REQUESTED_MTU)) startDiscovery(g)
                     main.postDelayed({ startDiscovery(g) }, 2500L)
                     disconnectedAtMs = 0L
+                    // A notice that was pending across a BLE drop resumes here.
+                    if (warmupReadyPending) scheduleWarmupNotice()
                     startRideSync()
                 }
 
@@ -1829,6 +2029,9 @@ class ClusterService : Service() {
         }
 
         override fun onServicesDiscovered(g: BluetoothGatt, status: Int) {
+            // A stale GATT can deliver this after a new link is up; its
+            // characteristic must never be paired with the new gatt in write().
+            if (g !== gatt) return
             Log.i(TAG, "services discovered, status=$status, count=${g.services?.size ?: 0}")
             g.services?.forEach { s ->
                 Log.d(TAG, "  service ${s.uuid} chars=${s.characteristics.size}")
@@ -1964,7 +2167,7 @@ class ClusterService : Service() {
                 // the traffic-screen toggle, so the readout still works when
                 // those screens are off. Failures keep the previous value.
                 val now = System.currentTimeMillis()
-                if (now - lastAmbientFetchMs > 600_000L) {
+                if (now - lastAmbientFetchMs > 300_000L) {
                     lastAmbientFetchMs = now
                     val (lat, lon) = resolveWeatherLocation()
                     kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
@@ -1995,30 +2198,61 @@ class ClusterService : Service() {
     private fun startRideSync() {
         if (syncJob?.isActive == true) return
         syncJob = scope.launch {
+            var ridesRestored = false
             while (isActive) {
-                val token = SupabaseClient.currentToken()
-                if (!token.isNullOrBlank()) {
-                    RideStore.unsyncedRides().take(5).forEach { ride ->
-                        if (SupabaseClient.uploadRide(ride, token) == null) {
-                            RideStore.markSynced(ride.startedAt)
-                        }
-                    }
-                    // Fuel, service records and odometer are read-only here.
-                    CloudGarageStore.pull(token)
-                    val liveKm = ClusterRepository.telemetry.value.odometerKm
-                        .takeIf { it > 0 } ?: RideStore.lastReading.value.odometerKm
-                    val km = kotlin.math.round(liveKm).toInt()
-                    val now = System.currentTimeMillis()
-                    if (km > 0 && shouldReportOdo(km, lastReportedOdoKm, now, lastOdoReportAtMs)) {
-                        if (SupabaseClient.reportOdometer(
-                                JUPITER_VEHICLE, km, "cluster", token) == null
-                        ) {
-                            lastReportedOdoKm = km
-                            lastOdoReportAtMs = now
-                        }
-                    }
-                    SupabaseClient.uploadAppState(buildAppStateJson(), token)
+                // Offline-first: skip every network call while there is no link,
+                // keeping local ride/fuel data and the last good cache on screen.
+                // NET_CAPABILITY_INTERNET is enough: some networks never set
+                // VALIDATED, which used to pause sync forever even though REST
+                // worked. Request failures are already caught below.
+                if (!online || !isOnlineNow()) {
+                    online = false
+                    CloudGarageStore.markOffline()
+                    delay(10_000L)
+                    continue
                 }
+                runCatching {
+                    val token = SupabaseClient.currentToken()
+                    if (!token.isNullOrBlank()) {
+                        // A fresh install starts with an empty local ride list.
+                        // Pull the cloud history before uploading anything; keep
+                        // retrying if the pull came back empty.
+                        if (!ridesRestored) {
+                            val count = restoreRidesFromCloud(token)
+                            when {
+                                count == null -> RideStore.setRestoreStatus(
+                                    "Restore failed: ${SupabaseClient.lastError ?: "unknown"}")
+                                count == 0 -> RideStore.setRestoreStatus("No cloud rides yet")
+                                else -> {
+                                    RideStore.setRestoreStatus("Restored $count cloud rides")
+                                    ridesRestored = true
+                                }
+                            }
+                        }
+                        RideStore.unsyncedRides().take(5).forEach { ride ->
+                            // uploadRide returns an error on HTTP/network failure,
+                            // so a failed ride stays queued for the next pass.
+                            if (SupabaseClient.uploadRide(ride, token) == null) {
+                                RideStore.markSynced(ride.startedAt)
+                            }
+                        }
+                        // Fuel, service records and odometer are read-only here.
+                        CloudGarageStore.pull(token)
+                        val liveKm = ClusterRepository.telemetry.value.odometerKm
+                            .takeIf { it > 0 } ?: RideStore.lastReading.value.odometerKm
+                        val km = kotlin.math.round(liveKm).toInt()
+                        val now = System.currentTimeMillis()
+                        if (km > 0 && shouldReportOdo(km, lastReportedOdoKm, now, lastOdoReportAtMs)) {
+                            if (SupabaseClient.reportOdometer(
+                                    JUPITER_VEHICLE, km, "cluster", token) == null
+                            ) {
+                                lastReportedOdoKm = km
+                                lastOdoReportAtMs = now
+                            }
+                        }
+                        SupabaseClient.uploadAppState(buildAppStateJson(), token)
+                    }
+                }.onFailure { FrameLog.note("SYNC skipped: ${it.message?.take(80) ?: "error"}") }
                 delay(if (ClusterRepository.telemetry.value.connected) 30_000L else 120_000L)
             }
             syncJob = null
@@ -2142,11 +2376,16 @@ class ClusterService : Service() {
     }
 
     /**
-     * Weather follows the scooter's last-parked coordinates. Hyderabad is the
-     * only fixed fallback city, used when no parked spot has been saved yet.
-     * No active GPS scan, so this costs no extra battery.
+     * Weather follows the rider while moving, then the scooter's last-parked
+     * spot, then Hyderabad as the fixed fallback. The live fix is only used for
+     * ten minutes after it was taken, so a stale cache cannot pin weather to a
+     * town the rider left hours ago. Parking/speed tracking already requests
+     * location updates every 2 s while connected, so this costs no extra scan.
      */
     private fun resolveWeatherLocation(): Pair<Double, Double> {
+        liveLatLng?.let { fix ->
+            if (System.currentTimeMillis() - liveFixAtMs <= 600_000L) return fix
+        }
         RideStore.parkedLocation.value?.let { return it.lat to it.lng }
         val city = Cities.byName(ClusterRepository.weatherCity.value)
         return city.lat to city.lon
@@ -2184,6 +2423,11 @@ class ClusterService : Service() {
             var news: TrafficClient.News? = null
             var lastFetch = 0L
             var index = 0
+            // Weather used to be part of the normal rotation, so the dash
+            // flipped back to it every few seconds. Give it its own cadence.
+            var lastWeatherShownAt = 0L
+            val weatherCooldownMs = 5 * 60_000L
+            val weatherHoldMs = 10_000L
             while (isActive) {
                 if (!ClusterRepository.trafficEnabled.value) {
                     ClusterRepository.trafficStatus.value = "Off"
@@ -2202,7 +2446,9 @@ class ClusterService : Service() {
                     continue
                 }
                 val now = System.currentTimeMillis()
-                if (now - lastFetch > 600_000L) {
+                // Refresh on the same five-minute beat as the weather card, so
+                // a new location produces fresh data for the next 10 s showing.
+                if (now - lastFetch > 300_000L) {
                     ClusterRepository.trafficStatus.value = "Fetching free data"
                     val (lat, lon) = resolveWeatherLocation()
                     kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
@@ -2222,11 +2468,34 @@ class ClusterService : Service() {
                         else -> "No data - check connection"
                     }
                 }
+                // Weather is special: show it ONCE for 10 s, then leave it
+                // alone for five minutes. Including it in the rotation below
+                // is what made it reappear every couple of seconds.
+                val w = weather
+                if (w != null && now - lastWeatherShownAt >= weatherCooldownMs) {
+                    lastWeatherShownAt = now
+                    ClusterRepository.trafficScreen.value = TrafficScreen.WEATHER
+                    write(buildScreenSwitch(TrafficScreen.WEATHER))
+                    delay(300L)
+                    write(buildWeatherFrameWithCode(w.code, w.tempC, w.desc, w.aqi, w.rainPct))
+                    // Hold the screen for 10 s without re-sending frames; repeated
+                    // writes are what made the dash refresh continuously. Give
+                    // way immediately if navigation or a phone card takes over.
+                    val holdUntil = System.currentTimeMillis() + weatherHoldMs
+                    while (isActive && System.currentTimeMillis() < holdUntil &&
+                        !(ClusterRepository.mirroring.value &&
+                            ClusterRepository.navInstruction.value != null) &&
+                        phoneEventJob?.isActive != true &&
+                        warmupNoticeJob?.isActive != true
+                    ) {
+                        delay(500L)
+                    }
+                    continue
+                }
                 // Only cycle screens that actually have data. Selecting a
                 // screen with no fetched payload made the dash show placeholder
                 // rows such as "Yet to start" and all-zero text.
                 val screens = buildList<Int> {
-                    if (weather != null) add(TrafficScreen.WEATHER)
                     // A match with no runs yet only renders "Yet to start".
                     if (cricket != null && (cricket.runs1 > 0 || cricket.runs2 > 0)) {
                         add(TrafficScreen.CRICKET)
@@ -2244,9 +2513,6 @@ class ClusterService : Service() {
                 write(buildScreenSwitch(id))
                 delay(300L)
                 when (id) {
-                    TrafficScreen.WEATHER -> weather?.let {
-                        write(buildWeatherFrameWithCode(it.code, it.tempC, it.desc, it.aqi, it.rainPct))
-                    }
                     TrafficScreen.CRICKET -> cricket?.let {
                         write(buildCricketFrame(
                             it.team1, it.team2,
@@ -2392,6 +2658,12 @@ class ClusterService : Service() {
         phoneEventJob = null
         warmupNoticeJob?.cancel()
         warmupNoticeJob = null
+        networkCallback?.let { cb ->
+            runCatching {
+                getSystemService(ConnectivityManager::class.java)?.unregisterNetworkCallback(cb)
+            }
+            networkCallback = null
+        }
         releaseWakeLock()
         disconnectNow(fromDestroy = true)
         voiceBridge.destroy()
@@ -2404,6 +2676,7 @@ class ClusterService : Service() {
         const val ACTION_SCAN = "com.jupiterconnect.action.SCAN"
         const val ACTION_CONNECT = "com.jupiterconnect.action.CONNECT"
         const val ACTION_DRIVING_MODE = "com.jupiterconnect.action.DRIVING_MODE"
+        const val ACTION_FORGET = "com.jupiterconnect.action.FORGET"
         const val EXTRA_ADDRESS = "com.jupiterconnect.extra.ADDRESS"
         const val EXTRA_DRIVING_ENABLED = "com.jupiterconnect.extra.DRIVING_ENABLED"
         const val EXTRA_FOREGROUND = "com.jupiterconnect.extra.FOREGROUND"

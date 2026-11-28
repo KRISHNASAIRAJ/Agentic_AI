@@ -29,7 +29,11 @@ class MapsNotificationListener : NotificationListenerService() {
         val n = sbn ?: return
         // Calls and messages mirror to the cluster independently of navigation;
         // the maps-only whitelist below still governs the navigation text row.
-        handlePhoneEvent(n)
+        // One malformed chat notification must never take down the app process.
+        runCatching { handlePhoneEvent(n) }.onFailure {
+            com.jupiterconnect.debug.FrameLog.note(
+                "MSG parse error: ${it.message?.take(80) ?: "unknown"}")
+        }
         val extras = n.notification?.extras ?: return
         val title = extras.getCharSequence(Notification.EXTRA_TITLE)?.toString()?.trim().orEmpty()
         val text = extras.getCharSequence(Notification.EXTRA_TEXT)?.toString()?.trim().orEmpty()
@@ -247,6 +251,45 @@ class MapsNotificationListener : NotificationListenerService() {
         }.also { handler.postDelayed(it, CLEAR_GRACE_MS) }
     }
 
+    private data class ChatMessage(val atMs: Long, val sender: String, val body: String)
+
+    /**
+     * `EXTRA_MESSAGES` is delivered as a `Bundle[]`, never as
+     * `MessagingStyle.Message[]`. Casting it to the latter silently produced an
+     * empty list, so the fallback `EXTRA_TEXT` (the conversation summary, i.e.
+     * an older message) was shown and the newest one was lost. Read the bundles
+     * directly and keep the timestamp so the newest entry can be selected.
+     */
+    private fun readChatMessages(extras: Bundle): List<ChatMessage> {
+        val raw = runCatching {
+            extras.getParcelableArray(Notification.EXTRA_MESSAGES)
+        }.getOrNull() ?: return emptyList()
+        return raw.mapNotNull { item ->
+            runCatching {
+                when (item) {
+                    is Bundle -> {
+                        val body = item.getCharSequence("text")?.toString().orEmpty()
+                        if (body.isBlank()) return@runCatching null
+                        @Suppress("DEPRECATION")
+                        val person = item.getParcelable("sender") as? Person
+                        // Person.getName() needs API 28; on 26/27 the
+                        // notification title/people fallback supplies the sender.
+                        val who = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+                            person?.name?.toString() ?: person?.uri?.toString().orEmpty()
+                        } else ""
+                        ChatMessage(item.getLong("timestamp", 0L), who, body)
+                    }
+                    is Notification.MessagingStyle.Message -> {
+                        val body = item.text?.toString().orEmpty()
+                        if (body.isBlank()) return@runCatching null
+                        ChatMessage(item.timestamp, item.sender?.toString().orEmpty(), body)
+                    }
+                    else -> null
+                }
+            }.getOrNull()
+        }
+    }
+
     /**
      * Mirror incoming calls and chat messages to the cluster, the same way
      * TVS Connect does. Nothing is sent unless the scooter is linked and the
@@ -272,6 +315,7 @@ class MapsNotificationListener : NotificationListenerService() {
             (isVoipApp && isVoipCall(notification, extras))
         @Suppress("DEPRECATION")
         val messages = runCatching { extras.getParcelableArray(Notification.EXTRA_MESSAGES) }.getOrNull()
+        val chat = readChatMessages(extras)
         val isMessage = messages != null || category == Notification.CATEGORY_MESSAGE
         if (!isCall && !isMessage) return
         if (isCall) {
@@ -303,12 +347,17 @@ class MapsNotificationListener : NotificationListenerService() {
             val who = if (raw.any { it.isLetter() }) raw else (resolveContactName(raw) ?: raw)
             PhoneEventFormat.call(who)
         } else {
-            val latest = messages?.filterIsInstance<Notification.MessagingStyle.Message>()?.lastOrNull()
-            val rawSender = personInfo
-                ?: latest?.sender?.toString()
+            // A notification can carry several messages (two WhatsApp texts in
+            // one post). EXTRA_TEXT is the conversation summary - usually the
+            // older one - so select the newest entry by timestamp and index.
+            val newest = chat.withIndex().maxWithOrNull(
+                compareBy<IndexedValue<ChatMessage>> { it.value.atMs }.thenBy { it.index }
+            )?.value
+            val rawSender = newest?.sender?.takeIf { it.isNotBlank() }
+                ?: personInfo
                 ?: extras.getCharSequence(Notification.EXTRA_TITLE)?.toString().orEmpty()
             val sender = resolveContactName(rawSender) ?: rawSender
-            val rawBody = latest?.text?.toString()
+            val rawBody = newest?.body
                 ?: extras.getCharSequence(Notification.EXTRA_TEXT)?.toString().orEmpty()
             // Android 15+ may hand us a redaction placeholder instead of the
             // message. Never print that on the dash; show a short hint and log
@@ -320,12 +369,15 @@ class MapsNotificationListener : NotificationListenerService() {
             PhoneEventFormat.message(sender, body)
         }
         if (text.isBlank()) return
-        // Dialers repost the same call notification repeatedly. Only show a
-        // given key+text once so the card hold ends on schedule instead of
-        // being extended by every repost.
-        if (n.key == lastPhoneKey && text == lastPhoneText) return
+        // Only show a given key+text once so a repost cannot extend the hold.
+        // A repost can keep the same key and summary text while adding a newer
+        // message, so include the message timestamp - that must still display.
+        val signature = if (isCall) "call:$text"
+            else "msg:${chat.maxOfOrNull { it.atMs } ?: 0L}:$text"
+        if (n.key == lastPhoneKey && signature == lastPhoneSignature) return
         lastPhoneKey = n.key
         lastPhoneText = text
+        lastPhoneSignature = signature
         // Use the cluster's dedicated call/message cards so the turn-by-turn
         // direction row is never overwritten. Calls stay until their
         // notification is removed; messages clear after a short hold.
@@ -401,9 +453,11 @@ class MapsNotificationListener : NotificationListenerService() {
 
     private val handler = android.os.Handler(android.os.Looper.getMainLooper())
     private var pendingClear: Runnable? = null
-    // One display per notification/text so a repost cannot extend the hold.
+    // One display per notification/text/message so a repost cannot extend the
+    // hold, but a newer message under the same key still shows.
     private var lastPhoneKey: String? = null
     private var lastPhoneText = ""
+    private var lastPhoneSignature = ""
     // Key of the call whose 0x43 card is held until the notification is removed.
     private var activeCallKey: String? = null
     // Last distance Maps actually published; reused when a notification omits it.

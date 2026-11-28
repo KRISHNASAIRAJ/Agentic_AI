@@ -57,3 +57,21 @@ The release build (`app-release.apk`) is signed with your own unique keystore
 trigger. Play Protect may still show a one-time warning for an unknown
 developer. The reliable alternatives are the ADB install above or temporarily
 turning the scanner off — but ADB is preferred since nothing is disabled.
+
+## "App not installed" / "Update conflicts with package"
+
+This always means the APK being tapped is not the same app that is installed:
+
+- **GitHub Actions artifact (`app-debug.zip`)** — CI has no project keystore, so
+  `assembleDebug` uses Android's *default debug key*. Its signature differs from
+  the installed app (`cf9d3353…`), so Android refuses the update. Never install
+  the CI zip; use the locally signed `JupiterConnect.apk` instead.
+- **APK opened from inside the ZIP preview** — extract it to a real file first,
+  then tap the `.apk` from the Files app.
+- **Uninstall/reinstall to get around either of the above** — that wipes local
+  ride history. Rides are now restored from `jc_rides` on the next signed-in
+  sync; fuel fills and service records already come from Meridian's cloud.
+
+To verify a file before installing, run
+`apksigner verify --print-certs <apk>`; signer SHA-256 must start with
+`cf9d3353fab3bf2f7316a1b7bed39e6d2a75b6d6e5d4b8a6a06d9818808240a4`.

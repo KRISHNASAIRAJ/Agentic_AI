@@ -51,6 +51,7 @@ import androidx.core.content.ContextCompat
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
+import com.jupiterconnect.session.DeviceMemory
 import com.jupiterconnect.session.RideStore
 import com.jupiterconnect.transport.ClusterRepository
 import com.jupiterconnect.transport.ClusterService
@@ -76,6 +77,15 @@ import com.jupiterconnect.ui.theme.JupiterConnectTheme
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        // Capture any startup crash to Downloads/JupiterConnect and a status-bar
+        // notification - installs are by APK tap, so there is no ADB logcat.
+        com.jupiterconnect.debug.CrashLog.install(this)
+        // Initialise local and cloud state before the first composition so a
+        // signed-in rider never briefly sees "OFFLINE" or an empty Rides tab.
+        RideStore.init(this)
+        com.jupiterconnect.sync.SupabaseClient.init(this)
+        com.jupiterconnect.session.CloudGarageStore.init(this)
+        ClusterRepository.initPrefs(this)
         setContent { JupiterConnectTheme { JupiterApp() } }
     }
 }
@@ -168,10 +178,14 @@ fun JupiterApp() {
         context.getSharedPreferences("jupiter_device", android.content.Context.MODE_PRIVATE)
     }
     var rememberedAddress by remember {
-        mutableStateOf(devicePrefs.getString("address", null))
+        mutableStateOf(devicePrefs.getString("address", null)
+            ?: DeviceMemory.read(context)?.address)
     }
     fun connectToDevice(address: String) {
         devicePrefs.edit().putString("address", address).apply()
+        DeviceMemory.save(context, address,
+            devices.firstOrNull { it.address.equals(address, true) }?.name
+                ?: DeviceMemory.read(context)?.name)
         rememberedAddress = address
         // Send the action with the Intent; onStartCommand performs the connect
         // after onCreate has initialised the service. No main-thread race.
@@ -180,7 +194,9 @@ fun JupiterApp() {
     fun connectAndRemember(address: String) = connectToDevice(address)
     fun forgetDevice() {
         devicePrefs.edit().remove("address").apply()
+        DeviceMemory.clear(context)
         rememberedAddress = null
+        ClusterRepository.startService(context, ClusterService.ACTION_FORGET)
     }
 
     var permStatus by remember { mutableStateOf(currentStatus()) }
@@ -224,9 +240,15 @@ fun JupiterApp() {
         permStatus = currentStatus()
         bluetoothOn = isBluetoothOn()
         if (permStatus.bleReady) {
-            rememberedAddress?.let { addr ->
-                connectToDevice(addr)
-            } ?: ClusterRepository.startService(context)
+            // Never clear the user's disconnect flag or try BLE while riding
+            // mode is off — the service gates all BLE work on that toggle.
+            if (ClusterRepository.drivingMode.value) {
+                rememberedAddress?.let { addr ->
+                    connectToDevice(addr)
+                } ?: ClusterRepository.startService(context)
+            } else {
+                ClusterRepository.startService(context)
+            }
         }
     }
 

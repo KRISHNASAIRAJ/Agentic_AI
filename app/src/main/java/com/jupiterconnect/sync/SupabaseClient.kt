@@ -145,7 +145,58 @@ object SupabaseClient {
             authenticated = true, token = token,
             prefer = "return=minimal,resolution=merge-duplicates",
         )
-        if (response == null) "Ride upload failed" else null
+        // request() reports transport failures and HTTP errors as an "error"
+        // object. Treating those as success would mark the ride synced and
+        // permanently drop it from the retry queue.
+        if (response == null || response.has("error")) {
+            lastError?.let { "Ride upload failed: $it" } ?: "Ride upload failed"
+        } else null
+    }
+
+    /**
+     * Pull this user's ride history back from `jc_rides`. Rides are uploaded on
+     * the bike, but a phone reset/reinstall would otherwise lose every trip —
+     * the cloud is the source of truth, so restore before the next upload pass.
+     * Returns null only on a transport/HTTP failure, so callers can retry.
+     */
+    suspend fun downloadRides(token: String): List<Ride>? = withContext(Dispatchers.IO) {
+        val rows = getTable(
+            "jc_rides", "select=*&order=started_at.desc&limit=200", token,
+        ) ?: return@withContext null
+        (0 until rows.length()).mapNotNull { i ->
+            val o = rows.optJSONObject(i) ?: return@mapNotNull null
+            runCatching {
+                // PostgREST emits "+00:00" offsets; older Android java.time
+                // builds reject those in Instant.parse, so use OffsetDateTime.
+                val started = java.time.OffsetDateTime.parse(o.optString("started_at"))
+                    .toInstant().toEpochMilli()
+                val ended = java.time.OffsetDateTime.parse(o.optString("ended_at"))
+                    .toInstant().toEpochMilli()
+                fun intArray(key: String): List<Int> {
+                    val a = o.optJSONArray(key) ?: return emptyList()
+                    return (0 until a.length()).mapNotNull { j -> a.opt(j)?.toString()?.toIntOrNull() }
+                }
+                val bands = o.optJSONArray("band_ms")
+                Ride(
+                    // client_id is the original epoch millis used to dedupe.
+                    startedAt = o.optString("client_id").toLongOrNull() ?: started,
+                    endedAt = ended,
+                    distanceKm = o.optDouble("distance_km", 0.0),
+                    avgSpeedKmh = o.optDouble("avg_speed_kmh", 0.0),
+                    topSpeedKmh = o.optInt("top_speed_kmh", 0),
+                    durationMin = o.optLong("duration_min", 0L),
+                    bandMs = longArrayOf(
+                        bands?.optLong(0) ?: 0L, bands?.optLong(1) ?: 0L,
+                        bands?.optLong(2) ?: 0L, bands?.optLong(3) ?: 0L,
+                    ),
+                    idleMs = o.optLong("idle_ms", 0L),
+                    maxRpm = o.optInt("max_rpm", 0),
+                    speedSamples = intArray("speed_samples"),
+                    throttleSamples = intArray("throttle_samples"),
+                    mapsEtaMinutes = if (o.has("maps_eta_min")) o.optInt("maps_eta_min") else -1,
+                )
+            }.getOrNull()
+        }
     }
 
     /** Read a table through PostgREST. RLS scopes rows to the signed-in user. */
@@ -228,29 +279,42 @@ object SupabaseClient {
                 authenticated = true, token = token,
                 prefer = "return=minimal,resolution=merge-duplicates",
             )
-            if (response == null) "App state upload failed" else null
+            if (response == null || response.has("error")) {
+                lastError?.let { "App state upload failed: $it" } ?: "App state upload failed"
+            } else null
         }
 
     /** PostgREST accepts a JSON array for a batched upsert. */
     private fun requestArray(urlString: String, array: JSONArray, token: String): JSONObject? {
-        val conn = URL(urlString).openConnection() as HttpURLConnection
-        conn.requestMethod = "POST"
-        conn.connectTimeout = 10_000
-        conn.readTimeout = 15_000
-        conn.setRequestProperty("apikey", ANON_KEY)
-        conn.setRequestProperty("Content-Type", "application/json")
-        conn.setRequestProperty("Accept", "application/json")
-        conn.setRequestProperty("Authorization", "Bearer $token")
-        conn.setRequestProperty("Prefer", "return=minimal,resolution=merge-duplicates")
-        conn.doOutput = true
-        conn.outputStream.use { it.write(array.toString().toByteArray(Charsets.UTF_8)) }
-        val code = conn.responseCode
-        val stream = if (code in 200..299) conn.inputStream else conn.errorStream
-        val text = stream?.bufferedReader()?.use { it.readText() }.orEmpty()
-        conn.disconnect()
-        if (code !in 200..299) return JSONObject().put("error", code).put("msg", text.take(160))
-        return if (text.isBlank()) JSONObject()
-        else runCatching { JSONObject(text) }.getOrDefault(JSONObject())
+        var conn: HttpURLConnection? = null
+        return try {
+            conn = URL(urlString).openConnection() as HttpURLConnection
+            conn.requestMethod = "POST"
+            conn.connectTimeout = 10_000
+            conn.readTimeout = 15_000
+            conn.setRequestProperty("apikey", ANON_KEY)
+            conn.setRequestProperty("Content-Type", "application/json")
+            conn.setRequestProperty("Accept", "application/json")
+            conn.setRequestProperty("Authorization", "Bearer $token")
+            conn.setRequestProperty("Prefer", "return=minimal,resolution=merge-duplicates")
+            conn.doOutput = true
+            conn.outputStream.use { it.write(array.toString().toByteArray(Charsets.UTF_8)) }
+            val code = conn.responseCode
+            val stream = if (code in 200..299) conn.inputStream else conn.errorStream
+            val text = stream?.bufferedReader()?.use { it.readText() }.orEmpty()
+            if (code !in 200..299) {
+                lastError = "HTTP $code ${text.take(90)}"
+                return JSONObject().put("error", code).put("msg", text.take(160))
+            }
+            lastError = null
+            if (text.isBlank()) JSONObject()
+            else runCatching { JSONObject(text) }.getOrDefault(JSONObject())
+        } catch (e: Exception) {
+            lastError = "Offline: ${e.message?.take(60) ?: "no connection"}"
+            JSONObject().put("error", -1).put("msg", lastError)
+        } finally {
+            runCatching { conn?.disconnect() }
+        }
     }
 
     private fun request(
@@ -262,39 +326,48 @@ object SupabaseClient {
         prefer: String? = null,
         retried: Boolean = false,
     ): JSONObject? {
-        val conn = URL(urlString).openConnection() as HttpURLConnection
-        conn.requestMethod = method
-        conn.connectTimeout = 10_000
-        conn.readTimeout = 15_000
-        conn.setRequestProperty("apikey", ANON_KEY)
-        conn.setRequestProperty("Content-Type", "application/json")
-        conn.setRequestProperty("Accept", "application/json")
-        if (authenticated && !token.isNullOrBlank()) {
-            conn.setRequestProperty("Authorization", "Bearer $token")
-        }
-        if (prefer != null) conn.setRequestProperty("Prefer", prefer)
-        if (body != null) {
-            conn.doOutput = true
-            val out: OutputStream = conn.outputStream
-            out.use { it.write(body.toString().toByteArray(Charsets.UTF_8)) }
-        }
-        val code = conn.responseCode
-        val stream = if (code in 200..299) conn.inputStream else conn.errorStream
-        val text = stream?.bufferedReader()?.use { it.readText() }.orEmpty()
-        conn.disconnect()
-        if (code == 401 && authenticated && !retried) {
-            val fresh = refreshTokenBlocking()
-            if (fresh != null) {
-                return request(urlString, method, body, authenticated, fresh, prefer, true)
+        var conn: HttpURLConnection? = null
+        return try {
+            conn = URL(urlString).openConnection() as HttpURLConnection
+            conn.requestMethod = method
+            conn.connectTimeout = 10_000
+            conn.readTimeout = 15_000
+            conn.setRequestProperty("apikey", ANON_KEY)
+            conn.setRequestProperty("Content-Type", "application/json")
+            conn.setRequestProperty("Accept", "application/json")
+            if (authenticated && !token.isNullOrBlank()) {
+                conn.setRequestProperty("Authorization", "Bearer $token")
             }
+            if (prefer != null) conn.setRequestProperty("Prefer", prefer)
+            if (body != null) {
+                conn.doOutput = true
+                val out: OutputStream = conn.outputStream
+                out.use { it.write(body.toString().toByteArray(Charsets.UTF_8)) }
+            }
+            val code = conn.responseCode
+            val stream = if (code in 200..299) conn.inputStream else conn.errorStream
+            val text = stream?.bufferedReader()?.use { it.readText() }.orEmpty()
+            if (code == 401 && authenticated && !retried) {
+                val fresh = refreshTokenBlocking()
+                if (fresh != null) {
+                    return request(urlString, method, body, authenticated, fresh, prefer, true)
+                }
+            }
+            if (code !in 200..299) {
+                lastError = "HTTP $code ${text.take(90)}"
+                return JSONObject().put("error", code).put("msg", text.take(160))
+            }
+            lastError = null
+            if (text.isBlank()) JSONObject()
+            else runCatching { JSONArray(text).optJSONObject(0) ?: JSONObject(text) }
+                .getOrDefault(JSONObject(text))
+        } catch (e: Exception) {
+            // Offline / timeout / DNS failures must never escape into a caller.
+            // Callers see an ordinary error object and keep their cached data.
+            lastError = "Offline: ${e.message?.take(60) ?: "no connection"}"
+            JSONObject().put("error", -1).put("msg", lastError)
+        } finally {
+            runCatching { conn?.disconnect() }
         }
-        if (code !in 200..299) {
-            lastError = "HTTP $code ${text.take(90)}"
-            return JSONObject().put("error", code).put("msg", text.take(160))
-        }
-        lastError = null
-        if (text.isBlank()) return JSONObject()
-        return runCatching { JSONArray(text).optJSONObject(0) ?: JSONObject(text) }
-            .getOrDefault(JSONObject(text))
     }
 }

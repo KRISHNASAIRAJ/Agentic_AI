@@ -160,6 +160,11 @@ object RideStore {
     private val _rides = MutableStateFlow<List<Ride>>(emptyList())
     val rides: StateFlow<List<Ride>> = _rides.asStateFlow()
 
+    /** Visible result of the last attempt to pull rides from `jc_rides`. */
+    private val _restoreStatus = MutableStateFlow("")
+    val restoreStatus: StateFlow<String> = _restoreStatus.asStateFlow()
+    fun setRestoreStatus(value: String) { _restoreStatus.value = value }
+
     private val _parkedLocation = MutableStateFlow<ParkedLocation?>(null)
     val parkedLocation: StateFlow<ParkedLocation?> = _parkedLocation.asStateFlow()
 
@@ -601,6 +606,45 @@ object RideStore {
     var warmupLastRunMs: Long
         get() = prefs?.getLong(KEY_WARMUP_LAST, 0L) ?: 0L
         set(value) { prefs?.edit()?.putLong(KEY_WARMUP_LAST, value)?.apply() }
+
+    /**
+     * Merge rides pulled from `jc_rides` after a reinstall or preference wipe.
+     * Local rides win on a clash (they may contain newer live samples), and all
+     * restored rows are marked synced so they are not uploaded a second time.
+     */
+    fun restoreFromCloud(cloud: List<Ride>) {
+        if (cloud.isEmpty()) return
+        val byStart = LinkedHashMap<Long, Ride>()
+        _rides.value.forEach { byStart[it.startedAt] = it }
+        // Only rows actually taken from the cloud are synced. A local ride that
+        // wins a key clash may hold newer samples and still needs an upsert.
+        val cloudTaken = HashSet<Long>()
+        cloud.forEach { r ->
+            if (byStart.putIfAbsent(r.startedAt, r) == null) cloudTaken += r.startedAt
+        }
+        val merged = byStart.values.sortedByDescending { it.startedAt }.take(50)
+        _rides.value = merged
+        val editor = prefs?.edit()
+        editor?.putString(KEY_RIDES, serialiseRides(merged))
+        merged.forEach { r ->
+            editor?.putString(
+                KEY_SAMPLES + r.startedAt,
+                r.speedSamples.joinToString("_") + "|" + r.throttleSamples.joinToString("_"),
+            )
+        }
+        cloudTaken.forEach { syncedIds += it }
+        editor?.putString(KEY_SYNCED, syncedIds.joinToString(","))
+        // A historic ride outside the 50 shown can still hold the all-time best.
+        val best = maxOf(
+            merged.maxOfOrNull { it.topSpeedKmh } ?: 0,
+            cloud.maxOfOrNull { it.topSpeedKmh } ?: 0,
+        )
+        if (best > _allTimeTopSpeed.value) {
+            _allTimeTopSpeed.value = best
+            editor?.putInt(KEY_ALL_TIME_TOP, best)
+        }
+        editor?.apply()
+    }
 
     /** Rides not yet confirmed by Supabase, newest first. */
     fun unsyncedRides(): List<Ride> = _rides.value.filter { it.startedAt !in syncedIds }

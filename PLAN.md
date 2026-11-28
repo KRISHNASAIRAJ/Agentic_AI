@@ -14,29 +14,63 @@ what is deferred.
   also fixes the app closing immediately when Bluetooth is off.
   More → NEARBY device rows are tappable again (the redesigned screen had lost
   the `onConnect` click handler that the old screen had), with on-screen feedback
-  for connecting or for Driving mode being off.
+  for missing Bluetooth permission, Bluetooth being off, Driving mode being off,
+  and the live link error. Driving mode is now persisted by the service too — on
+  a fresh install the first toggle used to be lost when `onCreate` reset the flow
+  from still-empty preferences, leaving every BLE gate closed.
+- The last connected bike (MAC + name + timestamp) is mirrored from
+  SharedPreferences into an app-private file `files/last_device.txt` on every
+  successful link and every device pick. The file is a fallback at startup and
+  is cleared by **Forget**. It survives app restarts and updates, not an uninstall.
+- Ride history is **restored from `jc_rides`** before uploads and retries while
+  the pull returns no rows or fails. Restored rows are marked synced only when
+  they win a clash with local data. The Rides tab shows the restore result and
+  has a **RESTORE RIDES FROM CLOUD** button for an immediate re-pull, so an
+  empty history can be diagnosed (e.g. wrong account vs. genuinely no cloud
+  rows). See `docs/INSTALL.md` for the signature-conflict install error.
+- `READY TO GO` becomes pending as soon as the warm-up card reaches 100 % and
+  is retried until the dash is free — a call holding the row, a brief BLE drop
+  or a connection made after warm-up completed no longer loses the day's
+  notice. The once-per-IST-day guard is consumed only after a frame actually
+  reached the bike, and the text row is cleared even on disconnect. There is
+  no manual test button — the notice is automatic only.
+- **Offline-first cloud sync:** rides, fuel fills, service records, odometer and
+  the parked spot stay fully usable with no internet. A `ConnectivityManager`
+  callback pauses every network call while offline (label: `Offline - showing
+  cached data`) and resumes garage pull, ride restore, odometer report and app
+  state upload as soon as the connection returns. All REST helpers catch
+  transport failures instead of throwing, so going offline can no longer crash
+  the app or kill the sync loop.
+- Failed uploads are no longer marked synced: a ride stays queued until the
+  cloud actually accepts it. Restored cloud rides are only marked synced when
+  they win a clash with local data.
 - Automatic reconnect with capped backoff (5s / 10s / 20s / 30s). The connected
   device address is persisted, so a killed service or a reboot redials it
-  without the user opening the app.
+  without the user opening the app. Re-enabling driving mode clears the user
+  disconnect flag even if Bluetooth is still off, so the adapter-on receiver
+  redials the bike. **Forget** now stops the live service too.
 - Live telemetry (speed, odo, fuel bars, temperatures, battery, DTE, RPM) and
   turn-by-turn mirroring from any navigation app's notification.
 - Ride recording with checkpoints; a brief link drop resumes the same ride
   instead of splitting it into several.
 - Fuel logs, cumulative stats, parked location, call/message cards. Incoming
   calls stay on the dash until their notification is removed (answered, rejected
-  or ended); chat messages use a 5-second card and never overwrite the
-  turn-by-turn direction row. The Rides monthly bars use fuel-odometer deltas
+  or ended); chat messages use a 12-second card and never overwrite the
+  turn-by-turn direction row. `EXTRA_MESSAGES` is parsed as the `Bundle[]` that
+  Android actually delivers (not `MessagingStyle.Message[]`) and the newest
+  entry is chosen by timestamp, so two WhatsApp messages in one notification
+  show the one just received instead of the older summary text. Reposts with a
+  newer message are no longer suppressed by the dedupe key. The Rides monthly
+  bars use fuel-odometer deltas
   for past months and, for the current month only, the fuel total plus live
   odometer distance ridden since the last fill — past months are never rewritten.
-- On a cold start (tracked from engine vs intake temperature), when the warm-up
-  state first reaches READY the cluster's text row shows **READY TO GO** for
-  10 seconds — no need to check the phone. Shown at most once per calendar day
+- When the warm-up state reaches READY with real engine data, the cluster's
+  text row shows **READY TO GO** for 10 seconds — no need to check the phone.
+  Shown at most once per calendar day
   (IST), it never writes the navigation direction row, and a phone vibration
   still fires at the same moment. The notice sends both `0x4C` (text row) and
   `0x53` (the genuine TVS message ID that opens the dash card), the same pair
-  used by the message mirror — sending only `0x4C` did not render. More →
-  WARMUP NOTICE → "Test READY TO GO" bypasses the daily guard for testing and
-  reports whether the bike is linked.
+  used by the message mirror — sending only `0x4C` did not render.
 - Carbon saving is an **app-only estimate** with no manual entry: the cluster's
   lifetime ISS idle-seconds counter first, then distance + fuel economy. The dash
   computes its own figure from ISS data; no BLE frame can write it. TVS Connect
@@ -61,11 +95,21 @@ frame. Reverse engineering TVS Connect 8.14.3 recovered both halves:
   (`getCricketData`), football `0x91` (`getFootballData`), news `0x96`
   (`sendNewsHeadline`).
 
-The **TRAFFIC SCREENS** toggle in More → Settings now runs a bridge that cycles
-Weather → Cricket → Market → News while connected and no route is active,
-sending the select frame followed by the data frame. Data comes from keyless
-free APIs (Open-Meteo + US AQI, ESPN cricket, Yahoo Finance for Nifty/Sensex,
-Google News RSS) — no TVS cloud and no account.
+The traffic bridge runs while connected and no route/call/message owns the
+dash. It is **on by default and the toggle is persisted**, so it no longer has
+to be switched back on after every engine start; the toggle in More → Settings
+remembers the rider's last choice. Weather has its own cadence: it is shown
+**once for 10 seconds, then not again for five minutes** (no repeated writes,
+which used to make the dash refresh continuously). Other screens (cricket with
+runs, market, news) rotate in between.
+
+Weather follows the rider: the freshest GPS fix taken while connected wins for
+10 minutes, then the scooter's last-parked spot, then Hyderabad as the fixed
+fallback. No extra battery scan is needed — the existing 2-second GPS listener
+already supplies fixes. Weather and the cluster's temperature readout refresh
+on the same five-minute beat. Data comes from keyless free APIs (Open-Meteo +
+US AQI, ESPN cricket, Yahoo Finance for Nifty/Sensex, Google News RSS) — no TVS
+cloud and no account.
 
 The keepalive's byte 4 is the cluster's **own temperature readout**, encoded as
 ambient °C + 40. It was hardcoded to 40, which is exactly why the dash showed

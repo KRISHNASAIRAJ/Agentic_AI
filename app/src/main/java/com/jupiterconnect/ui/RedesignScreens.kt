@@ -864,6 +864,13 @@ fun RidesScreenV2(
         if (rides.isEmpty()) {
             RedCard { Text("No rides saved yet.", color = JupiterColors.OnSurfaceVariant, fontSize = 13.sp) }
         }
+        Spacer(Modifier.height(10.dp))
+        val restoreStatus by RideStore.restoreStatus.collectAsState()
+        if (restoreStatus.isNotBlank()) {
+            Text(restoreStatus, fontSize = 12.sp, color = JupiterColors.Accent)
+            Spacer(Modifier.height(8.dp))
+        }
+        SecondaryButton("RESTORE RIDES FROM CLOUD", { ClusterRepository.requestRideRestore() })
         Spacer(Modifier.height(18.dp))
         Label("HISTORY · LAST 6 MONTHS")
         Spacer(Modifier.height(10.dp))
@@ -1333,11 +1340,27 @@ private fun DevicesContent(
     devices: List<ScannedDevice>,
     rememberedAddress: String?,
     bluetoothOn: Boolean,
+    bleReady: Boolean,
     onEnableBluetooth: () -> Unit,
     onScan: () -> Unit,
     onConnect: (String) -> Unit,
     onForget: () -> Unit,
 ) {
+    var connectResult by remember { mutableStateOf("") }
+    val driving by ClusterRepository.drivingMode.collectAsState()
+    val link by ClusterRepository.telemetry.collectAsState()
+    fun connect(address: String?, name: String = "the bike") {
+        connectResult = when {
+            !bleReady -> "Grant Bluetooth permissions first (More → Settings)"
+            !bluetoothOn -> "Turn on Bluetooth first"
+            !driving -> "Turn on Driving mode (bike icon on Home) first"
+            address == null -> "No device remembered"
+            else -> {
+                onConnect(address)
+                "Connecting to $name..."
+            }
+        }
+    }
     RedCard(bar = true) {
         Label("LAST CONNECTED")
         Spacer(Modifier.height(8.dp))
@@ -1346,7 +1369,7 @@ private fun DevicesContent(
         Spacer(Modifier.height(14.dp))
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             PrimaryButton("Reconnect", {
-                if (rememberedAddress != null) onConnect(rememberedAddress)
+                connect(rememberedAddress)
             }, Modifier.weight(1f))
             SecondaryButton("Forget", onForget, Modifier.weight(1f))
         }
@@ -1358,8 +1381,6 @@ private fun DevicesContent(
             letterSpacing = 2.sp)
     }
     Spacer(Modifier.height(10.dp))
-    var connectResult by remember { mutableStateOf("") }
-    val driving by ClusterRepository.drivingMode.collectAsState()
     RedCard {
         if (devices.isEmpty()) {
             Text("No devices found. Tap Scan.", fontSize = 13.sp,
@@ -1373,14 +1394,7 @@ private fun DevicesContent(
                     .fillMaxWidth()
                     .clip(RoundedCornerShape(12.dp))
                     .background(JupiterColors.High)
-                    .clickable {
-                        if (!driving) {
-                            connectResult = "Turn on Driving mode (bike icon on Home) first"
-                        } else {
-                            connectResult = "Connecting to ${d.name}..."
-                            onConnect(d.address)
-                        }
-                    }
+                    .clickable { connect(d.address, d.name) }
                     .padding(10.dp),
             ) {
                 IconCircle(
@@ -1400,6 +1414,11 @@ private fun DevicesContent(
         if (connectResult.isNotBlank()) {
             Spacer(Modifier.height(10.dp))
             Text(connectResult, fontSize = 11.sp, color = JupiterColors.Accent)
+        }
+        val err = link.error
+        if (!err.isNullOrBlank()) {
+            Spacer(Modifier.height(6.dp))
+            Text("Link: $err", fontSize = 11.sp, color = JupiterColors.Error)
         }
     }
     Spacer(Modifier.height(10.dp))
@@ -1507,26 +1526,6 @@ private fun SettingsContent(
         Text("Text hidden by Android? OnePlus: Settings > Notifications & Quick " +
             "Settings > More settings > Enhanced notifications OFF, then restart.",
             fontSize = 10.sp, color = JupiterColors.OnSurfaceVariant)
-    }
-
-    RedCard {
-        Label("WARMUP NOTICE")
-        Spacer(Modifier.height(8.dp))
-        var noticeResult by remember { mutableStateOf("") }
-        val ctx = LocalContext.current
-        Text("Sends READY TO GO to the cluster for 10 seconds. Test only.",
-            fontSize = 11.sp, color = JupiterColors.OnSurfaceVariant)
-        Spacer(Modifier.height(8.dp))
-        SecondaryButton("Test READY TO GO", {
-            if (ClusterRepository.service == null) ClusterRepository.startService(ctx)
-            ClusterRepository.testWarmupNotice()
-            noticeResult = if (ClusterRepository.telemetry.value.connected)
-                "Sent - watch the cluster" else "Not linked - connect the bike first"
-        }, Modifier.fillMaxWidth())
-        if (noticeResult.isNotBlank()) {
-            Spacer(Modifier.height(8.dp))
-            Text(noticeResult, fontSize = 11.sp, color = JupiterColors.Accent)
-        }
     }
 
     RedCard(bar = true) {
@@ -1638,7 +1637,7 @@ private fun SettingsContent(
             }
             Switch(
                 checked = enabled,
-                onCheckedChange = { ClusterRepository.trafficEnabled.value = it },
+                onCheckedChange = { ClusterRepository.setTrafficEnabled(it) },
                 colors = SwitchDefaults.colors(
                     checkedThumbColor = Color.White,
                     checkedTrackColor = JupiterColors.Red,
@@ -1647,7 +1646,8 @@ private fun SettingsContent(
             )
         }
         Spacer(Modifier.height(12.dp))
-        Text("WEATHER LOCATION: $city", fontSize = 12.sp, color = JupiterColors.Accent)
+        Text("WEATHER LOCATION: live GPS while riding, else $city",
+            fontSize = 12.sp, color = JupiterColors.Accent)
         Spacer(Modifier.height(6.dp))
         Row(Modifier.horizontalScroll(rememberScrollState())) {
             Cities.list.forEach { c ->
@@ -1930,7 +1930,7 @@ fun MoreScreenV2(
 ) {
     JupiterShell("More", "DEVICES & SETTINGS", 4, onTab, {}) {
         Spacer(Modifier.height(4.dp))
-        DevicesContent(devices, rememberedAddress, bluetoothOn, onEnableBluetooth,
+        DevicesContent(devices, rememberedAddress, bluetoothOn, bleReady, onEnableBluetooth,
             onScan, onConnect, onForget)
         Spacer(Modifier.height(22.dp))
         Label("SETTINGS")
