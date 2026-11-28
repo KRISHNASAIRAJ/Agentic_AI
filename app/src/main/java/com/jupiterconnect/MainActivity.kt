@@ -12,6 +12,7 @@ import android.os.Bundle
 import android.provider.Settings
 import android.widget.Toast
 import androidx.activity.ComponentActivity
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
@@ -306,7 +307,7 @@ fun JupiterApp() {
     // expanding inside the card.
     var showLiveGraph by remember { mutableStateOf(false) }
     var showAllRides by remember { mutableStateOf(false) }
-    var showCloudLogin by remember { mutableStateOf(false) }
+    var showLoginDialog by remember { mutableStateOf(false) }
     var cloudEmail by remember {
         mutableStateOf(com.jupiterconnect.sync.SupabaseClient.currentEmail())
     }
@@ -319,6 +320,18 @@ fun JupiterApp() {
         selected = tab
     }
 
+    // The system back button used to fall straight through to finishing the
+    // activity, so the app closed from anywhere. Walk back through the full-
+    // screen overlays first, then return to Home from any other tab. From Home
+    // itself leave the default behaviour intact so Back still exits the app.
+    BackHandler(enabled = showLiveGraph || showAllRides || selected != 0) {
+        when {
+            showLiveGraph -> showLiveGraph = false
+            showAllRides -> showAllRides = false
+            selected != 0 -> selected = 0
+        }
+    }
+
     Box(Modifier.fillMaxSize()) {
         if (showLiveGraph) {
             LiveGraphScreen(
@@ -327,15 +340,6 @@ fun JupiterApp() {
             )
         } else if (showAllRides) {
             AllRidesScreen(rides = rides, onBack = { showAllRides = false })
-        } else if (showCloudLogin) {
-            com.jupiterconnect.ui.CloudLoginScreen(
-                currentEmail = cloudEmail,
-                onBack = { showCloudLogin = false },
-                onSuccess = {
-                    cloudEmail = com.jupiterconnect.sync.SupabaseClient.currentEmail()
-                    showCloudLogin = false
-                },
-            )
         } else {
         when (selected) {
             0 -> HomeScreenV2(
@@ -394,19 +398,30 @@ fun JupiterApp() {
                     if (enabled) launcher.launch(permissions)
                 },
                 email = cloudEmail,
-                onCloudLogin = { showCloudLogin = true },
                 onNotificationAccess = {
                     context.startActivity(Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS))
                 },
                 onSignOut = {
                     com.jupiterconnect.sync.SupabaseClient.signOut()
                     cloudEmail = null
+                    showLoginDialog = true
                 },
                 onPickPhoto = { pickPhoto.launch("image/*") },
                 onTab = selectTab,
             )
         }
         }
+    }
+    // Sign-out brings back the same sign-in popup used at startup, so no
+    // credentials screen is ever buried inside Settings.
+    if (showLoginDialog) {
+        com.jupiterconnect.ui.CloudLoginDialog(
+            onDismiss = { showLoginDialog = false },
+            onSuccess = {
+                cloudEmail = com.jupiterconnect.sync.SupabaseClient.currentEmail()
+                showLoginDialog = false
+            },
+        )
     }
 }
 

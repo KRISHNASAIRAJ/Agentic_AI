@@ -284,6 +284,12 @@ object SupabaseClient {
             } else null
         }
 
+    /** Read this user's single app-state document (settings + counters). */
+    suspend fun downloadAppState(token: String): JSONObject? = withContext(Dispatchers.IO) {
+        val rows = getTable("jc_app_state", "select=*&limit=1", token) ?: return@withContext null
+        rows.optJSONObject(0)
+    }
+
     /** PostgREST accepts a JSON array for a batched upsert. */
     private fun requestArray(urlString: String, array: JSONArray, token: String): JSONObject? {
         var conn: HttpURLConnection? = null

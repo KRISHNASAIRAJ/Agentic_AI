@@ -261,6 +261,19 @@ class ProtocolTest {
     }
 
     @Test
+    fun ride_distance_falls_back_to_speed_integral_when_odometer_is_stuck() {
+        // Real bug: a 12 km journey was saved as 0.1 km because the cluster's
+        // odometer frame barely advanced during the ride.
+        assertEquals(12.0, com.jupiterconnect.session.chooseRideDistance(0.1, 12.0), 0.01)
+        assertEquals(8.0, com.jupiterconnect.session.chooseRideDistance(0.0, 8.0), 0.01)
+        // When the odometer agrees, keep its more precise value.
+        assertEquals(12.1, com.jupiterconnect.session.chooseRideDistance(12.1, 12.0), 0.01)
+        assertEquals(12.0, com.jupiterconnect.session.chooseRideDistance(12.0, 11.0), 0.01)
+        // No speed data at all: keep the odometer reading.
+        assertEquals(5.0, com.jupiterconnect.session.chooseRideDistance(5.0, 0.0), 0.01)
+    }
+
+    @Test
     fun ride_report_band_math() {
         val ride = Ride(
             startedAt = 0L, endedAt = 600_000L, distanceKm = 5.1,

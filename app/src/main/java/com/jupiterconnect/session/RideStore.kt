@@ -121,6 +121,22 @@ internal fun foldIssDuration(
 }
 
 /**
+ * Choose the distance saved for a ride. The cluster's odometer is authoritative
+ * when it agrees with the speed trace; a stale/coarse odometer that reports far
+ * less distance than the speeds imply must not erase the journey. Kept pure so
+ * the decision can be unit tested without BLE or SharedPreferences.
+ */
+internal fun chooseRideDistance(odoDeltaKm: Double, integratedKm: Double): Double {
+    if (odoDeltaKm <= 0.0) return integratedKm.coerceAtLeast(0.0)
+    if (integratedKm <= 0.05) return odoDeltaKm
+    // Odometer within 40% either way of the speed integral is trustworthy.
+    return if (odoDeltaKm >= integratedKm * 0.6 && odoDeltaKm <= integratedKm * 1.4)
+        odoDeltaKm
+    else
+        integratedKm
+}
+
+/**
  * Persists the last cluster reading and records one ride per connect/disconnect
  * cycle. Plain SharedPreferences (no JSON library): a compact delimited format
  * keeps this dependency-free and readable.
@@ -303,6 +319,14 @@ object RideStore {
     private val rideThrottles = mutableListOf<Int>()
     private var lastSampleAtMs = 0L
     private var lastRidePersistMs = 0L
+    /**
+     * Distance integrated from instantaneous speed. The cluster's odometer
+     * frame updates too coarsely to measure a single ride reliably (a 12 km
+     * journey was recorded as 0.1 km), so this is the fallback whenever the
+     * odometer delta disagrees with what the speed trace implies.
+     */
+    private var integratedKm = 0.0
+    private var lastSpeedAtMs = 0L
     private var lowFuelStartOdo: Double? = null
     private var lastIssDuration = -1L
 
@@ -380,6 +404,7 @@ object RideStore {
             // on the first frame after reconnect.
             lastPrimaryAtMs = 0L
             lastSampleAtMs = 0L
+            lastSpeedAtMs = 0L // do not charge the BLE outage as distance
             return
         }
         // Genuine new ride: full reset.
@@ -394,6 +419,10 @@ object RideStore {
         rideThrottles.clear()
         lastSampleAtMs = 0L
         lastRidePersistMs = 0L
+        // Never reset on a resumed ride: only a genuine new journey reaches
+        // this branch (the resume path returns above).
+        integratedKm = 0.0
+        lastSpeedAtMs = 0L
         _liveSpeeds.value = emptyList()
         _liveThrottles.value = emptyList()
         lowFuelStartOdo = null
@@ -483,14 +512,24 @@ object RideStore {
             // Checkpoint the ride every 15 s so a link drop or process kill
             // cannot lose it before the disconnect callback finalises it.
             val nowCheckpoint = System.currentTimeMillis()
-            if (nowCheckpoint - lastRidePersistMs >= 15_000L && rideStartOdo != null &&
-                (rideLastOdo ?: 0.0) > rideStartOdo!!
-            ) {
+            val odoMoved = rideStartOdo != null && (rideLastOdo ?: 0.0) > rideStartOdo!!
+            if (nowCheckpoint - lastRidePersistMs >= 15_000L && (odoMoved || integratedKm > 0.05)) {
                 lastRidePersistMs = nowCheckpoint
                 persistRideSnapshot()
             }
             if (primary) {
                 val now = System.currentTimeMillis()
+                // Integrate speed x elapsed time. Cap a single gap so a BLE
+                // stall cannot invent distance, and read speed from the frame
+                // (not a stale GPS fix). This is what rescues rides when the
+                // cluster's odometer barely moves during a journey.
+                if (lastSpeedAtMs > 0L) {
+                    val dtMs = (now - lastSpeedAtMs).coerceIn(0L, 5_000L)
+                    if (t.speedKmh > 0) {
+                        integratedKm += t.speedKmh * (dtMs / 3_600_000.0)
+                    }
+                }
+                lastSpeedAtMs = now
                 // Adaptive sampling: 2 s while cruising, but 0.5 s while the
                 // speed is changing quickly so launches and braking show up
                 // in the eco score and the Speed/Throttle graphs.
@@ -532,6 +571,7 @@ object RideStore {
         // resumes this ride. We deliberately keep the ride counters and samples
         // in memory instead of throwing them away here.
         lastDisconnectedMs = System.currentTimeMillis()
+        lastSpeedAtMs = 0L
         // Freeze the graph on screen after the link drops. Only the next
         // connect/ride start clears it. Persist the last samples as well so a
         // process restart still shows the most recent ride.
@@ -566,8 +606,12 @@ object RideStore {
     private fun persistRideSnapshot() {
         val start = rideStartOdo
         val end = rideLastOdo
-        if (start == null || end == null || end <= start) return
-        val distance = end - start
+        val odoDelta = if (start != null && end != null && end > start) end - start else 0.0
+        // Prefer the odometer when it agrees with the speed trace; fall back to
+        // integrated speed when the odometer is stuck or far too coarse. This
+        // is the fix for rides being saved as 0.1 km instead of 12 km.
+        val distance = chooseRideDistance(odoDelta, integratedKm)
+        if (distance <= 0.0) return
         val durationMs = (System.currentTimeMillis() - rideStartMs).coerceAtLeast(1000)
         val durationMin = durationMs / 60_000L
         val avg = distance / (durationMs / 3_600_000.0)

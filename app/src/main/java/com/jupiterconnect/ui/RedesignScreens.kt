@@ -94,6 +94,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
+import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.jupiterconnect.R
@@ -569,18 +570,6 @@ fun HomeScreenV2(
                             fontWeight = FontWeight.Medium, color = JupiterColors.Accent)
                         Text("This ride $rideTop km/h", fontSize = 11.sp,
                             color = JupiterColors.OnSurfaceVariant)
-                        Spacer(Modifier.weight(1f))
-                        // The bar is a speed gauge, not an odometer gauge: label
-                        // it so it no longer looks like unexplained progress.
-                        Text("BEST / 95 KM/H", fontSize = 9.sp,
-                            color = JupiterColors.OnSurfaceVariant,
-                            maxLines = 1, softWrap = false)
-                        Spacer(Modifier.height(4.dp))
-                        Box(Modifier.fillMaxWidth().height(5.dp).clip(RoundedCornerShape(3.dp))
-                            .background(JupiterColors.High)) {
-                            Box(Modifier.fillMaxWidth((bestTop / 95f).coerceIn(0f, 1f)).height(5.dp)
-                                .clip(RoundedCornerShape(3.dp)).background(JupiterColors.Red))
-                        }
                     }
                 }
             }
@@ -1460,17 +1449,18 @@ private fun DevicesContent(
     PrimaryButton("Scan for devices", onScan, Modifier.fillMaxWidth())
 }
 
-/** Dedicated cloud sign-in screen. The password is always masked on screen. */
+/**
+ * Cloud sign-in popup shown right after the splash, never as a screen buried
+ * in Settings. The password is always masked on screen.
+ */
 @Composable
-fun CloudLoginScreen(
-    currentEmail: String?,
-    onBack: () -> Unit,
+fun CloudLoginDialog(
+    onDismiss: () -> Unit,
     onSuccess: () -> Unit,
 ) {
-    JupiterShell("Cloud sync", "MERIDIAN SIGN IN", null, { onBack() }, {}) {
-        Spacer(Modifier.height(8.dp))
+    Dialog(onDismissRequest = { /* sign-in is required while signed out */ }) {
         RedCard(bar = true) {
-            Label("SIGN IN")
+            Label("MERIDIAN SIGN IN")
             Spacer(Modifier.height(14.dp))
             var user by remember { mutableStateOf("") }
             var password by remember { mutableStateOf("") }
@@ -1497,31 +1487,22 @@ fun CloudLoginScreen(
             )
             Spacer(Modifier.height(14.dp))
             PrimaryButton("Sign in", {
-                if (busy) return@PrimaryButton
-                busy = true
-                scope.launch {
-                    result = com.jupiterconnect.sync.SupabaseClient.signIn(
-                        user.trim(), password) ?: run {
-                        ClusterRepository.requestGarageSync()
-                        onSuccess()
-                        "Signed in - syncing now"
+                if (!busy) {
+                    busy = true
+                    scope.launch {
+                        result = com.jupiterconnect.sync.SupabaseClient.signIn(
+                            user.trim(), password) ?: run {
+                            ClusterRepository.requestGarageSync()
+                            onSuccess()
+                            "Signed in - syncing now"
+                        }
+                        busy = false
                     }
-                    busy = false
                 }
             }, Modifier.fillMaxWidth())
             if (result.isNotBlank()) {
                 Spacer(Modifier.height(10.dp))
                 Text(result, fontSize = 12.sp, color = JupiterColors.Accent)
-            }
-            if (currentEmail != null) {
-                Spacer(Modifier.height(16.dp))
-                Text("Signed in as $currentEmail", fontSize = 12.sp,
-                    color = JupiterColors.OnSurfaceVariant)
-                Spacer(Modifier.height(8.dp))
-                SecondaryButton("Sign out", {
-                    com.jupiterconnect.sync.SupabaseClient.signOut()
-                    onBack()
-                }, Modifier.fillMaxWidth())
             }
         }
     }
@@ -1539,33 +1520,7 @@ private fun SettingsContent(
     onNotificationAccess: () -> Unit,
     onSignOut: () -> Unit,
     onPickPhoto: () -> Unit,
-    onCloudLogin: () -> Unit,
 ) {
-    RedCard {
-        Label("PERMISSIONS")
-        Spacer(Modifier.height(12.dp))
-        listOf(
-            Triple(Icons.Rounded.Bluetooth, "Bluetooth connect and scan", bleReady),
-            Triple(Icons.Rounded.LocationOn, "Location", true),
-            Triple(Icons.Rounded.Notifications, "Notifications", true),
-            Triple(Icons.Rounded.NotificationsActive, "Notification access", notificationAccess),
-            Triple(Icons.Rounded.Person, "Contacts (caller names)", contactsGranted),
-            Triple(Icons.Rounded.Call, "Call log (missed calls)", callLogGranted),
-        ).forEach { (icon, name, ok) ->
-            Row(Modifier.padding(vertical = 6.dp), verticalAlignment = Alignment.CenterVertically) {
-                IconCircle(icon, name)
-                Spacer(Modifier.width(12.dp))
-                Text(name, Modifier.weight(1f), fontSize = 14.sp,
-                    color = JupiterColors.OnSurface)
-                if (ok) Icon(Icons.Rounded.Check, "Granted",
-                    modifier = Modifier.size(20.dp), tint = JupiterColors.Accent)
-            }
-        }
-        Spacer(Modifier.height(8.dp))
-        Text("Notification access", fontSize = 12.sp, color = JupiterColors.Accent,
-            modifier = Modifier.clickable { onNotificationAccess() })
-    }
-    Spacer(Modifier.height(10.dp))
     RedCard {
         Label("CLUSTER")
         Spacer(Modifier.height(10.dp))
@@ -1580,13 +1535,12 @@ private fun SettingsContent(
     }
     Spacer(Modifier.height(10.dp))
     RedCard(bar = true) {
-        Label("CALL & MESSAGE ON CLUSTER")
-        Spacer(Modifier.height(8.dp))
         Row(
             Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.End,
+            horizontalArrangement = Arrangement.SpaceBetween,
             verticalAlignment = Alignment.CenterVertically,
         ) {
+            Label("CALL & MESSAGE ON CLUSTER")
             Switch(
                 checked = phoneMirroring, onCheckedChange = onPhoneMirroring,
                 colors = SwitchDefaults.colors(
@@ -1596,28 +1550,13 @@ private fun SettingsContent(
                 ),
             )
         }
-        Spacer(Modifier.height(10.dp))
-        SecondaryButton("Clear social counters",
-            { ClusterRepository.clearSocialCounts() }, Modifier.fillMaxWidth())
     }
     Spacer(Modifier.height(10.dp))
 
     RedCard(bar = true) {
         Label("CLOUD SYNC")
         Spacer(Modifier.height(8.dp))
-        var signedInEmail by remember { mutableStateOf(email) }
-        if (signedInEmail != null) {
-            Text(signedInEmail!!, fontSize = 15.sp, color = JupiterColors.OnSurface)
-            Spacer(Modifier.height(12.dp))
-            SecondaryButton("Sign out", {
-                onSignOut()
-                signedInEmail = null
-            }, Modifier.fillMaxWidth())
-        } else {
-            // Sign-in lives on its own screen so credentials are never shown
-            // inline in Settings and the password field stays masked there.
-            PrimaryButton("Sign in to Meridian", onCloudLogin, Modifier.fillMaxWidth())
-        }
+        Text(email ?: "Not signed in", fontSize = 15.sp, color = JupiterColors.OnSurface)
     }
     Spacer(Modifier.height(10.dp))
     RedCard {
@@ -1657,14 +1596,13 @@ private fun SettingsContent(
     }
     Spacer(Modifier.height(10.dp))
     RedCard(bar = true) {
-        Label("TRAFFIC SCREENS")
-        Spacer(Modifier.height(8.dp))
         val enabled by ClusterRepository.trafficEnabled.collectAsState()
         Row(
             Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.End,
+            horizontalArrangement = Arrangement.SpaceBetween,
             verticalAlignment = Alignment.CenterVertically,
         ) {
+            Label("TRAFFIC SCREENS")
             Switch(
                 checked = enabled,
                 onCheckedChange = { ClusterRepository.setTrafficEnabled(it) },
@@ -1721,6 +1659,36 @@ private fun SettingsContent(
             "own figure with a x0.8 factor), shown in the app only.",
             fontSize = 10.sp, color = JupiterColors.OnSurfaceVariant)
     }
+    Spacer(Modifier.height(10.dp))
+    // Permissions live at the very bottom, away from the daily-use controls.
+    RedCard {
+        Label("PERMISSIONS")
+        Spacer(Modifier.height(12.dp))
+        listOf(
+            Triple(Icons.Rounded.Bluetooth, "Bluetooth connect and scan", bleReady),
+            Triple(Icons.Rounded.LocationOn, "Location", true),
+            Triple(Icons.Rounded.Notifications, "Notifications", true),
+            Triple(Icons.Rounded.NotificationsActive, "Notification access", notificationAccess),
+            Triple(Icons.Rounded.Person, "Contacts (caller names)", contactsGranted),
+            Triple(Icons.Rounded.Call, "Call log (missed calls)", callLogGranted),
+        ).forEach { (icon, name, ok) ->
+            Row(Modifier.padding(vertical = 6.dp), verticalAlignment = Alignment.CenterVertically) {
+                IconCircle(icon, name)
+                Spacer(Modifier.width(12.dp))
+                Text(name, Modifier.weight(1f), fontSize = 14.sp,
+                    color = JupiterColors.OnSurface)
+                if (ok) Icon(Icons.Rounded.Check, "Granted",
+                    modifier = Modifier.size(20.dp), tint = JupiterColors.Accent)
+            }
+        }
+        Spacer(Modifier.height(8.dp))
+        Text("Notification access", fontSize = 12.sp, color = JupiterColors.Accent,
+            modifier = Modifier.clickable { onNotificationAccess() })
+    }
+    if (email != null) {
+        Spacer(Modifier.height(10.dp))
+        SecondaryButton("Log out", onSignOut, Modifier.fillMaxWidth())
+    }
 }
 
 /**
@@ -1771,7 +1739,6 @@ private fun ClusterControlsCard() {
     val dirty = illumination != applied.illumination || tsl != applied.tsl ||
         regen != applied.regen || mode != applied.rideMode
     val status by ClusterRepository.settingsStatus.collectAsState()
-    val handshake by ClusterRepository.handshakeStatus.collectAsState()
     val reminder by ClusterRepository.serviceReminderCode.collectAsState()
     var roadName by remember { mutableStateOf("") }
 
@@ -1829,21 +1796,7 @@ private fun ClusterControlsCard() {
             SecondaryButton("Reset A", { ClusterRepository.sendTrip(0, true) }, Modifier.weight(1f))
             SecondaryButton("Reset B", { ClusterRepository.sendTrip(1, true) }, Modifier.weight(1f))
         }
-        Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-            SecondaryButton("Calibrate", { ClusterRepository.sendCalibrationRequest() }, Modifier.weight(1f))
-            SecondaryButton("Follow-me", { ClusterRepository.sendFollowMeTimer(5) }, Modifier.weight(1f))
-        }
         InfoRow("Service reminder", if (reminder == 0) "none" else "code $reminder")
-    }
-
-    Spacer(Modifier.height(10.dp))
-    RedCard {
-        Label("SETUP DATA")
-        Spacer(Modifier.height(8.dp))
-
-        SecondaryButton("Send setup data", { ClusterRepository.sendSetupData() },
-            Modifier.fillMaxWidth())
-        Text(handshake, fontSize = 10.sp, color = JupiterColors.OnSurfaceVariant)
     }
 
 }
@@ -1868,7 +1821,6 @@ fun MoreScreenV2(
     onNotificationAccess: () -> Unit,
     onSignOut: () -> Unit,
     onPickPhoto: () -> Unit,
-    onCloudLogin: () -> Unit,
     onTab: (Int) -> Unit,
 ) {
     JupiterShell("More", "DEVICES & SETTINGS", 4, onTab, {}) {
@@ -1880,7 +1832,7 @@ fun MoreScreenV2(
         Spacer(Modifier.height(10.dp))
         SettingsContent(notificationAccess, bleReady, contactsGranted, callLogGranted,
             phoneMirroring, onPhoneMirroring, email, onNotificationAccess, onSignOut,
-            onPickPhoto, onCloudLogin)
+            onPickPhoto)
         Spacer(Modifier.height(18.dp))
         ClusterControlsCard()
     }

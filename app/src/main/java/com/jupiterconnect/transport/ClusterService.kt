@@ -167,16 +167,23 @@ object ClusterRepository {
     val weatherCity = MutableStateFlow(Cities.HYDERABAD.name)
     val riderPhotoReady = MutableStateFlow(false)
 
-    fun setRiderPhotoReady(ready: Boolean) { riderPhotoReady.value = ready }
+    fun setRiderPhotoReady(ready: Boolean) {
+        riderPhotoReady.value = ready
+        // A newly prepared photo is announced immediately; no manual button.
+        sendRiderGreeting()
+    }
 
     fun setRiderName(value: String) {
         riderName.value = value.take(17)
         prefs?.edit()?.putString(KEY_RIDER_NAME, riderName.value)?.apply()
+        // Greeting edits go to the dash as they are typed - no manual send.
+        sendRiderGreeting()
     }
 
     fun setRiderNameEnabled(value: Boolean) {
         riderNameEnabled.value = value
         prefs?.edit()?.putBoolean(KEY_RIDER_NAME_ON, value)?.apply()
+        sendRiderGreeting()
     }
 
     fun setWeatherCity(name: String) {
@@ -465,7 +472,7 @@ object ClusterRepository {
     fun sendTrip(trip: Int, reset: Boolean) = service?.sendTrip(trip, reset)
     fun sendCalibrationRequest() = service?.sendCalibrationRequest()
     fun sendFollowMeTimer(minutes: Int) = service?.sendFollowMeTimer(minutes)
-    fun sendSetupData() = service?.sendSetupData()
+    fun sendRiderGreeting() = service?.sendRiderGreeting()
     fun sendRoadName(name: String) = service?.sendRoadName(name)
 }
 
@@ -1654,6 +1661,19 @@ class ClusterService : Service() {
         scope.launch {
             val token = SupabaseClient.currentToken() ?: return@launch
             CloudGarageStore.pull(token)
+            restoreRiderNameFromCloud(token)
+        }
+    }
+
+    /** Adopt the cloud greeting when the local copy is still the default. */
+    private suspend fun restoreRiderNameFromCloud(token: String) {
+        val state = SupabaseClient.downloadAppState(token) ?: return
+        val cloudName = state.optString("rider_name", "").trim()
+        if (cloudName.isNotEmpty() && ClusterRepository.riderName.value.trim() == "Rider") {
+            ClusterRepository.setRiderName(cloudName)
+        }
+        if (state.has("rider_name_on")) {
+            ClusterRepository.setRiderNameEnabled(state.optBoolean("rider_name_on", true))
         }
     }
 
@@ -1807,19 +1827,21 @@ class ClusterService : Service() {
         }
     }
 
-    /** 5B 22 / 5A 7D / 5B 80 setup frames - manual, never sent automatically. */
-    fun sendSetupData() {
-        scope.launch {
-            val frames = listOf(
-                ClusterControlFrames.buildUserIdFrame(1),
-                ClusterControlFrames.buildVinFrame(),
-                ClusterControlFrames.buildDobFrame(1, 1, 1900),
-            )
-            frames.forEach { write(it) }
-            FeatureVerification.unverifiable(
-                "Setup data", "user ID / VIN / DOB are write-only", frames.joinToString(" | ", transform = ::hex))
-            ClusterRepository.handshakeStatus.value = "Setup data sent at ${nowLabel()}"
-        }
+    /**
+     * Push the current rider greeting to the dash immediately. Called on every
+     * name/toggle/photo change, so no manual "send setup data" step is needed.
+     */
+    fun sendRiderGreeting() {
+        scope.launch { writeRiderGreeting() }
+    }
+
+    private suspend fun writeRiderGreeting() {
+        // A disabled or empty greeting clears the dash row instead of leaving
+        // a stale name on the cluster.
+        val name = if (ClusterRepository.riderNameEnabled.value)
+            ClusterRepository.riderName.value.trim() else ""
+        write(buildNavText(name, 0x52))
+        if (ClusterImageTransfer.hasImage) write(ClusterImageTransfer.initFrame())
     }
 
     /** Manual trigger so the voice flow can be tested without the bike. */
@@ -2180,6 +2202,7 @@ class ClusterService : Service() {
         if (syncJob?.isActive == true) return
         syncJob = scope.launch {
             var ridesRestored = false
+            var riderNameRestored = false
             while (isActive) {
                 // Offline-first: skip every network call while there is no link,
                 // keeping local ride/fuel data and the last good cache on screen.
@@ -2219,6 +2242,10 @@ class ClusterService : Service() {
                         }
                         // Fuel, service records and odometer are read-only here.
                         CloudGarageStore.pull(token)
+                        if (!riderNameRestored) {
+                            restoreRiderNameFromCloud(token)
+                            riderNameRestored = true
+                        }
                         checkServiceReminder()
                         val liveKm = ClusterRepository.telemetry.value.odometerKm
                             .takeIf { it > 0 } ?: RideStore.lastReading.value.odometerKm
@@ -2260,6 +2287,9 @@ class ClusterService : Service() {
         }
         o.put("navigation_mirroring", ClusterRepository.mirroring.value)
         o.put("phone_mirroring", ClusterRepository.phoneMirroring.value)
+        // Greeting travels with the account so an app update never loses it.
+        o.put("rider_name", ClusterRepository.riderName.value.trim())
+        o.put("rider_name_on", ClusterRepository.riderNameEnabled.value)
         o.put("high_speed_alert", ClusterRepository.highSpeedAlert.value)
         o.put("high_speed_limit", ClusterRepository.highSpeedAlertSpeed.value)
         // Personal analytics travel with the account so a reinstall keeps the
@@ -2403,16 +2433,10 @@ class ClusterService : Service() {
     /** Rider greeting and last-known place, sent once when the link comes up. */
     private fun sendInitialClusterData() {
         scope.launch {
-            val name = ClusterRepository.riderName.value.trim()
-            if (ClusterRepository.riderNameEnabled.value && name.isNotEmpty()) {
-                write(buildNavText(name, 0x52))
-            }
+            // Greeting + photo announcement, kept identical to live edits.
+            writeRiderGreeting()
             RideStore.parkedLocation.value?.let { p ->
                 write(buildLocationFrame("Near ${p.coordinates}"))
-            }
-            // Announce the rider photo; chunks are sent when the cluster asks (0x54).
-            if (ClusterImageTransfer.hasImage) {
-                write(ClusterImageTransfer.initFrame())
             }
         }
     }
