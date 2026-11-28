@@ -1615,12 +1615,12 @@ class ClusterService : Service() {
         }
     }
 
-    private fun isOnlineNow(): Boolean {
-        val cm = getSystemService(ConnectivityManager::class.java) ?: return true
-        val network = cm.activeNetwork ?: return false
-        val caps = cm.getNetworkCapabilities(network) ?: return false
-        return caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
-    }
+    private fun isOnlineNow(): Boolean = runCatching {
+        val cm = getSystemService(ConnectivityManager::class.java) ?: return@runCatching true
+        val network = cm.activeNetwork ?: return@runCatching false
+        val caps = cm.getNetworkCapabilities(network) ?: return@runCatching false
+        caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
+    }.getOrDefault(true)
 
     /**
      * The app is offline-first: BLE, rides and cached garage data keep working
@@ -1628,7 +1628,8 @@ class ClusterService : Service() {
      */
     private fun registerNetworkCallback() {
         online = isOnlineNow()
-        val cm = getSystemService(ConnectivityManager::class.java) ?: return
+        val cm = runCatching { getSystemService(ConnectivityManager::class.java) }
+            .getOrNull() ?: return
         val cb = object : ConnectivityManager.NetworkCallback() {
             override fun onAvailable(network: Network) {
                 if (online) return
