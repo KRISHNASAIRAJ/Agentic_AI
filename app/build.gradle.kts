@@ -11,11 +11,14 @@ android {
     compileSdk = 35
 
     defaultConfig {
+        // Keep the original package identity: Play Protect trusts this package
+        // from earlier installs, while a brand-new package is flagged as an
+        // unknown sideload even though the signing key is identical.
         applicationId = "com.jupiterconnect"
         minSdk = 26
         targetSdk = 35
-        versionCode = 3
-        versionName = "0.1.1"
+        versionCode = 4
+        versionName = "0.1.2"
     }
 
     signingConfigs {

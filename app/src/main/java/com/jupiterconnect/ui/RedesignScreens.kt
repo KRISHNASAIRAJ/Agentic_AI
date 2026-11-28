@@ -864,13 +864,13 @@ fun RidesScreenV2(
         if (rides.isEmpty()) {
             RedCard { Text("No rides saved yet.", color = JupiterColors.OnSurfaceVariant, fontSize = 13.sp) }
         }
-        Spacer(Modifier.height(10.dp))
+        // Cloud restore is automatic in the sync loop; no manual button. The
+        // status line stays so a failed/empty pull is still diagnosable.
         val restoreStatus by RideStore.restoreStatus.collectAsState()
         if (restoreStatus.isNotBlank()) {
             Text(restoreStatus, fontSize = 12.sp, color = JupiterColors.Accent)
             Spacer(Modifier.height(8.dp))
         }
-        SecondaryButton("RESTORE RIDES FROM CLOUD", { ClusterRepository.requestRideRestore() })
         Spacer(Modifier.height(18.dp))
         Label("HISTORY · LAST 6 MONTHS")
         Spacer(Modifier.height(10.dp))

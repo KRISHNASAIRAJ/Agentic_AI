@@ -423,7 +423,6 @@ object ClusterRepository {
 
     /** Pull garage data immediately after sign-in instead of waiting for the loop. */
     fun requestGarageSync() = service?.requestGarageSync()
-    fun requestRideRestore() = service?.requestRideRestore()
 
     /**
      * TVS Connect increments a per-app unread counter for each notification.
@@ -1673,24 +1672,6 @@ class ClusterService : Service() {
         return cloud.size
     }
 
-    /** Manual "Restore from cloud" action in the Rides tab. */
-    fun requestRideRestore() {
-        scope.launch {
-            val token = SupabaseClient.currentToken()
-            if (token.isNullOrBlank()) {
-                RideStore.setRestoreStatus("Sign in to restore rides")
-                return@launch
-            }
-            RideStore.setRestoreStatus("Restoring rides from cloud...")
-            val count = restoreRidesFromCloud(token)
-            RideStore.setRestoreStatus(when {
-                count == null -> "Restore failed: ${SupabaseClient.lastError ?: "unknown error"}"
-                count == 0 -> "No cloud rides yet - new rides will upload"
-                else -> "Restored $count cloud ride${if (count == 1) "" else "s"}"
-            })
-        }
-    }
-
     /** The call notification disappeared: stop re-sending 0x43 and clear the card. */
     fun clearPhoneEvent() {
         phoneEventJob?.cancel()
@@ -1778,8 +1759,11 @@ class ClusterService : Service() {
         scope.launch {
             val r = ClusterRepository
             val draft = ClusterRepository.AppliedSettings(
-                r.illumination.value, r.tslSetting.value,
-                r.regenSetting.value, r.rideMode.value)
+                illumination = r.illumination.value,
+                tsl = r.tslSetting.value,
+                regen = r.regenSetting.value,
+                rideMode = r.rideMode.value,
+            )
             write(ClusterControlFrames.buildVehicleControlFrame(
                 illumination = draft.illumination, tsl = draft.tsl))
             write(ClusterControlFrames.buildRegenFrame(draft.regen))
