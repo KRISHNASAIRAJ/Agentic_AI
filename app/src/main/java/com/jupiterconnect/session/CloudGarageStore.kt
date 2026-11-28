@@ -36,8 +36,20 @@ data class ServiceIssue(
     val atLabel: String,
 )
 
+/** General service is due 3000 km after the last one; reminders start at 2700. */
+const val SERVICE_INTERVAL_KM = 3000
+const val SERVICE_REMINDER_FROM_KM = 2700
+const val SERVICE_REMINDER_STEP_KM = 50
+
 /** Result of the general-service interval calculation (all values nullable). */
 data class NextService(val lastKm: Int?, val dueKm: Int?, val kmLeft: Int?)
+
+/** Odometer milestones at which a service reminder should fire. */
+fun serviceReminderMilestones(lastKm: Int?): List<Int> {
+    if (lastKm == null) return emptyList()
+    return (SERVICE_REMINDER_FROM_KM..SERVICE_INTERVAL_KM step SERVICE_REMINDER_STEP_KM)
+        .map { lastKm + it }
+}
 
 /** One cloud fuel row, reduced to primitives so mapping is pure and testable. */
 internal data class FillRow(
@@ -94,7 +106,7 @@ internal fun mapFillRows(rows: List<FillRow>): List<FuelFill> {
 internal fun nextServiceFromRecords(
     records: List<ServiceRecord>,
     currentKm: Double,
-    intervalKm: Int = 3000,
+    intervalKm: Int = SERVICE_INTERVAL_KM,
 ): NextService {
     val last = records
         .filter { it.serviceType.trim() in GENERAL_SERVICE_TYPES }

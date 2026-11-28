@@ -56,9 +56,14 @@ import com.jupiterconnect.protocol.Telemetry
 import com.jupiterconnect.session.CloudGarageStore
 import com.jupiterconnect.session.ColdStartTracker
 import com.jupiterconnect.session.DeviceMemory
+import com.jupiterconnect.session.FuelLogStore
 import com.jupiterconnect.session.JUPITER_VEHICLE
 import com.jupiterconnect.session.RideAnalytics
-import com.jupiterconnect.session.SpeedFusion
+import com.jupiterconnect.session.SERVICE_INTERVAL_KM
+import com.jupiterconnect.session.SERVICE_REMINDER_FROM_KM
+import com.jupiterconnect.session.SERVICE_REMINDER_STEP_KM
+import com.jupiterconnect.session.nextServiceFromRecords
+import com.jupiterconnect.session.serviceReminderMilestones
 import com.jupiterconnect.session.WarmupPhase
 import com.jupiterconnect.session.WarmupState
 import com.jupiterconnect.sync.SupabaseClient
@@ -343,10 +348,6 @@ object ClusterRepository {
     }
     // Recent live speeds for the speedometer graph (oldest first).
     val speedHistory = MutableStateFlow<List<Int>>(emptyList())
-    // Cluster + GPS fusion: smoothed speed and learned speedometer error.
-    val fusedSpeed = MutableStateFlow(0)
-    val speedErrorKmh = MutableStateFlow(0.0)
-    val speedFusionSamples = MutableStateFlow(0)
     // Live checks (battery trend, engine temp vs ambient).
     val anomalyNotes = MutableStateFlow("")
     val mirroring = MutableStateFlow(true)
@@ -526,6 +527,10 @@ class ClusterService : Service() {
     // Throttle for live odometer reports: re-send after 1 km or 30 s.
     private var lastReportedOdoKm = 0
     private var lastOdoReportAtMs = 0L
+    // Last 50 km milestone already notified, tied to the last general service
+    // odometer so a new service re-arms the reminders from 2700 km again.
+    private var lastServiceReminderKm = -1
+    private var lastServiceReminderBaseKm = -1
     private var reconnectJob: Job? = null
     private var connectWatchdog: Job? = null
     // A GATT connect attempted while bonding is still in progress fails with
@@ -575,7 +580,6 @@ class ClusterService : Service() {
     private var lastNotificationKey = ""
     /** True only after a successful startForeground(), so we never stop one we never started. */
     @Volatile private var foregroundActive = false
-    private val speedFusion = SpeedFusion()
     @Volatile private var gpsSpeedMps = -1f
     @Volatile private var gpsAccuracyM = -1f
     // Latest fix while the bike is connected. Weather follows the rider rather
@@ -1291,19 +1295,11 @@ class ClusterService : Service() {
             }
         }
         checkSpeedAlert(t)
-        val fused = speedFusion.update(
-            t.speedKmh.toDouble(),
-            if (gpsSpeedMps >= 0) gpsSpeedMps * 3.6 else null,
-            if (gpsAccuracyM >= 0) gpsAccuracyM.toDouble() else null,
-        )
-        ClusterRepository.fusedSpeed.value = fused.kmh
-        ClusterRepository.speedErrorKmh.value = fused.errorKmh
-        ClusterRepository.speedFusionSamples.value = fused.samples
-        // Rides use the fused, cleaner speed; distance still comes from the
-        // odometer, which the cluster broadcasts correctly.
-        RideStore.onFrame(t.copy(speedKmh = fused.kmh), primary)
+        // Speed fusion was removed: the cluster's own speed is authoritative,
+        // and the GPS-derived estimate never updated reliably on the bike.
+        RideStore.onFrame(t, primary)
         voiceBridge.onFrame(t)
-        ClusterRepository.recordSpeed(fused.kmh)
+        ClusterRepository.recordSpeed(t.speedKmh)
         checkAnomalies(t)
         val state = coldStartTracker.update(t)
         ClusterRepository.warmup.value = state
@@ -1927,7 +1923,6 @@ class ClusterService : Service() {
                     voiceBridge.reset()
                     connectionEstablished = true
                     parkingEpoch++
-                    speedFusion.reset()
                     batteryHistory.clear()
                     lastAnomalyKey = ""
                     ClusterRepository.anomalyNotes.value = ""
@@ -2224,6 +2219,7 @@ class ClusterService : Service() {
                         }
                         // Fuel, service records and odometer are read-only here.
                         CloudGarageStore.pull(token)
+                        checkServiceReminder()
                         val liveKm = ClusterRepository.telemetry.value.odometerKm
                             .takeIf { it > 0 } ?: RideStore.lastReading.value.odometerKm
                         val km = kotlin.math.round(liveKm).toInt()
@@ -2266,6 +2262,33 @@ class ClusterService : Service() {
         o.put("phone_mirroring", ClusterRepository.phoneMirroring.value)
         o.put("high_speed_alert", ClusterRepository.highSpeedAlert.value)
         o.put("high_speed_limit", ClusterRepository.highSpeedAlertSpeed.value)
+        // Personal analytics travel with the account so a reinstall keeps the
+        // same numbers. They are recomputed locally too, but the cloud copy
+        // makes the values auditable and available before rides are restored.
+        o.put("personal_eta_factor", RideAnalytics.personalEtaFactor(
+            RideStore.navEtaSamples(), RideStore.rides.value))
+        RideAnalytics.mileageTrend(FuelLogStore.fills.value)?.let { t ->
+            o.put("mileage_ewma", t.ewma)
+            o.put("mileage_mean", t.mean)
+            o.put("mileage_sd", t.sd)
+            o.put("mileage_latest", t.latest)
+            o.put("mileage_low", t.low)
+            o.put("mileage_high", t.high)
+            o.put("mileage_drop", t.drop)
+            o.put("mileage_samples", t.samples)
+        }
+        RideStore.rides.value.firstOrNull()?.let { ride ->
+            val eco = RideAnalytics.ecoScore(ride)
+            o.put("eco_score", eco.score)
+            o.put("eco_hard_launches", eco.hardLaunches)
+            o.put("eco_heavy_throttle", eco.heavyThrottleShare)
+            o.put("eco_idle_share", eco.idleShare)
+            o.put("eco_high_rpm", eco.highRpm)
+            o.put("eco_samples", eco.samples)
+        }
+        o.put("service_interval_km", SERVICE_INTERVAL_KM)
+        o.put("service_reminder_from_km", SERVICE_REMINDER_FROM_KM)
+        o.put("service_reminder_step_km", SERVICE_REMINDER_STEP_KM)
         return o
     }
 
@@ -2567,6 +2590,50 @@ class ClusterService : Service() {
                 enableVibration(true)
             }
             manager.createNotificationChannel(alert)
+            val service = NotificationChannel(
+                CHANNEL_SERVICE_REMINDER, "General service reminder",
+                NotificationManager.IMPORTANCE_DEFAULT)
+            manager.createNotificationChannel(service)
+        }
+    }
+
+    /**
+     * Remind every 50 km from 2700 km since the last general service until the
+     * 3000 km due point. The milestone is tied to the service odometer, so a
+     * new service in the cloud re-arms the whole sequence automatically.
+     */
+    private fun checkServiceReminder() {
+        val next = nextServiceFromRecords(
+            CloudGarageStore.maintenance.value,
+            RideStore.lastReading.value.odometerKm,
+        )
+        val base = next.lastKm ?: return
+        val currentKm = RideStore.lastReading.value.odometerKm
+        if (base != lastServiceReminderBaseKm) {
+            lastServiceReminderBaseKm = base
+            lastServiceReminderKm = -1
+        }
+        val reached = serviceReminderMilestones(base)
+            .filter { currentKm >= it }.maxOrNull() ?: return
+        if (reached <= lastServiceReminderKm) return
+        lastServiceReminderKm = reached
+        val kmLeft = (next.dueKm ?: (base + SERVICE_INTERVAL_KM)) - currentKm.toInt()
+        val title = if (kmLeft <= 0) "General service due now"
+            else "General service in $kmLeft km"
+        val pending = android.app.PendingIntent.getActivity(
+            this, 0, Intent(this, com.jupiterconnect.MainActivity::class.java),
+            android.app.PendingIntent.FLAG_IMMUTABLE or android.app.PendingIntent.FLAG_UPDATE_CURRENT)
+        val notification = NotificationCompat.Builder(this, CHANNEL_SERVICE_REMINDER)
+            .setSmallIcon(R.drawable.ic_stat_link)
+            .setContentTitle(title)
+            .setContentText("${currentKm.toInt()} km since odometer $base · every " +
+                "$SERVICE_REMINDER_STEP_KM km from $SERVICE_REMINDER_FROM_KM km")
+            .setContentIntent(pending)
+            .setAutoCancel(true)
+            .build()
+        runCatching {
+            getSystemService(NotificationManager::class.java)
+                ?.notify(NOTIF_SERVICE_REMINDER, notification)
         }
     }
 
@@ -2670,6 +2737,8 @@ class ClusterService : Service() {
         private const val TAG = "JupiterBle"
         private const val CHANNEL_SPEED_ALERT = "speed_alert"
         private const val NOTIF_SPEED_ALERT = 2
+        private const val CHANNEL_SERVICE_REMINDER = "service_reminder"
+        private const val NOTIF_SERVICE_REMINDER = 3
         /** Prevent flicker at the limit: re-arm only a few km/h below it. */
         private const val SPEED_ALERT_HYSTERESIS = 3
         private const val SCAN_TIMEOUT_MS = 20_000L

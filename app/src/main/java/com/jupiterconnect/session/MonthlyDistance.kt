@@ -81,4 +81,32 @@ internal fun monthlyDistanceKm(
     }
 }
 
+/**
+ * Kilometres implied purely by odometer readings: every fill's delta from the
+ * previous fill, assigned to that fill's IST month, plus the live tail since
+ * the newest fill in the current month. Used to audit the history bars - if a
+ * bar disagrees with this, the cause is a missing fill or a stale odometer.
+ */
+internal fun odoKmByMonth(
+    fills: List<FuelFill>,
+    currentOdometerKm: Double,
+    nowMs: Long,
+): Map<Int, Double> {
+    val ordered = fills.sortedBy { it.dateIst }
+    val result = mutableMapOf<Int, Double>()
+    for (i in 1 until ordered.size) {
+        val delta = ordered[i].odometerKm - ordered[i - 1].odometerKm
+        if (delta <= 0) continue
+        val key = fuelMonthKey(ordered[i].dateIst) ?: continue
+        result[key] = (result[key] ?: 0.0) + delta
+    }
+    ordered.lastOrNull()?.let { last ->
+        if (currentOdometerKm > last.odometerKm) {
+            val key = monthKeyFor(nowMs)
+            result[key] = (result[key] ?: 0.0) + (currentOdometerKm - last.odometerKm)
+        }
+    }
+    return result
+}
+
 private val IST: TimeZone = TimeZone.getTimeZone("Asia/Kolkata")

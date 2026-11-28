@@ -306,6 +306,10 @@ fun JupiterApp() {
     // expanding inside the card.
     var showLiveGraph by remember { mutableStateOf(false) }
     var showAllRides by remember { mutableStateOf(false) }
+    var showCloudLogin by remember { mutableStateOf(false) }
+    var cloudEmail by remember {
+        mutableStateOf(com.jupiterconnect.sync.SupabaseClient.currentEmail())
+    }
 
     // "Find my cluster" opens the devices list. Check the adapter first so an
     // off phone is told why scanning would not work, but still show the list -
@@ -323,6 +327,15 @@ fun JupiterApp() {
             )
         } else if (showAllRides) {
             AllRidesScreen(rides = rides, onBack = { showAllRides = false })
+        } else if (showCloudLogin) {
+            com.jupiterconnect.ui.CloudLoginScreen(
+                currentEmail = cloudEmail,
+                onBack = { showCloudLogin = false },
+                onSuccess = {
+                    cloudEmail = com.jupiterconnect.sync.SupabaseClient.currentEmail()
+                    showCloudLogin = false
+                },
+            )
         } else {
         when (selected) {
             0 -> HomeScreenV2(
@@ -380,11 +393,15 @@ fun JupiterApp() {
                     devicePrefs.edit().putBoolean("phone_mirroring", enabled).apply()
                     if (enabled) launcher.launch(permissions)
                 },
-                email = com.jupiterconnect.sync.SupabaseClient.currentEmail(),
+                email = cloudEmail,
+                onCloudLogin = { showCloudLogin = true },
                 onNotificationAccess = {
                     context.startActivity(Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS))
                 },
-                onSignOut = { com.jupiterconnect.sync.SupabaseClient.signOut() },
+                onSignOut = {
+                    com.jupiterconnect.sync.SupabaseClient.signOut()
+                    cloudEmail = null
+                },
                 onPickPhoto = { pickPhoto.launch("image/*") },
                 onTab = selectTab,
             )

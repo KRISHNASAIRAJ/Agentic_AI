@@ -91,6 +91,8 @@ import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -112,6 +114,7 @@ import com.jupiterconnect.sync.SupabaseClient
 import com.jupiterconnect.session.WarmupPhase
 import com.jupiterconnect.session.lastMonthKeys
 import com.jupiterconnect.session.monthlyDistanceKm
+import com.jupiterconnect.session.odoKmByMonth
 import com.jupiterconnect.traffic.Cities
 import com.jupiterconnect.transport.ClusterRepository
 import com.jupiterconnect.ui.theme.JupiterColors
@@ -429,7 +432,6 @@ fun HomeScreenV2(
         "${days[c.get(Calendar.DAY_OF_WEEK) - 1]}, ${c.get(Calendar.DAY_OF_MONTH)} ${months[c.get(Calendar.MONTH)]}"
     }
     val fills by com.jupiterconnect.session.FuelLogStore.fills.collectAsState()
-    val fusedSpeed by ClusterRepository.fusedSpeed.collectAsState()
     JupiterShell("Jupiter 125", kicker, activeTab, onTab, onSettings) {
         Spacer(Modifier.height(4.dp))
         Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
@@ -538,8 +540,8 @@ fun HomeScreenV2(
                                     tint = JupiterColors.Accent)
                             }
                         }
-                        val speed = if (telemetry.connected && fusedSpeed > 0)
-                            "$fusedSpeed" else "--"
+                        val speed = if (telemetry.connected && telemetry.speedKmh > 0)
+                            "${telemetry.speedKmh}" else "--"
                         BigValue(speed, "km/h", 36)
                         Spacer(Modifier.weight(1f))
                         // Decorative graph artwork only — NOT the saved ride's
@@ -656,7 +658,6 @@ fun LiveGraphScreen(
         else if (!telemetry.connected) recent?.throttleSamples.orEmpty() else emptyList()
     val rideTop by RideStore.liveTopSpeed.collectAsState()
     val allTimeTop by RideStore.allTimeTopSpeed.collectAsState()
-    val fusedSpeed by ClusterRepository.fusedSpeed.collectAsState()
 
     Box(Modifier.fillMaxSize().background(JupiterColors.Surface)) {
         Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState())) {
@@ -681,7 +682,7 @@ fun LiveGraphScreen(
                     Label("CURRENT SPEED")
                     Spacer(Modifier.height(8.dp))
                     BigValue(
-                        if (telemetry.connected && fusedSpeed > 0) "$fusedSpeed"
+                        if (telemetry.connected && telemetry.speedKmh > 0) "${telemetry.speedKmh}"
                         else "--", "km/h", 44)
                     Spacer(Modifier.height(8.dp))
                     Text("Ride top $rideTop km/h · All-time best $allTimeTop km/h",
@@ -874,21 +875,23 @@ fun RidesScreenV2(
         Spacer(Modifier.height(18.dp))
         Label("HISTORY · LAST 6 MONTHS")
         Spacer(Modifier.height(10.dp))
-        RedCard {
-            val months = remember(rides, fuelMonths, lastFillOdo, lastOdo.odometerKm) {
-                val fmt = java.text.DateFormatSymbols().shortMonths
-                val now = System.currentTimeMillis()
-                val kmByKey = monthlyDistanceKm(
-                    rides = rides,
-                    fuelMonths = fuelMonths,
-                    lastFillOdometerKm = lastFillOdo,
-                    currentOdometerKm = lastOdo.odometerKm,
-                    nowMs = now,
-                )
-                // Past months keep their imported/locked values; only this
-                // month also includes kilometres ridden since the last fill.
-                lastMonthKeys(6, now).map { key -> fmt[key % 100] to (kmByKey[key] ?: 0.0) }
+        val months = remember(rides, fuelMonths, lastFillOdo, lastOdo.odometerKm) {
+            val fmt = java.text.DateFormatSymbols().shortMonths
+            val now = System.currentTimeMillis()
+            val kmByKey = monthlyDistanceKm(
+                rides = rides,
+                fuelMonths = fuelMonths,
+                lastFillOdometerKm = lastFillOdo,
+                currentOdometerKm = lastOdo.odometerKm,
+                nowMs = now,
+            )
+            // Past months keep their imported/locked values; only this
+            // month also includes kilometres ridden since the last fill.
+            lastMonthKeys(6, now).map { key ->
+                Triple(fmt[key % 100], kmByKey[key] ?: 0.0, key)
             }
+        }
+        RedCard {
             val maxKm = months.maxOf { it.second }.coerceAtLeast(0.1)
             // Three fixed-height zones per month: value, bar, label. Because
             // every column is the same height, all bars share one baseline and
@@ -930,6 +933,29 @@ fun RidesScreenV2(
                                 maxLines = 1, softWrap = false)
                         }
                     }
+                }
+            }
+        }
+        // Cross-check every bar against the odometer deltas implied by fuel
+        // fills. A mismatch means a missing fill or a stale odometer reading.
+        val odoAudit = remember(fills, months, lastOdo.odometerKm) {
+            val odoByKey = odoKmByMonth(fills, lastOdo.odometerKm,
+                System.currentTimeMillis())
+            months.mapNotNull { (label, shown, key) ->
+                val odo = odoByKey[key] ?: 0.0
+                val diff = shown - odo
+                if (kotlin.math.abs(diff) >= 1.0) Triple(label, shown, diff) else null
+            }
+        }
+        if (odoAudit.isNotEmpty()) {
+            Spacer(Modifier.height(10.dp))
+            RedCard {
+                Label("ODO CHECK")
+                Spacer(Modifier.height(8.dp))
+                odoAudit.forEach { (label, shown, diff) ->
+                    Text("%s bar %.0f km · odo %.0f km (%+.0f)".format(
+                        label, shown, shown - diff, diff),
+                        fontSize = 11.sp, color = JupiterColors.Accent)
                 }
             }
         }
@@ -1093,9 +1119,6 @@ private fun AnalyticsCards(rides: List<Ride>, fills: List<com.jupiterconnect.ses
     val openIssues = remember(cloudIssues) {
         cloudIssues.count { it.status.equals("open", ignoreCase = true) }
     }
-    val fused by ClusterRepository.fusedSpeed.collectAsState()
-    val errorKmh by ClusterRepository.speedErrorKmh.collectAsState()
-    val fusionSamples by ClusterRepository.speedFusionSamples.collectAsState()
     val anomalies by ClusterRepository.anomalyNotes.collectAsState()
 
     Label("PERSONAL ETA")
@@ -1141,16 +1164,6 @@ private fun AnalyticsCards(rides: List<Ride>, fills: List<com.jupiterconnect.ses
                 fontSize = 11.sp, color = JupiterColors.OnSurfaceVariant)
         }
         Text("Latest ride · finer sampling on fast speed changes", fontSize = 9.sp,
-            color = JupiterColors.OnSurfaceVariant)
-    }
-    Spacer(Modifier.height(10.dp))
-    Label("SPEED FUSION")
-    Spacer(Modifier.height(8.dp))
-    RedCard {
-        BigValue("$fused", "km/h", 26)
-        Text("Cluster + GPS · speedometer error %+.1f km/h · $fusionSamples samples".format(errorKmh),
-            fontSize = 11.sp, color = JupiterColors.OnSurfaceVariant)
-        Text("Smoothed speed; distance still comes from the odometer", fontSize = 9.sp,
             color = JupiterColors.OnSurfaceVariant)
     }
     Spacer(Modifier.height(10.dp))
@@ -1447,6 +1460,73 @@ private fun DevicesContent(
     PrimaryButton("Scan for devices", onScan, Modifier.fillMaxWidth())
 }
 
+/** Dedicated cloud sign-in screen. The password is always masked on screen. */
+@Composable
+fun CloudLoginScreen(
+    currentEmail: String?,
+    onBack: () -> Unit,
+    onSuccess: () -> Unit,
+) {
+    JupiterShell("Cloud sync", "MERIDIAN SIGN IN", null, { onBack() }, {}) {
+        Spacer(Modifier.height(8.dp))
+        RedCard(bar = true) {
+            Label("SIGN IN")
+            Spacer(Modifier.height(14.dp))
+            var user by remember { mutableStateOf("") }
+            var password by remember { mutableStateOf("") }
+            var result by remember { mutableStateOf("") }
+            var busy by remember { mutableStateOf(false) }
+            val scope = rememberCoroutineScope()
+            OutlinedTextField(
+                value = user,
+                onValueChange = { user = it },
+                label = { Text("Email") },
+                singleLine = true,
+                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Email),
+                modifier = Modifier.fillMaxWidth(),
+            )
+            Spacer(Modifier.height(10.dp))
+            OutlinedTextField(
+                value = password,
+                onValueChange = { password = it },
+                label = { Text("Password") },
+                singleLine = true,
+                visualTransformation = PasswordVisualTransformation(),
+                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
+                modifier = Modifier.fillMaxWidth(),
+            )
+            Spacer(Modifier.height(14.dp))
+            PrimaryButton("Sign in", {
+                if (busy) return@PrimaryButton
+                busy = true
+                scope.launch {
+                    result = com.jupiterconnect.sync.SupabaseClient.signIn(
+                        user.trim(), password) ?: run {
+                        ClusterRepository.requestGarageSync()
+                        onSuccess()
+                        "Signed in - syncing now"
+                    }
+                    busy = false
+                }
+            }, Modifier.fillMaxWidth())
+            if (result.isNotBlank()) {
+                Spacer(Modifier.height(10.dp))
+                Text(result, fontSize = 12.sp, color = JupiterColors.Accent)
+            }
+            if (currentEmail != null) {
+                Spacer(Modifier.height(16.dp))
+                Text("Signed in as $currentEmail", fontSize = 12.sp,
+                    color = JupiterColors.OnSurfaceVariant)
+                Spacer(Modifier.height(8.dp))
+                SecondaryButton("Sign out", {
+                    com.jupiterconnect.sync.SupabaseClient.signOut()
+                    onBack()
+                }, Modifier.fillMaxWidth())
+            }
+        }
+    }
+}
+
 @Composable
 private fun SettingsContent(
     notificationAccess: Boolean,
@@ -1459,6 +1539,7 @@ private fun SettingsContent(
     onNotificationAccess: () -> Unit,
     onSignOut: () -> Unit,
     onPickPhoto: () -> Unit,
+    onCloudLogin: () -> Unit,
 ) {
     RedCard {
         Label("PERMISSIONS")
@@ -1501,14 +1582,11 @@ private fun SettingsContent(
     RedCard(bar = true) {
         Label("CALL & MESSAGE ON CLUSTER")
         Spacer(Modifier.height(8.dp))
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Column(Modifier.weight(1f)) {
-                Text("Mirror calls & messages", fontSize = 14.sp,
-                    color = JupiterColors.OnSurface)
-                Text(if (contactsGranted) "Contact names available"
-                    else "Numbers only - enable Contacts",
-                    fontSize = 11.sp, color = JupiterColors.OnSurfaceVariant)
-            }
+        Row(
+            Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.End,
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
             Switch(
                 checked = phoneMirroring, onCheckedChange = onPhoneMirroring,
                 colors = SwitchDefaults.colors(
@@ -1521,12 +1599,8 @@ private fun SettingsContent(
         Spacer(Modifier.height(10.dp))
         SecondaryButton("Clear social counters",
             { ClusterRepository.clearSocialCounts() }, Modifier.fillMaxWidth())
-        Text("WhatsApp / Facebook / Instagram unread counts are mirrored on 0x9C.",
-            fontSize = 11.sp, color = JupiterColors.OnSurfaceVariant)
-        Text("Text hidden by Android? OnePlus: Settings > Notifications & Quick " +
-            "Settings > More settings > Enhanced notifications OFF, then restart.",
-            fontSize = 10.sp, color = JupiterColors.OnSurfaceVariant)
     }
+    Spacer(Modifier.height(10.dp))
 
     RedCard(bar = true) {
         Label("CLOUD SYNC")
@@ -1534,42 +1608,15 @@ private fun SettingsContent(
         var signedInEmail by remember { mutableStateOf(email) }
         if (signedInEmail != null) {
             Text(signedInEmail!!, fontSize = 15.sp, color = JupiterColors.OnSurface)
-            Spacer(Modifier.height(6.dp))
-            Text("Fuel, service, odometer and rides sync with Meridian.",
-                fontSize = 11.sp, color = JupiterColors.OnSurfaceVariant)
             Spacer(Modifier.height(12.dp))
             SecondaryButton("Sign out", {
                 onSignOut()
                 signedInEmail = null
             }, Modifier.fillMaxWidth())
         } else {
-            val scope = rememberCoroutineScope()
-            var user by remember { mutableStateOf("") }
-            var password by remember { mutableStateOf("") }
-            var result by remember { mutableStateOf("") }
-            Text("Sign in with your Meridian account to load fuel, service and odometer data.",
-                fontSize = 11.sp, color = JupiterColors.OnSurfaceVariant)
-            Spacer(Modifier.height(8.dp))
-            OutlinedTextField(user, { user = it }, label = { Text("Email") },
-                singleLine = true, modifier = Modifier.fillMaxWidth())
-            Spacer(Modifier.height(8.dp))
-            OutlinedTextField(password, { password = it }, label = { Text("Password") },
-                singleLine = true, visualTransformation = PasswordVisualTransformation(),
-                modifier = Modifier.fillMaxWidth())
-            Spacer(Modifier.height(10.dp))
-            Button({
-                scope.launch {
-                    result = SupabaseClient.signIn(user, password) ?: run {
-                        signedInEmail = SupabaseClient.currentEmail()
-                        ClusterRepository.requestGarageSync()
-                        "Signed in - syncing now"
-                    }
-                }
-            }, Modifier.fillMaxWidth()) { Text("Sign in") }
-            if (result.isNotBlank()) {
-                Spacer(Modifier.height(8.dp))
-                Text(result, fontSize = 11.sp, color = JupiterColors.Accent)
-            }
+            // Sign-in lives on its own screen so credentials are never shown
+            // inline in Settings and the password field stays masked there.
+            PrimaryButton("Sign in to Meridian", onCloudLogin, Modifier.fillMaxWidth())
         }
     }
     Spacer(Modifier.height(10.dp))
@@ -1579,9 +1626,7 @@ private fun SettingsContent(
         val alert by ClusterRepository.highSpeedAlert.collectAsState()
         val limit by ClusterRepository.highSpeedAlertSpeed.collectAsState()
         val connected by ClusterRepository.telemetry.collectAsState()
-        Text("Active only while the cluster is connected", fontSize = 11.sp,
-            color = JupiterColors.OnSurfaceVariant)
-        Spacer(Modifier.height(8.dp))
+
         Row(verticalAlignment = Alignment.CenterVertically) {
             Column(Modifier.weight(1f)) {
                 Text("Alert at $limit km/h", fontSize = 15.sp, color = JupiterColors.OnSurface)
@@ -1608,33 +1653,18 @@ private fun SettingsContent(
                 ),
             )
         }
-        Spacer(Modifier.height(8.dp))
-        Text(
-            "Fires once when speed crosses the limit, then re-arms after you slow " +
-                "down. Sends the cluster's HIGH SPEED ALERT frame and vibrates the phone.",
-            fontSize = 10.sp, color = JupiterColors.OnSurfaceVariant,
-        )
-        Spacer(Modifier.height(8.dp))
-        SecondaryButton("Test alert now", { ClusterRepository.testSpeedAlert() },
-            Modifier.fillMaxWidth())
+
     }
     Spacer(Modifier.height(10.dp))
     RedCard(bar = true) {
         Label("TRAFFIC SCREENS")
         Spacer(Modifier.height(8.dp))
         val enabled by ClusterRepository.trafficEnabled.collectAsState()
-        val status by ClusterRepository.trafficStatus.collectAsState()
-        val screen by ClusterRepository.trafficScreen.collectAsState()
-        val city by ClusterRepository.weatherCity.collectAsState()
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Column(Modifier.weight(1f)) {
-                Text("Weather / cricket / market / news", fontSize = 14.sp,
-                    color = JupiterColors.OnSurface)
-                Text("$status · screen 0x${"%02X".format(screen)}",
-                    fontSize = 11.sp, color = JupiterColors.OnSurfaceVariant)
-                Text("Free APIs only - no TVS cloud or account",
-                    fontSize = 10.sp, color = JupiterColors.OnSurfaceVariant)
-            }
+        Row(
+            Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.End,
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
             Switch(
                 checked = enabled,
                 onCheckedChange = { ClusterRepository.setTrafficEnabled(it) },
@@ -1645,20 +1675,6 @@ private fun SettingsContent(
                 ),
             )
         }
-        Spacer(Modifier.height(12.dp))
-        Text("WEATHER LOCATION: live GPS while riding, else $city",
-            fontSize = 12.sp, color = JupiterColors.Accent)
-        Spacer(Modifier.height(6.dp))
-        Row(Modifier.horizontalScroll(rememberScrollState())) {
-            Cities.list.forEach { c ->
-                OutlinedButton(
-                    onClick = { ClusterRepository.setWeatherCity(c.name) },
-                    modifier = Modifier.padding(end = 6.dp),
-                ) { Text(c.name, fontSize = 11.sp) }
-            }
-        }
-        Text("Weather uses last-parked coordinates; Hyderabad is the fallback.",
-            fontSize = 10.sp, color = JupiterColors.OnSurfaceVariant)
     }
     Spacer(Modifier.height(10.dp))
     RedCard(bar = true) {
@@ -1678,9 +1694,7 @@ private fun SettingsContent(
         SecondaryButton(
             if (photoReady) "Change rider photo" else "Add rider photo",
             onPickPhoto, Modifier.fillMaxWidth())
-        Text("Photo is sent to the dash on ignition with your name.",
-            fontSize = 10.sp, color = JupiterColors.OnSurfaceVariant)
-        Spacer(Modifier.height(8.dp))
+
         Row(verticalAlignment = Alignment.CenterVertically) {
             Text("Send greeting on connect", Modifier.weight(1f), fontSize = 13.sp,
                 color = JupiterColors.OnSurface)
@@ -1697,15 +1711,6 @@ private fun SettingsContent(
     }
     Spacer(Modifier.height(10.dp))
     RedCard {
-        Label("VOICE")
-        Spacer(Modifier.height(8.dp))
-        Spacer(Modifier.height(10.dp))
-        SecondaryButton("Test voice trigger",
-            { ClusterRepository.service?.simulateVoiceTrigger() },
-            Modifier.fillMaxWidth())
-    }
-    Spacer(Modifier.height(10.dp))
-    RedCard {
         val carbonKg = RideStore.carbonSavedKg
         Text("CARBON ESTIMATE  ${"%.1f".format(carbonKg)} kg",
             fontSize = 12.sp, color = JupiterColors.OnSurface)
@@ -1715,48 +1720,6 @@ private fun SettingsContent(
             "frame can write it. This is our independent estimate (TVS formats its " +
             "own figure with a x0.8 factor), shown in the app only.",
             fontSize = 10.sp, color = JupiterColors.OnSurfaceVariant)
-    }
-}
-
-/** Persisted record of which optional features produced a visible dash change. */
-@Composable
-private fun FeatureVerificationCard() {
-    val results by FeatureVerification.results.collectAsState()
-    val ok = Color(0xFF66D19E)
-    val warn = Color(0xFFFFC266)
-    RedCard {
-        Label("FEATURE VERIFICATION")
-        Spacer(Modifier.height(8.dp))
-        Text(
-            "Every command is checked against cluster telemetry. NO_FEEDBACK means " +
-                "the dash has no value we can compare, not that the command failed.",
-            fontSize = 10.sp, color = JupiterColors.OnSurfaceVariant,
-        )
-        Spacer(Modifier.height(8.dp))
-        if (results.isEmpty()) {
-            Text("Nothing logged yet. Tap a setting or command to test it.",
-                fontSize = 11.sp, color = JupiterColors.OnSurfaceVariant)
-        } else {
-            results.takeLast(12).reversed().forEach { r ->
-                val colour = when (r.status) {
-                    Status.WORKING -> ok
-                    Status.NO_CHANGE -> warn
-                    Status.NO_FEEDBACK -> JupiterColors.OnSurfaceVariant
-                    Status.APPLIED -> JupiterColors.Accent
-                }
-                Row(verticalAlignment = Alignment.Top) {
-                    Text("${r.time}  ", fontSize = 10.sp, color = JupiterColors.OnSurfaceVariant)
-                    Column(Modifier.weight(1f)) {
-                        Text("${r.feature}  ${r.status.name}", fontSize = 11.sp, color = colour)
-                        Text(r.detail, fontSize = 10.sp, color = JupiterColors.OnSurfaceVariant)
-                    }
-                }
-                Spacer(Modifier.height(6.dp))
-            }
-        }
-        Spacer(Modifier.height(6.dp))
-        SecondaryButton("Clear verification log", { FeatureVerification.clear() },
-            Modifier.fillMaxWidth())
     }
 }
 
@@ -1815,10 +1778,7 @@ private fun ClusterControlsCard() {
     RedCard {
         Label("CLUSTER SETTINGS")
         Spacer(Modifier.height(8.dp))
-        Text(if (dirty) "Unapplied changes - tap Apply to send them. The cluster still shows the last applied values."
-            else "Only applied values reach the cluster. They are remembered and re-sent when the ignition comes on.",
-            fontSize = 10.sp, color = if (dirty) JupiterColors.Red else JupiterColors.OnSurfaceVariant)
-        Spacer(Modifier.height(8.dp))
+
         Text("Illumination / theme", fontSize = 12.sp, color = JupiterColors.OnSurfaceVariant)
         Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
             (1..5).forEach { level ->
@@ -1878,27 +1838,9 @@ private fun ClusterControlsCard() {
 
     Spacer(Modifier.height(10.dp))
     RedCard {
-        Label("NAVIGATION EXTRAS")
-        Spacer(Modifier.height(8.dp))
-        OutlinedTextField(
-            value = roadName,
-            onValueChange = { roadName = it },
-            label = { Text("Road name on dash") },
-            singleLine = true,
-            modifier = Modifier.fillMaxWidth(),
-        )
-        Spacer(Modifier.height(6.dp))
-        SecondaryButton("Send road name", { ClusterRepository.sendRoadName(roadName) },
-            Modifier.fillMaxWidth())
-    }
-
-    Spacer(Modifier.height(10.dp))
-    RedCard {
         Label("SETUP DATA")
         Spacer(Modifier.height(8.dp))
-        Text("Sends user ID, VIN and DOB frames exactly as TVS Connect does at setup.",
-            fontSize = 11.sp, color = JupiterColors.OnSurfaceVariant)
-        Spacer(Modifier.height(6.dp))
+
         SecondaryButton("Send setup data", { ClusterRepository.sendSetupData() },
             Modifier.fillMaxWidth())
         Text(handshake, fontSize = 10.sp, color = JupiterColors.OnSurfaceVariant)
@@ -1926,6 +1868,7 @@ fun MoreScreenV2(
     onNotificationAccess: () -> Unit,
     onSignOut: () -> Unit,
     onPickPhoto: () -> Unit,
+    onCloudLogin: () -> Unit,
     onTab: (Int) -> Unit,
 ) {
     JupiterShell("More", "DEVICES & SETTINGS", 4, onTab, {}) {
@@ -1936,10 +1879,9 @@ fun MoreScreenV2(
         Label("SETTINGS")
         Spacer(Modifier.height(10.dp))
         SettingsContent(notificationAccess, bleReady, contactsGranted, callLogGranted,
-            phoneMirroring, onPhoneMirroring, email, onNotificationAccess, onSignOut, onPickPhoto)
+            phoneMirroring, onPhoneMirroring, email, onNotificationAccess, onSignOut,
+            onPickPhoto, onCloudLogin)
         Spacer(Modifier.height(18.dp))
         ClusterControlsCard()
-        Spacer(Modifier.height(18.dp))
-        FeatureVerificationCard()
     }
 }
