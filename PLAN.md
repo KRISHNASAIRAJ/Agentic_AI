@@ -38,9 +38,9 @@ what is deferred.
   the parked spot stay fully usable with no internet. A `ConnectivityManager`
   callback pauses every network call while offline (label: `Offline - showing
   cached data`) and resumes garage pull, ride restore, odometer report and app
-  state upload as soon as the connection returns. `ACCESS_NETWORK_STATE` is
-  declared in the manifest (a missing permission crashed the service at
-  startup); every ConnectivityManager call is also guarded. All REST helpers catch
+  state upload as soon as the connection returns. `ACCESS_NETWORK_STATE` and
+  `VIBRATE` are declared in the manifest (missing ones crashed the service at
+  startup); those calls are guarded too. All REST helpers catch
   transport failures instead of throwing, so going offline can no longer crash
   the app or kill the sync loop.
 - Failed uploads are no longer marked synced: a ride stays queued until the

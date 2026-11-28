@@ -9,6 +9,8 @@
     <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
     <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <!-- READY TO GO and high-speed alerts vibrate the phone. -->
+    <uses-permission android:name="android.permission.VIBRATE" />
     <!-- Saved contact names for callers/message senders shown on the cluster. -->
     <uses-permission android:name="android.permission.READ_CONTACTS" />
     <!-- Unread missed calls are mirrored into 0x4A byte 10, as TVS Connect does. -->

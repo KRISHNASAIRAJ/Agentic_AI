@@ -1127,6 +1127,20 @@ class ClusterService : Service() {
      * The 0x4A keepalive is deliberately untouched - writing its byte 3 used to
      * drop the BLE link, so all detection stays in the app.
      */
+    /** Optional haptic feedback; a missing permission must never crash BLE work. */
+    private fun buzz(durationMs: Int) {
+        runCatching {
+            val vibrator = getSystemService(android.os.Vibrator::class.java) ?: return
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                vibrator.vibrate(android.os.VibrationEffect.createOneShot(
+                    durationMs.toLong(), android.os.VibrationEffect.DEFAULT_AMPLITUDE))
+            } else {
+                @Suppress("DEPRECATION")
+                vibrator.vibrate(durationMs.toLong())
+            }
+        }.onFailure { FrameLog.note("VIBRATE skipped: ${it.message?.take(60) ?: "error"}") }
+    }
+
     private fun fireSpeedAlert(speed: Int, limit: Int) {
         val frame = ClusterControlFrames.buildHighSpeedAlertFrame()
         scope.launch { write(frame) }
@@ -1134,13 +1148,7 @@ class ClusterService : Service() {
         // Held text survives the navigation bridge's next 1.5 s refresh; a bare
         // 0x4F write is overwritten before the rider can read it.
         ClusterRepository.showText("HIGH SPEED $speed km/h", holdMs = 5_000L)
-        val vibrator = getSystemService(android.os.Vibrator::class.java)
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            vibrator?.vibrate(android.os.VibrationEffect.createOneShot(180, 180))
-        } else {
-            @Suppress("DEPRECATION")
-            vibrator?.vibrate(180L)
-        }
+        buzz(180)
         postSpeedAlertNotification(speed, limit)
         FeatureVerification.log("Speed alert", Status.APPLIED,
             "$speed >= $limit km/h", hex(frame))
@@ -1383,14 +1391,7 @@ class ClusterService : Service() {
                                 // Burn the daily guard only after a frame reached
                                 // the bike. A call arriving first leaves it free.
                                 warmupNoticePrefs().edit().putString("last_day", istDay()).apply()
-                                val vibrator = getSystemService(android.os.Vibrator::class.java)
-                                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                                    vibrator?.vibrate(
-                                        android.os.VibrationEffect.createOneShot(120, 120))
-                                } else {
-                                    @Suppress("DEPRECATION")
-                                    vibrator?.vibrate(120L)
-                                }
+                                buzz(120)
                             }
                             delay(500L)
                         }
